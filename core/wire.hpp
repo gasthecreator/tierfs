@@ -16,7 +16,7 @@
 
 namespace tierfs {
 
-constexpr uint16_t PROTO_VERSION = 1;
+constexpr uint16_t PROTO_VERSION = 2;
 constexpr uint32_t MAX_FRAME = 16u << 20;
 constexpr uint32_t MAX_READ = 1u << 20;
 

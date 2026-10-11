@@ -11,21 +11,41 @@ FUSE_LIB := -L/usr/local/lib -lfuse-t -Wl,-rpath,/usr/local/lib
 
 all: build/tierfs build/tierfs-backend build/hellofs
 
-build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h
+build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h core/sqlutil.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp core/hash.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/metastore_test: tests/metastore_test.cpp build/metastore.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
-test-unit: build/metastore_test
-	./build/metastore_test
+build/chunkcache_test: tests/chunkcache_test.cpp build/chunkcache.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+
+build/client_test: tests/client_test.cpp build/tierclient.o build/metastore.o build/chunkcache.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+
+# Needs the backend binary. Builds the whole client with ThreadSanitizer too.
+test-client: build/client_test build/tierfs-backend
+	./build/client_test
+
+test-tsan: build/tierfs-backend
+	@mkdir -p build/tsan
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test -lsqlite3
+	./build/tsan/client_test
+
+test-unit: build/metastore_test build/chunkcache_test
+	./build/metastore_test | tail -1
+	./build/chunkcache_test
 
 build/tierfs-backend: backend/server.cpp core/wire.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $< -o $@
 
-build/tierclient.o: core/tierclient.cpp core/tierclient.h core/wire.hpp
+build/tierclient.o: core/tierclient.cpp core/tierclient.h core/wire.hpp core/chunkcache.hpp core/metastore.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -34,7 +54,7 @@ build/tierfs.o: mount/tierfs.c core/tierclient.h
 	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
 
 # Linked with the C++ compiler so libc++ comes along for the client library.
-build/tierfs: build/tierfs.o build/tierclient.o build/metastore.o
+build/tierfs: build/tierfs.o build/tierclient.o build/metastore.o build/chunkcache.o
 	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) -lsqlite3
 
 build/hellofs: mount/hellofs.c
@@ -44,4 +64,4 @@ build/hellofs: mount/hellofs.c
 clean:
 	rm -rf build
 
-.PHONY: all clean test-unit
+.PHONY: all clean test-unit test-client test-tsan

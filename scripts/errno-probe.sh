@@ -2,9 +2,9 @@
 # For each candidate errno, mount with a DEAD backend and show what apps see.
 cd "$(dirname "$0")/.."; MNT=$PWD/scratch-mnt
 for spec in "0:default(EHOSTUNREACH/ETIMEDOUT)" 5:EIO 35:EAGAIN 70:ESTALE 57:ENOTCONN 50:ENETDOWN 64:EHOSTDOWN 16:EBUSY 6:ENXIO 19:ENODEV 60:ETIMEDOUT; do
-  n=${spec%%:*}; name=${spec#*:}
+  n=${spec%%:*}; name=${spec#*:}; rm -rf build/probecache
   ./build/tierfs-backend testdata/sample 9099 2>/dev/null & BP=$!; sleep 1
-  ./build/tierfs -f -o host=127.0.0.1,port=9099,timeout=800,neterr=$n "$MNT" >/dev/null 2>&1 &
+  ./build/tierfs -f -o host=127.0.0.1,port=9099,timeout=800,neterr=$n,cache=$PWD/build/probecache "$MNT" >/dev/null 2>&1 &
   sleep 3
   ls "$MNT" >/dev/null 2>&1   # warm: metadata fetched while backend alive
   kill $BP; wait $BP 2>/dev/null; sleep 1

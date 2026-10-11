@@ -15,6 +15,7 @@
 #include <fuse.h>
 
 #include <errno.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -81,26 +82,33 @@ static int t_readdir(const char *path, void *buf, fuse_fill_dir_t fill, off_t of
 }
 
 /* open() deliberately does no network I/O: lookup/getattr already proved the
- * file exists, and a failure here is reported by FUSE-T as ENOENT whatever
- * errno we return (see docs/PHASE2.md). Errors surface on read() instead. */
+ * file exists, and a failure here is reported by FUSE-T as ENOENT whatever errno
+ * we return (see docs/PHASE2.md). Errors surface on read() instead.
+ * Opening pins the file's cached chunks so eviction cannot take them away. */
 static int t_open(const char *path, struct fuse_file_info *fi) {
-    (void)path;
     if ((fi->flags & O_ACCMODE) != O_RDONLY) return -EROFS;
+    tc_pin(g_client, path);
     return 0;
 }
 
-#define CHUNK (1u << 20)
+static int t_release(const char *path, struct fuse_file_info *fi) {
+    (void)fi;
+    tc_unpin(g_client, path);
+    return 0;
+}
 
-/* The kernel may ask for more than one protocol read can return; loop until we
- * have everything or hit EOF / a short read. */
+/* tc_read returns the full requested range (or fewer bytes only at EOF) or an
+ * error. An error is returned as an error: handing back the bytes copied before
+ * the failure would look like end-of-file to the kernel and silently truncate
+ * the file for cp/cat/git. */
 static int t_read(const char *path, char *buf, size_t size, off_t off,
                   struct fuse_file_info *fi) {
     (void)fi;
     size_t done = 0;
     while (done < size) {
-        uint32_t want = (size - done) > CHUNK ? CHUNK : (uint32_t)(size - done);
+        uint32_t want = (size - done) > (1u << 20) ? (1u << 20) : (uint32_t)(size - done);
         int64_t n = tc_read(g_client, path, (uint64_t)off + done, want, buf + done);
-        if (n < 0) return done ? (int)done : net((int)n);
+        if (n < 0) return net((int)n);
         if (n == 0) break;
         done += (size_t)n;
         if ((uint32_t)n < want) break;
@@ -113,6 +121,7 @@ static struct fuse_operations ops = {
     .readdir = t_readdir,
     .open = t_open,
     .read = t_read,
+    .release = t_release,
 };
 
 struct opts {
@@ -121,19 +130,49 @@ struct opts {
     int timeout_ms;
     int neterr;
     char *cache;
+    int cache_mb;
+    int readahead;
+    char *stats;
 };
 
 #define OPT(t, f) {t, offsetof(struct opts, f), 0}
-static struct fuse_opt specs[] = {OPT("host=%s", host), OPT("port=%d", port),
-                                  OPT("timeout=%d", timeout_ms), OPT("neterr=%d", neterr), OPT("cache=%s", cache), FUSE_OPT_END};
+static struct fuse_opt specs[] = {
+    OPT("host=%s", host),        OPT("port=%d", port),
+    OPT("timeout=%d", timeout_ms), OPT("neterr=%d", neterr),
+    OPT("cache=%s", cache),      OPT("cachesize=%d", cache_mb),
+    OPT("readahead=%d", readahead), OPT("stats=%s", stats),
+    FUSE_OPT_END};
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    struct opts o = {NULL, 9099, 3000, 0, NULL};
+    struct opts o = {NULL, 9099, 3000, 0, NULL, 512, -1, NULL};
     if (fuse_opt_parse(&args, &o, specs, NULL) == -1) return 2;
     g_neterr = o.neterr;
-    g_client = tc_create(o.host ? o.host : "127.0.0.1", (uint16_t)o.port, o.timeout_ms, o.cache);
+    tc_config cfg = {0};
+    cfg.host = o.host ? o.host : "127.0.0.1";
+    cfg.port = (uint16_t)o.port;
+    cfg.timeout_ms = o.timeout_ms;
+    cfg.cache_dir = o.cache;
+    cfg.cache_bytes = (uint64_t)o.cache_mb << 20;
+    cfg.readahead = o.readahead;
+    g_client = tc_create(&cfg);
     int rc = fuse_main(args.argc, args.argv, &ops, NULL);
+    if (o.stats) { /* test hook: counters written at unmount */
+        tc_stats st;
+        tc_get_stats(g_client, &st);
+        FILE *f = fopen(o.stats, "w");
+        if (f) {
+            fprintf(f, "chunk_hits=%llu\nchunk_misses=%llu\nchunk_corrupt=%llu\nchunk_evicted=%llu\n"
+                       "fetches=%llu\nprefetch_fetches=%llu\nprefetch_used=%llu\nbytes_fetched=%llu\n"
+                       "cache_bytes_used=%llu\n",
+                    (unsigned long long)st.chunk_hits, (unsigned long long)st.chunk_misses,
+                    (unsigned long long)st.chunk_corrupt, (unsigned long long)st.chunk_evicted,
+                    (unsigned long long)st.fetches, (unsigned long long)st.prefetch_fetches,
+                    (unsigned long long)st.prefetch_used, (unsigned long long)st.bytes_fetched,
+                    (unsigned long long)st.cache_bytes_used);
+            fclose(f);
+        }
+    }
     tc_destroy(g_client);
     return rc;
 }

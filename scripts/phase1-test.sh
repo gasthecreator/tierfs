@@ -12,11 +12,11 @@ cleanup() {
   umount "$MNT" 2>/dev/null; pkill -f "build/tierfs -f" 2>/dev/null
   pkill -f tierfs-backend 2>/dev/null; sleep 1
 }
-cleanup; mkdir -p "$MNT" build
+cleanup; rm -rf build/testcache1; mkdir -p "$MNT" build
 
 ./build/tierfs-backend "$SRC" $PORT 2> build/backend.log &
 sleep 1
-./build/tierfs -f -o host=127.0.0.1,port=$PORT,timeout=1500 "$MNT" > build/driver.log 2>&1 &
+./build/tierfs -f -o host=127.0.0.1,port=$PORT,timeout=1500,cache=$PWD/build/testcache1 "$MNT" > build/driver.log 2>&1 &
 sleep 4
 
 mount | grep -q "$MNT"; check "mounted" $?

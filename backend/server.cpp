@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <climits>
 #include <thread>
+#include <unistd.h>
 
 #include "../core/wire.hpp"
 
@@ -97,29 +98,46 @@ static bool do_readdir(int fd, const Frame& f, Reader& r) {
     return reply(fd, f.type, f.id, w);
 }
 
+static int g_delay_ms = 0;  // TIERFS_DELAY_MS: simulate a slow link in tests
+
+// Reply = u64 size, i64 mtime, then the bytes. The size/mtime describe the file
+// version the bytes came from, so the client can tell if the file changed since
+// it last looked. We fstat before AND after pread and retry if they differ, so
+// the label always matches the data (unless the file changes 3 times in a row).
 static bool do_read(int fd, const Frame& f, Reader& r) {
     std::string real;
     std::string path = r.str();
     uint64_t off = r.u64();
     uint32_t len = r.u32();
     if (len > MAX_READ) len = MAX_READ;
+    if (g_delay_ms > 0) usleep(static_cast<useconds_t>(g_delay_ms) * 1000);
     int e = resolve(path, real);
     if (e) return reply_err(fd, f.id, e, strerror(e));
     int file = open(real.c_str(), O_RDONLY);
     if (file < 0) return reply_err(fd, f.id, errno, strerror(errno));
-    struct stat st{};
-    if (fstat(file, &st) != 0 || !S_ISREG(st.st_mode)) {
-        int err = S_ISDIR(st.st_mode) ? EISDIR : EINVAL;
+    struct stat before{}, after{};
+    if (fstat(file, &before) != 0 || !S_ISREG(before.st_mode)) {
+        int err = S_ISDIR(before.st_mode) ? EISDIR : EINVAL;
         close(file);
         return reply_err(fd, f.id, err, strerror(err));
     }
     std::vector<uint8_t> buf(len);
-    ssize_t n = pread(file, buf.data(), len, static_cast<off_t>(off));
-    int err = errno;
+    ssize_t n = 0;
+    int err = 0;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        n = pread(file, buf.data(), len, static_cast<off_t>(off));
+        err = errno;
+        if (n < 0 || fstat(file, &after) != 0) break;
+        if (after.st_size == before.st_size && after.st_mtime == before.st_mtime) break;
+        before = after;  // changed under us: retry against the new version
+    }
     close(file);
     if (n < 0) return reply_err(fd, f.id, err, strerror(err));
-    return send_frame(fd, f.type | MSG_REPLY_FLAG, f.id,
-                      std::vector<uint8_t>(buf.begin(), buf.begin() + n));
+    Writer w;
+    w.u64(static_cast<uint64_t>(before.st_size));
+    w.i64(static_cast<int64_t>(before.st_mtime));
+    w.bytes(buf.data(), static_cast<size_t>(n));
+    return reply(fd, f.type, f.id, w);
 }
 
 static void serve(int fd) {
@@ -174,6 +192,7 @@ int main(int argc, char** argv) {
     int port = argc > 2 ? atoi(argv[2]) : 9099;
     const char* bind_addr = argc > 3 ? argv[3] : "127.0.0.1";
 
+    if (const char* d = getenv("TIERFS_DELAY_MS")) g_delay_ms = atoi(d);
     signal(SIGPIPE, SIG_IGN);  // a client vanishing mid-write must not kill us
 
     int ls = socket(AF_INET, SOCK_STREAM, 0);

@@ -55,18 +55,61 @@ the test was strengthened); integration tests in scripts/phase2-test.sh.
 3. A test that passed for the wrong reason earlier (`timeout` missing on macOS)
    taught us to assert on the error text, not just the exit code.
 
-## Remaining Phase 2 work
-1. On-disk chunk cache: 1 MiB chunks keyed by (path, mtime, size, index), LRU
-   eviction, byte budget, pinned while a file is open.
-2. Sequential readahead.
-3. Overall per-request deadline (see PHASE1.md item 6).
-4. Test with real tools: git status/clone, a compile, Finder, mmap.
+## Step 3 result: persistent chunk cache + readahead
+Code: core/chunkcache.{hpp,cpp}, core/hash.hpp (CommonCrypto SHA-256),
+core/sqlutil.hpp (shared SQLite wrappers), client rewrite in core/tierclient.cpp.
 
-## Finder check (driven via AppleScript, macOS 26.6.2)
-Computer-use screen control was not available, so Finder was driven with
-`osascript` against a live mount. Covered: listing (0.2 s vs 0.3 s for a normal
-folder), opening a window, Finder "duplicate" of a 3 MB file out of the mount
-(sha256 identical), no stray `.DS_Store`/`._*` files written onto the read-only
-mount, offline listing instant, offline duplicate of a never-read file fails in
-<1 s without hanging. NOT covered: icon/thumbnail/Quick Look rendering, Spotlight
-indexing, drag-and-drop in the UI, and how errors look in Finder's dialogs.
+### Design
+- 1 MiB chunks, one file each under `<cache>/chunks/ab/<sha256-of-key>.chk`, index
+  in `<cache>/chunks.db` (path, idx, file size, file mtime, length, SHA-256, LRU tick).
+- Key = (path, file size, file mtime, chunk index). A changed file can never be
+  served stale chunks; getattr noticing a new version frees the old ones at once.
+- Integrity: SHA-256 checked on every read. Bad chunk -> deleted -> refetch when
+  online, EIO when offline. Never returned.
+- Writes are temp-file + rename; startup sweep removes temp files, unindexed
+  files and rows without files (crash recovery).
+- LRU eviction under `cachesize=<MB>` (default 512), down to 90% of budget.
+  Chunks of OPEN files are pinned (driver open/release) and never evicted.
+- Protocol v2: READ reply carries the file's size+mtime, the backend checks them
+  before and after pread. Without this, a file changing between stat and read would
+  put new bytes in the cache under the old version's key. The client restarts a
+  read that spans a version change, so results are never a blend of versions.
+- Readahead: sequential reads queue the next 4 chunks; a pool of up to 4 worker
+  threads, each with its OWN connection, prefetches them. (One prefetch stream was
+  measured: no gain, a single stream is only as fast as the foreground one.)
+- A read that fails part-way fails the WHOLE request. Returning the bytes copied
+  so far looks like EOF to the kernel and silently truncates cp/cat/git.
+
+### Verified
+- `make test-unit`: chunk cache incl. corruption, eviction, pins, crash leftovers.
+  Mutation-checked with 7 deliberate bugs, all caught.
+- `make test-client` (ASan/UBSan) and `make test-tsan`: real backend process;
+  caching, remount-offline, corruption, mid-read failure, version change, eviction +
+  pinning, readahead, 6 concurrent readers with eviction. Clean under both.
+- scripts/phase2b-test.sh through the mount: persistent cache serves a 6 MB file
+  with the backend dead; cat/cp exit non-zero on a mid-file failure; clang compiles
+  from the mount; git log, `git fsck --full`, `git clone` (packfiles are mmapped)
+  work, and the clone works fully offline from the warm cache.
+- Readahead, 12 chunks at 40 ms simulated latency, optimized build: 0.58 s -> 0.20 s.
+
+### Honest limits / things learned
+- The mount-level truncation test passes even with the old partial-return driver
+  code, because the kernel asks for <=1 MiB per read, so that path never fires
+  there. The CLIENT-level test (client_test.cpp) is what guards it (mutation-checked).
+- Readahead speed-up depends on latency; on loopback with real work between reads
+  the gain is small. Timings under the sanitizer builds are ~3x slower overall.
+- Reads trust the cached (size, mtime) until getattr refreshes it (kernel does so
+  every few seconds): same staleness window as NFS attribute caching.
+- Chunks of deleted files are only freed when getattr/readdir sees the deletion
+  at that path or LRU takes them; a listing that silently drops a child does not
+  currently invalidate that child's chunks (bounded leak, LRU-collected).
+- Test harness bugs found on the way: orphaned backend made "backend dead" a lie;
+  a readiness probe was fooled by the offline root special case. Both fixed.
+- Not tested: mmap of a file being modified, extremely large files (>4 GiB: chunk
+  index is uint32, fine to 4 PiB, but untested), Finder rendering/Spotlight.
+
+## Remaining Phase 2 work
+1. Overall per-request deadline (see PHASE1.md item 6).
+2. Cache sizing default and a way to inspect/clear it (`tierctl`).
+Then Phase 3 (tiering policy). Before it: a durable store for "only copy is on
+the device" state, separate from these caches.

@@ -14,7 +14,7 @@ def recv(sock):
     return d[0], struct.unpack(">I", d[1:5])[0], d[5:]
 def conn():
     c = socket.create_connection(("127.0.0.1", PORT), timeout=3)
-    c.sendall(frame(1, 1, struct.pack(">H", 1))); recv(c); return c
+    c.sendall(frame(1, 1, struct.pack(">H", 2))); recv(c); return c
 def errno_of(r): return struct.unpack(">i", r[2][:4])[0] if r and r[0] == 0xFF else None
 ok = True
 def check(name, cond):
@@ -25,9 +25,9 @@ for p in ["/../../../etc/passwd", "/sub/../../../etc/passwd", "/link-out/passwd"
     c.sendall(frame(4, 2, s(p) + struct.pack(">QI", 0, 100)))
     r = recv(c); check(f"read {p!r} refused (errno {errno_of(r)})", r and r[0] == 0xFF)
 c.sendall(frame(4, 3, s("/hello.txt") + struct.pack(">QI", 0, 0xFFFFFFFF)))
-r = recv(c); check("huge read length is capped, not honoured", r and r[0] == 0x84 and len(r[2]) <= 1<<20)
+r = recv(c); check("huge read length is capped, not honoured", r and r[0] == 0x84 and len(r[2]) <= (1<<20) + 16)
 c.sendall(frame(4, 4, s("/hello.txt") + struct.pack(">QI", 1<<62, 10)))
-r = recv(c); check("offset far past EOF returns empty or error", r and (r[0] == 0xFF or len(r[2]) == 0))
+r = recv(c); check("offset far past EOF returns empty or error", r and (r[0] == 0xFF or len(r[2]) == 16))
 c.close()
 
 c = conn(); c.sendall(frame(4, 5, b"\x00")); r = recv(c)

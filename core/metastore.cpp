@@ -1,6 +1,6 @@
 #include "metastore.hpp"
 
-#include <sqlite3.h>
+#include "sqlutil.hpp"
 
 #include <cstdio>
 #include <ctime>
@@ -10,66 +10,10 @@
 namespace tierfs {
 namespace {
 
+using sql::Stmt;
+using sql::Txn;
+
 constexpr int SCHEMA_VERSION = 1;
-
-// Prepared statement with RAII cleanup and chainable binds. Binds copy the
-// text (SQLITE_TRANSIENT) because our std::strings do not outlive the call.
-class Stmt {
-public:
-    Stmt(sqlite3* db, const char* sql) : db_(db) {
-        if (sqlite3_prepare_v2(db, sql, -1, &s_, nullptr) != SQLITE_OK) {
-            fprintf(stderr, "tierfs meta: prepare failed: %s\n", sqlite3_errmsg(db));
-            s_ = nullptr;
-        }
-    }
-    ~Stmt() { if (s_) sqlite3_finalize(s_); }
-    Stmt(const Stmt&) = delete;
-    Stmt& operator=(const Stmt&) = delete;
-
-    Stmt& text(int i, const std::string& v) {
-        if (s_) sqlite3_bind_text(s_, i, v.data(), static_cast<int>(v.size()), SQLITE_TRANSIENT);
-        return *this;
-    }
-    Stmt& num(int i, int64_t v) {
-        if (s_) sqlite3_bind_int64(s_, i, v);
-        return *this;
-    }
-    // For INSERT/UPDATE/DELETE.
-    bool run() {
-        if (!s_) return false;
-        if (sqlite3_step(s_) == SQLITE_DONE) return true;
-        fprintf(stderr, "tierfs meta: write failed: %s\n", sqlite3_errmsg(db_));
-        return false;
-    }
-    // For SELECT: true while a row is available.
-    bool row() { return s_ && sqlite3_step(s_) == SQLITE_ROW; }
-    int64_t col_num(int i) { return sqlite3_column_int64(s_, i); }
-    std::string col_text(int i) {
-        const unsigned char* t = sqlite3_column_text(s_, i);
-        return std::string(reinterpret_cast<const char*>(t), sqlite3_column_bytes(s_, i));
-    }
-
-private:
-    sqlite3* db_;
-    sqlite3_stmt* s_ = nullptr;
-};
-
-// BEGIN ... COMMIT as one unit: either the whole directory listing is stored
-// or none of it, even if we crash half way. Rolls back unless commit() ran.
-class Txn {
-public:
-    explicit Txn(sqlite3* db) : db_(db) {
-        active_ = sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) == SQLITE_OK;
-    }
-    ~Txn() { if (active_) sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); }
-    void commit() {
-        if (active_ && sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK)
-            active_ = false;
-    }
-private:
-    sqlite3* db_;
-    bool active_ = false;
-};
 
 std::string join(const std::string& dir, const std::string& name) {
     return dir == "/" ? "/" + name : dir + "/" + name;
