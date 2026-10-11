@@ -1,6 +1,7 @@
 # Durable store and safe offload (Phase 3 design)
 
-Status: DESIGN, nothing implemented. Written before any code because this is the
+Status: design accepted. **3a (ledger library) is implemented and tested** (section 17);
+nothing else in Phase 3 exists yet and nothing deletes data. Written before any code because this is the
 one place where a bug destroys the only copy of someone's file. The caches
 (meta.db, chunks.db) are disposable; everything in this document is not.
 
@@ -287,3 +288,63 @@ before anything can be dropped; today the mount only serves a remote tree.
 - Partial offload (keep the first N MiB local for previews and mmap)? Later.
 - Garbage collection of remote data (mark and sweep from manifests with a grace
   period) is deliberately excluded from Phase 3.
+
+## 17. Phase 3a status: the ledger library (implemented)
+Code: `core/ledger.{hpp,cpp}`, `core/crashpoint.hpp`. Tests: `tests/ledger_test.cpp`
+(about 200 checks), `tests/ledger_helper.cpp`, `scripts/mutate-ledger.py`.
+Run: `make test-unit`, `python3 -I scripts/mutate-ledger.py`.
+
+What exists
+- Schema of section 4 plus: `versions.generation` (snapshot for compare-and-swap),
+  `files.prior_state`, a unique index allowing one open DROP_LOCAL intent per file,
+  and triggers that abort every UPDATE/DELETE on `events` and every DELETE on the
+  other tables (the engine can have bugs; it cannot erase history).
+- Opens with WAL, `synchronous=FULL`, `fullfsync=ON`, `checkpoint_fullfsync=ON` and
+  reads each setting back; refuses to run if any did not take.
+- Never wipes or repairs: garbage file, failed `integrity_check`, unknown schema
+  version, or a database with tables but no version all make `open()` fail with the
+  file left byte-for-byte untouched. One process per ledger (flock).
+- Hash-chained, length-prefixed events appended inside the same transaction as the
+  change they describe. `fsck()` checks SQLite integrity, foreign keys, the chain,
+  contiguous sequence numbers, and the state invariants of section 5.
+- Every transition is a compare-and-swap (`UPDATE ... WHERE state=? AND generation=?`
+  checked with `sqlite3_changes`). Replica transitions follow an allowed-transition
+  table; a replica cannot be COMMITTED without the device's sequence number.
+- **`begin_drop` enforces I1, I3, I8, I9 itself, in one IMMEDIATE transaction:**
+  recovery phrase acknowledged; backup acknowledged OR path under `test_prefix`;
+  ledger reserve present; positive policy; consent exists, unexpired, covers the
+  path; file REPLICATED at that exact version and generation with bytes local; replica
+  weight (A=1, B=1, C=0.5; retired devices excluded; audits must be younger than
+  `max_audit_age` and non-zero) >= `min_weight`. Any failure rolls back untouched.
+- `complete_drop` re-checks the replica evidence (a late failed audit, or a recovery
+  that took hours, cannot slip through). `abort_drop` restores REPLICATED.
+- Losing the last committed replica of an OFFLOADED file moves it to AT_RISK
+  automatically; `clear_at_risk` refuses unless a committed replica or local bytes exist.
+- Named crash points (`TIERFS_CRASH_AT`) at both commits of the drop protocol.
+- `snapshot_to()` (VACUUM INTO) for the encrypted snapshots pushed to devices.
+
+How it was verified
+- Crash injection: a freshly spawned helper process dies (`_exit(137)`) at each point;
+  the restarted ledger is checked for state, intents and `fsck`, then recovery runs.
+- Tamper tests: forged but self-consistent event rows, dropped triggers, deleted
+  events, rows edited behind the ledger's back (generation, replica states, states
+  the API cannot reach). `fsck` or the next operation catches each.
+- **Mutation testing: 31 mutants, each removing one safety rule (consent expiry, weight
+  check, generation compare, triggers, chain check, ...). All 31 killed.**
+
+What testing taught us (so we do not repeat it)
+- A flaky failure turned out to be macOS: `fork()` without `exec` in a process that
+  has used sqlite/os_log crashes intermittently (`_os_log_preferences_refresh`).
+  Crash tests now spawn a fresh helper process, which is also closer to a real crash.
+- My first mutation script counted a *crashed* test run as "mutant survived" because
+  a segfault prints no FAIL line. A crash now counts as a kill, and a flaky test is
+  treated as a bug in its own right (stress-run 100x, plain and sanitized).
+- Six mutants first survived: three were genuine gaps (redundant guards that only
+  matter on tampered data, the chain-link check, unasserted event kinds). Writing
+  tests for them is what finally made the suite deterministic.
+- The refusal-test macro initially dereferenced an empty `optional` (undefined
+  behaviour that ASan did not flag). Test code is code.
+
+Not done yet (next): 3b crypto layer, 3c device store + protocol v3 with fault modes,
+3d replicate engine + reconciliation, 3e the drop-local engine (quarantine, audit by
+challenge, crash points around the filesystem steps), 3f policy, 3g recovery tool.

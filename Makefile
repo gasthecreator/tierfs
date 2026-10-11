@@ -23,6 +23,16 @@ build/tierctl: tools/tierctl.cpp build/chunkcache.o
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
+build/ledger.o: core/ledger.cpp core/ledger.hpp core/sqlutil.hpp core/hash.hpp core/crashpoint.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/ledger_test: tests/ledger_test.cpp build/ledger.o build/ledger_helper
+	$(CXX) $(CXXFLAGS) tests/ledger_test.cpp build/ledger.o -o $@ -lsqlite3
+
+build/ledger_helper: tests/ledger_helper.cpp build/ledger.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+
 build/metastore_test: tests/metastore_test.cpp build/metastore.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
@@ -41,9 +51,10 @@ test-tsan: build/tierfs-backend
 	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test -lsqlite3
 	./build/tsan/client_test
 
-test-unit: build/metastore_test build/chunkcache_test
+test-unit: build/metastore_test build/chunkcache_test build/ledger_test
 	./build/metastore_test | tail -1
-	./build/chunkcache_test
+	./build/chunkcache_test | tail -1
+	./build/ledger_test
 
 build/tierfs-backend: backend/server.cpp core/wire.hpp
 	@mkdir -p build

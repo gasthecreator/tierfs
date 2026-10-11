@@ -32,6 +32,10 @@ public:
         if (s_) sqlite3_bind_int64(s_, i, v);
         return *this;
     }
+    Stmt& null(int i) {
+        if (s_) sqlite3_bind_null(s_, i);
+        return *this;
+    }
     // For INSERT/UPDATE/DELETE.
     bool run() {
         if (!s_) return false;
@@ -42,6 +46,13 @@ public:
     // For SELECT: true while a row is available.
     bool row() { return s_ && sqlite3_step(s_) == SQLITE_ROW; }
     int64_t col_num(int i) { return sqlite3_column_int64(s_, i); }
+    bool col_null(int i) { return sqlite3_column_type(s_, i) == SQLITE_NULL; }
+    double col_real(int i) { return sqlite3_column_double(s_, i); }
+    Stmt& real(int i, double v) {
+        if (s_) sqlite3_bind_double(s_, i, v);
+        return *this;
+    }
+    bool valid() const { return s_ != nullptr; }
     std::string col_text(int i) {
         const unsigned char* t = sqlite3_column_text(s_, i);
         return std::string(reinterpret_cast<const char*>(t), sqlite3_column_bytes(s_, i));
@@ -57,16 +68,21 @@ private:
 class Txn {
 public:
     explicit Txn(sqlite3* db) : db_(db) {
-        active_ = sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) == SQLITE_OK;
+        active_ = began_ = sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) == SQLITE_OK;
     }
     ~Txn() { if (active_) sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); }
-    void commit() {
+    // True only if the transaction is durably committed. On failure the
+    // destructor rolls back, so callers must treat false as "nothing happened".
+    bool commit() {
         if (active_ && sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK)
             active_ = false;
+        return !active_ && began_;
     }
+    bool began() const { return began_; }
 private:
     sqlite3* db_;
     bool active_ = false;
+    bool began_ = false;
 };
 
 }  // namespace sql

@@ -1,0 +1,188 @@
+// The durable ledger: the Mac's authoritative record of which files have
+// replicas where, and of every step of every offload. See docs/DURABLE_STORE.md.
+//
+// Unlike the caches this is NOT disposable:
+//  - it is never auto-wiped; a corrupt or too-new ledger makes open() fail and
+//    the file is left untouched for a human (or a restore from a device snapshot);
+//  - every transaction commits with F_FULLFSYNC (macOS fsync alone does not flush
+//    the drive cache);
+//  - the safety rules for deleting local bytes are enforced HERE, inside one
+//    transaction, so a bug in the engine that calls us still cannot drop a file
+//    that is not safely replicated (defence in depth).
+//
+// Not thread-safe; callers serialise. One process per ledger (flock).
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+struct sqlite3;
+
+namespace tierfs {
+
+enum class FileState { LOCAL, REPLICATING, REPLICATED, DROPPING, OFFLOADED, HYDRATING, AT_RISK };
+enum class ReplicaState { PENDING, UPLOADED, COMMITTED, AUDIT_FAILED, MISSING };
+
+const char* to_string(FileState s);
+const char* to_string(ReplicaState s);
+
+struct FileRec {
+    std::string file_id, path;
+    int64_t current_version = 0;  // 0: no version recorded yet
+    int64_t generation = 0;       // bumped by every local modification
+    FileState state = FileState::LOCAL;
+    uint64_t size = 0;
+    int64_t mtime = 0;
+    uint32_t mode = 0;
+    bool local_present = true;
+    int64_t last_access = 0;
+};
+
+struct ChunkRec {
+    uint32_t idx = 0;
+    std::string chunk_id;     // HMAC of the plaintext (see design doc section 4)
+    uint32_t len = 0;
+    std::string blob_sha256;  // hash of the ciphertext stored on the device
+};
+
+struct ReplicaRec {
+    std::string device_id;
+    ReplicaState state = ReplicaState::PENDING;
+    int64_t committed_at = 0, last_audit_at = 0, device_seq = 0;
+};
+
+struct IntentRec {
+    std::string intent_id, kind, file_id, payload;
+    int64_t version = 0, generation = 0;
+};
+
+// Outcome of an operation that can be refused, with the reason (for logs/UI).
+struct Res {
+    bool ok = false;
+    std::string why;
+    std::string id;  // e.g. the new intent id
+    explicit operator bool() const { return ok; }
+};
+
+class Ledger {
+public:
+    // Opens (creating if the directory is new). Returns null and fills *err when
+    // the ledger is in use, corrupt, from a newer build, or the machine cannot
+    // honour full-fsync durability. It never deletes or repairs anything.
+    static std::unique_ptr<Ledger> open(const std::string& dir, std::string* err);
+    ~Ledger();
+    Ledger(const Ledger&) = delete;
+    Ledger& operator=(const Ledger&) = delete;
+
+    // Tests inject time; production uses time(nullptr).
+    void set_clock(std::function<int64_t()> clock) { clock_ = std::move(clock); }
+    int64_t now() const;
+
+    // --- settings and gates ---
+    std::optional<std::string> get_meta(const std::string& key);
+    bool set_meta(const std::string& key, const std::string& value);  // logged
+    std::string volume_id();
+
+    // Bytes preallocated beside the ledger and released when the disk is so full
+    // that SQLite cannot write. Offload refuses to start without it.
+    bool ensure_reserve(uint64_t bytes);
+    bool has_reserve();
+    bool release_reserve();
+
+    // --- devices ---
+    // cls: "A" server, "B" single disk, "C" mobile/removable (weights 1, 1, 0.5).
+    bool register_device(const std::string& device_id, const std::string& name, const std::string& cls);
+    bool retire_device(const std::string& device_id);  // replicas on it stop counting
+
+    // --- files ---
+    // Starts tracking `path` (returns the existing id if already tracked).
+    std::string track_file(const std::string& path, uint64_t size, int64_t mtime, uint32_t mode);
+    std::optional<FileRec> get_file(const std::string& file_id);
+    std::optional<FileRec> get_file_by_path(const std::string& path);
+    std::vector<FileRec> list_files(std::optional<FileState> state = std::nullopt);
+    // The bytes changed locally: bumps generation, invalidating any replication or
+    // drop prepared against the old bytes. False if the file is DROPPING/HYDRATING
+    // (writers must be frozen) or OFFLOADED (hydrate first).
+    Res note_local_modified(const std::string& file_id, uint64_t new_size, int64_t new_mtime);
+
+    // --- replication (never deletes anything) ---
+    // Records version N+1 of the file as it is NOW (snapshots the generation) and
+    // moves it to REPLICATING. Returns the version in Res::id.
+    Res begin_replication(const std::string& file_id, const std::vector<ChunkRec>& chunks,
+                          uint64_t size, int64_t mtime);
+    Res set_replica(const std::string& file_id, int64_t version, const std::string& device_id,
+                    ReplicaState state, int64_t device_seq = 0);
+    // A replica found on a device that the ledger did not know (crash between the
+    // device commit and our record, or a restored ledger). Logged as "adopted".
+    Res adopt_replica(const std::string& file_id, int64_t version, const std::string& device_id,
+                      int64_t device_seq);
+    // REPLICATING -> REPLICATED. Fails if the file changed since begin_replication
+    // or no replica is COMMITTED.
+    Res finish_replication(const std::string& file_id, int64_t version);
+    // Result of a challenge audit. A failure demotes the replica; if that leaves an
+    // OFFLOADED file with no committed replica it becomes AT_RISK automatically.
+    Res record_audit(const std::string& file_id, int64_t version, const std::string& device_id,
+                     bool ok, const std::string& detail);
+    std::vector<ReplicaRec> get_replicas(const std::string& file_id, int64_t version);
+    std::vector<ChunkRec> get_chunks(const std::string& file_id, int64_t version);
+    // Sum of class weights of COMMITTED replicas audited within `max_audit_age` s.
+    double replica_weight(const std::string& file_id, int64_t version, int64_t max_audit_age);
+
+    // --- consent ---
+    // Permission for paths starting with scope_prefix (must not be empty).
+    std::string create_consent(const std::string& scope_prefix, int64_t ttl_seconds,
+                               const std::string& ack_text);
+
+    // --- dropping local bytes: the dangerous step (design doc section 7) ---
+    // Transaction A. Succeeds only if EVERY rule holds, all checked in one
+    // transaction: recovery phrase acknowledged, backup acknowledged (or the path is
+    // under the `test_prefix` meta value), reserve present, valid consent covering
+    // the path, file REPLICATED at `version` with `generation` unchanged and bytes
+    // still local, and replica weight >= min_weight from audits younger than
+    // max_audit_age. On success the file is DROPPING and an intent is open.
+    Res begin_drop(const std::string& file_id, int64_t version, int64_t generation,
+                   const std::string& consent_id, double min_weight, int64_t max_audit_age);
+    // Transaction B, after the local bytes were moved to quarantine.
+    Res complete_drop(const std::string& intent_id);
+    // Bytes were restored (e.g. a late audit failed): DROPPING -> REPLICATED.
+    Res abort_drop(const std::string& intent_id, const std::string& reason);
+    std::vector<IntentRec> open_intents();
+
+    // --- recall ---
+    Res begin_hydrate(const std::string& file_id);     // OFFLOADED -> HYDRATING
+    Res complete_hydrate(const std::string& file_id);  // HYDRATING -> REPLICATED (bytes local)
+    Res abort_hydrate(const std::string& file_id);     // HYDRATING -> OFFLOADED
+
+    // --- risk ---
+    Res mark_at_risk(const std::string& file_id, const std::string& reason);
+    Res clear_at_risk(const std::string& file_id);  // needs a committed audited replica
+
+    void touch_access(const std::string& file_id, int64_t t);
+
+    // --- integrity ---
+    // Everything wrong with the ledger, empty if sound: SQLite integrity, hash
+    // chain, contiguous event numbers, and the state invariants of section 5.
+    std::vector<std::string> fsck();
+    uint64_t event_count();
+    // Consistent copy of the ledger (for pushing to a device as a snapshot).
+    bool snapshot_to(const std::string& path);
+
+private:
+    Ledger() = default;
+    bool init_schema(std::string* err);
+    void append_event(const std::string& kind, const std::string& file_id, int64_t version,
+                      const std::string& device_id, const std::string& detail);
+    std::string new_id();
+    bool exec(const char* sql);
+
+    sqlite3* db_ = nullptr;
+    int lock_fd_ = -1;
+    std::string dir_;
+    std::function<int64_t()> clock_;
+};
+
+}  // namespace tierfs
