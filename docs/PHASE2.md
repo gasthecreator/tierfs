@@ -108,8 +108,23 @@ core/sqlutil.hpp (shared SQLite wrappers), client rewrite in core/tierclient.cpp
 - Not tested: mmap of a file being modified, extremely large files (>4 GiB: chunk
   index is uint32, fine to 4 PiB, but untested), Finder rendering/Spotlight.
 
-## Remaining Phase 2 work
-1. Overall per-request deadline (see PHASE1.md item 6).
-2. Cache sizing default and a way to inspect/clear it (`tierctl`).
-Then Phase 3 (tiering policy). Before it: a durable store for "only copy is on
-the device" state, separate from these caches.
+## Step 4 result: whole-request deadlines, cache lock, tierctl
+- **Deadlines.** A socket timeout restarts on every byte, so a link trickling one byte
+  at a time could hold a read open forever. Every request now has an absolute
+  deadline: `timeout` plus payload size at a minimum rate of 256 KiB/s (so a 1 MiB
+  READ gets timeout + 4 s). Slower counts as unreachable (EIO). Test: a fake server
+  that answers correctly one byte per 120 ms: the client gives up at 0.50 s with
+  ETIMEDOUT; without the deadline it succeeds after 3.6 s (mutation-checked).
+- **One process per cache directory** (flock on `<cache>/lock`): a second mount of the
+  same cache is refused instead of corrupting it, and `tierctl` cannot clear a
+  mounted cache.
+- **tierctl** (tools/tierctl.cpp): `cache-info` (read-only SQLite, safe on a live
+  mount; deliberately does NOT open the cache classes because their startup sweep
+  deletes "orphan" files, which would be wrong against a running process),
+  `cache-verify` (re-hash everything, drop damaged chunks), `cache-clear [--yes]`
+  (dry run by default; removes only files tierfs created, so a mistyped path cannot
+  delete anything else; refuses folders that do not look like a cache).
+- Test-harness hardening: backend output to /dev/null (an orphan used to hold the
+  pipe open and make runs look hung), SIGPIPE ignored in the fake server.
+
+Phase 2 is complete. Next: Phase 3 per docs/DURABLE_STORE.md, starting with 3a.

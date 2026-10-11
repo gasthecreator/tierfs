@@ -37,6 +37,10 @@ struct ChunkKey {
     uint32_t idx;    // chunk number: bytes [idx*CHUNK_SIZE, (idx+1)*CHUNK_SIZE)
 };
 
+struct ChunkInfo {
+    uint64_t chunks = 0, bytes = 0, files = 0;
+};
+
 struct ChunkStats {
     uint64_t hits = 0, misses = 0, puts = 0, evicted = 0, corrupt = 0;
 };
@@ -66,6 +70,10 @@ public:
     void set_pin_check(std::function<bool(const std::string&)> f);
 
     uint64_t bytes_used();
+    ChunkInfo info();
+    // Re-read and re-hash every chunk, deleting any that fail. Returns how many were
+    // checked; `*bad` (optional) receives how many were damaged.
+    uint64_t verify_all(uint64_t* bad);
     ChunkStats stats();
 
 private:

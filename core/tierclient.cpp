@@ -5,6 +5,7 @@
 #include <netdb.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 
 #include <algorithm>
@@ -34,6 +35,10 @@ using namespace tierfs;
 
 static constexpr uint32_t C = CHUNK_SIZE;
 static constexpr size_t MAX_QUEUED_PREFETCH = 16;
+// A request must finish within timeout_ms plus time for its payload at this
+// minimum rate. Slower than ~256 KiB/s counts as "unreachable" (EIO) rather than
+// letting an app hang on a trickling link.
+static constexpr uint64_t MIN_RATE_BYTES_PER_SEC = 256 * 1024;
 
 // One TCP connection to the backend and the lock that serialises its use (the
 // protocol has one request in flight per connection).
@@ -54,6 +59,7 @@ struct tc_client {
     std::string host, port;
     int timeout_ms = 3000;
     int readahead = 4;
+    int lock_fd = -1;  // exclusive flock on <cache>/lock for the life of the client
 
     // fg serves foreground requests. fg.mu ALSO guards `meta`, which is not
     // thread-safe on its own.
@@ -144,7 +150,8 @@ static bool ensure_connected(tc_client* c, Conn& cn) {
     w.u16(PROTO_VERSION);
     Frame resp;
     uint32_t id = cn.next_id++;
-    if (!send_frame(fd, MSG_HELLO, id, w.b) || recv_frame(fd, resp) != 1 ||
+    int64_t deadline = now_ms() + c->timeout_ms;
+    if (!send_frame(fd, MSG_HELLO, id, w.b, deadline) || recv_frame(fd, resp, deadline) != 1 ||
         resp.type != (MSG_HELLO | MSG_REPLY_FLAG) || resp.id != id) {
         close(fd);
         return false;
@@ -156,13 +163,16 @@ static bool ensure_connected(tc_client* c, Conn& cn) {
 // One request/response; caller holds cn.mu. Returns 0 and fills resp, or
 // -errno. A server ERROR reply is an application error (connection stays up);
 // an I/O failure drops the connection so the next call reconnects.
-static int rpc(tc_client* c, Conn& cn, uint8_t type, const Writer& req, Frame& resp) {
+static int rpc(tc_client* c, Conn& cn, uint8_t type, const Writer& req, Frame& resp,
+               uint64_t expect_bytes = 0) {
     for (int attempt = 0; attempt < 2; attempt++) {
         bool had_conn = cn.fd >= 0;
         if (!ensure_connected(c, cn)) return -EHOSTUNREACH;
         uint32_t id = cn.next_id++;
-        bool ok = send_frame(cn.fd, type, id, req.b) && recv_frame(cn.fd, resp) == 1 &&
-                  resp.id == id;
+        int64_t deadline = now_ms() + c->timeout_ms +
+                           static_cast<int64_t>(expect_bytes * 1000 / MIN_RATE_BYTES_PER_SEC);
+        bool ok = send_frame(cn.fd, type, id, req.b, deadline) &&
+                  recv_frame(cn.fd, resp, deadline) == 1 && resp.id == id;
         if (ok) {
             if (resp.type == MSG_ERROR) {
                 try {
@@ -237,7 +247,7 @@ static int fetch_chunk(tc_client* c, Conn& cn, const std::string& path, uint32_t
     w.u64(static_cast<uint64_t>(idx) * C);
     w.u32(C);
     Frame resp;
-    int rc = rpc(c, cn, MSG_READ, w, resp);
+    int rc = rpc(c, cn, MSG_READ, w, resp, C);
     if (rc) return rc;
     try {
         Reader r(resp.payload);
@@ -376,6 +386,18 @@ tc_client* tc_create(const tc_config* cfg) {
     }
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
+    // Two processes sharing one cache directory would corrupt each other's view
+    // (rclone warns about the same thing). The lock also stops `tierctl
+    // cache-clear` from deleting a cache that is mounted.
+    if (!ec) {
+        c->lock_fd = open((dir + "/lock").c_str(), O_CREAT | O_RDWR, 0600);
+        if (c->lock_fd >= 0 && flock(c->lock_fd, LOCK_EX | LOCK_NB) != 0) {
+            fprintf(stderr, "tierfs: cache directory %s is in use by another tierfs process\n", dir.c_str());
+            close(c->lock_fd);
+            delete c;
+            return nullptr;
+        }
+    }
     c->meta = std::make_unique<MetaStore>(ec ? ":memory:" : dir + "/meta.db");
     if (c->meta->recovered()) fprintf(stderr, "tierfs: metadata cache was unreadable; rebuilt\n");
     c->chunks = std::make_unique<ChunkCache>(
@@ -403,6 +425,7 @@ void tc_destroy(tc_client* c) {
     for (auto& t : c->workers) t.join();
     drop(c->fg);
     for (auto& b : c->bg) drop(*b);
+    if (c->lock_fd >= 0) close(c->lock_fd);
     delete c;
 }
 

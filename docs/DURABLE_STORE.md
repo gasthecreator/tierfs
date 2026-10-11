@@ -267,13 +267,19 @@ conservative defaults (any phone is C).
 Also needed first: the origin store (the overlay that holds local bytes) must exist
 before anything can be dropped; today the mount only serves a remote tree.
 
-## 16. Decisions needed from the owner
-1. Default K: require 2.0 (recommended), or allow single-device with override?
-2. Quarantine default (7 days proposed). It costs disk space exactly when space is short.
-3. Replicate cold candidates continuously in the background (recommended: makes the
-   emergency path "audit and drop"), or only on demand?
-4. Encrypted-at-rest with a recovery phrase: accepted?
-5. Set up Time Machine (or any backup) before the first real offload?
+## 16. Decisions (accepted 2026-10-11: "go with the recommendations")
+1. **K = 2.0** replica weight required before any local deletion. Single-device mode
+   exists only as a per-volume override: typed confirmation, shows what is at risk,
+   forces the full quarantine period.
+2. **Quarantine 7 days** by default, shortened (never skipped without a fresh audit)
+   only when free space is below the critical threshold.
+3. **Background replication of cold candidates** is on: the emergency path is
+   "audit, then drop". Bandwidth/battery limits come with the tiering policy (3f).
+4. **Encrypted at rest with a recovery phrase**, acknowledged before the first
+   offload (I9).
+5. **Backup before first real offload.** OWNER ACTION: configure Time Machine (or any
+   backup) for this Mac. Until the owner records `backup_acked` in the ledger, offload
+   of anything outside `testdata/` is refused. (None is configured today.)
 
 ## Open technical questions
 - AES-GCM via OpenSSL (installed) or CryptoKit; 1 MiB vs 4 MiB upload chunks.

@@ -12,7 +12,12 @@
 #include <string>
 #include <vector>
 
+#include <poll.h>
 #include <unistd.h>
+
+#include <algorithm>
+#include <chrono>
+#include <climits>
 
 namespace tierfs {
 
@@ -75,12 +80,36 @@ struct Reader {
 
 // ---- blocking socket I/O --------------------------------------------------
 
+// Absolute deadlines (steady-clock milliseconds; 0 = none). A socket timeout
+// alone restarts on every byte, so a link that trickles one byte at a time can
+// hold a request open forever and freeze whatever app is waiting on the file.
+// A deadline bounds the WHOLE transfer.
+inline int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// 1 = ready, -1 = deadline passed (errno EAGAIN) or error.
+inline int wait_fd(int fd, short events, int64_t deadline_ms) {
+    if (deadline_ms == 0) return 1;
+    for (;;) {
+        int64_t rem = deadline_ms - now_ms();
+        if (rem <= 0) { errno = EAGAIN; return -1; }
+        pollfd p{fd, events, 0};
+        int r = poll(&p, 1, static_cast<int>(std::min<int64_t>(rem, INT_MAX)));
+        if (r > 0) return 1;
+        if (r == 0) { errno = EAGAIN; return -1; }
+        if (errno != EINTR) return -1;
+    }
+}
+
 // Returns 1 on success, 0 on clean EOF before any byte, -1 on error
-// (errno set; EAGAIN/EWOULDBLOCK means the socket timeout expired).
-inline int read_full(int fd, void* buf, size_t n) {
+// (errno set; EAGAIN/EWOULDBLOCK means the timeout/deadline expired).
+inline int read_full(int fd, void* buf, size_t n, int64_t deadline_ms = 0) {
     auto* p = static_cast<uint8_t*>(buf);
     size_t got = 0;
     while (got < n) {
+        if (wait_fd(fd, POLLIN, deadline_ms) < 0) return -1;
         ssize_t r = ::read(fd, p + got, n - got);
         if (r > 0) {
             got += static_cast<size_t>(r);
@@ -95,10 +124,11 @@ inline int read_full(int fd, void* buf, size_t n) {
     return 1;
 }
 
-inline bool write_full(int fd, const void* buf, size_t n) {
+inline bool write_full(int fd, const void* buf, size_t n, int64_t deadline_ms = 0) {
     auto* p = static_cast<const uint8_t*>(buf);
     size_t sent = 0;
     while (sent < n) {
+        if (wait_fd(fd, POLLOUT, deadline_ms) < 0) return false;
         ssize_t r = ::write(fd, p + sent, n - sent);
         if (r > 0) sent += static_cast<size_t>(r);
         else if (r < 0 && errno != EINTR) return false;
@@ -113,7 +143,7 @@ struct Frame {
 };
 
 inline bool send_frame(int fd, uint8_t type, uint32_t id,
-                       const std::vector<uint8_t>& payload) {
+                       const std::vector<uint8_t>& payload, int64_t deadline_ms = 0) {
     uint64_t len = 5 + static_cast<uint64_t>(payload.size());
     if (len > MAX_FRAME) { errno = EMSGSIZE; return false; }
     Writer w;
@@ -122,19 +152,19 @@ inline bool send_frame(int fd, uint8_t type, uint32_t id,
     w.u8(type);
     w.u32(id);
     w.bytes(payload.data(), payload.size());
-    return write_full(fd, w.b.data(), w.b.size());
+    return write_full(fd, w.b.data(), w.b.size(), deadline_ms);
 }
 
 // 1 = got a frame, 0 = peer closed cleanly, -1 = error (errno set).
-inline int recv_frame(int fd, Frame& f) {
+inline int recv_frame(int fd, Frame& f, int64_t deadline_ms = 0) {
     uint8_t hdr[4];
-    int r = read_full(fd, hdr, 4);
+    int r = read_full(fd, hdr, 4, deadline_ms);
     if (r <= 0) return r;
     uint32_t len = (uint32_t(hdr[0]) << 24) | (uint32_t(hdr[1]) << 16) |
                    (uint32_t(hdr[2]) << 8) | uint32_t(hdr[3]);
     if (len < 5 || len > MAX_FRAME) { errno = EPROTO; return -1; }
     std::vector<uint8_t> body(len);
-    r = read_full(fd, body.data(), len);
+    r = read_full(fd, body.data(), len, deadline_ms);
     if (r <= 0) { if (r == 0) errno = ECONNRESET; return -1; }
     f.type = body[0];
     f.id = (uint32_t(body[1]) << 24) | (uint32_t(body[2]) << 16) |

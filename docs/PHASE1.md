@@ -24,5 +24,5 @@ Run: `make && ./scripts/phase1-test.sh && ./scripts/attack.sh`
 4. errno numbers differ between macOS and Linux; need a portable table before
    pairing a Linux backend with the Mac.
 5. Finder behaviour and protected folders (~/Documents) still untested.
-6. Timeout is applied per socket op, so a slow-but-alive link that trickles
+6. (FIXED in Phase 2 step 4: whole-request deadline) Timeout was applied per socket op, so a slow-but-alive link that trickles
    bytes could exceed the intended deadline (use an overall deadline later).

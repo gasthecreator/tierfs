@@ -85,6 +85,23 @@ int main() {
         CHECK(c.get(key("/f", 0), out) && out == a);
         fs::remove_all(d);
     }
+    {  // info() and verify_all() (what `tierctl cache-info/cache-verify` use)
+        std::string d = tmpdir();
+        ChunkCache c(d, 100u << 20);
+        auto a = blob(100000, 8);
+        for (uint32_t i = 0; i < 3; i++) c.put(key("/x", i), a.data(), a.size());
+        c.put(key("/y", 0), a.data(), a.size());
+        ChunkInfo ci = c.info();
+        CHECK(ci.chunks == 4 && ci.bytes == 400000 && ci.files == 2);
+        uint64_t bad = 99;
+        CHECK(c.verify_all(&bad) == 4 && bad == 0);
+        auto files = chunk_files(d);
+        {   int fd = ::open(files[0].c_str(), O_RDWR); uint8_t b; pread(fd, &b, 1, 777); b ^= 0x10; pwrite(fd, &b, 1, 777); close(fd); }
+        CHECK(c.verify_all(&bad) == 4 && bad == 1);   // finds exactly the damaged one...
+        CHECK(c.info().chunks == 3 && c.bytes_used() == 300000);  // ...and removes it
+        CHECK(c.verify_all(&bad) == 3 && bad == 0);
+        fs::remove_all(d);
+    }
     {  // LRU eviction under a budget; recency refreshed by reads
         std::string d = tmpdir();
         ChunkCache c(d, 5 * 100000);

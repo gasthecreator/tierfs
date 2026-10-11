@@ -329,6 +329,43 @@ uint64_t ChunkCache::bytes_used() {
     return bytes_;
 }
 
+ChunkInfo ChunkCache::info() {
+    ChunkInfo r;
+    if (!db_) return r;
+    std::lock_guard<std::mutex> lk(mu_);
+    Stmt s(db_, "SELECT COUNT(*), COALESCE(SUM(len),0), COUNT(DISTINCT path) FROM chunks");
+    if (s.row()) {
+        r.chunks = static_cast<uint64_t>(s.col_num(0));
+        r.bytes = static_cast<uint64_t>(s.col_num(1));
+        r.files = static_cast<uint64_t>(s.col_num(2));
+    }
+    return r;
+}
+
+uint64_t ChunkCache::verify_all(uint64_t* bad_out) {
+    if (bad_out) *bad_out = 0;
+    if (!db_) return 0;
+    struct Row { std::string key, sha; uint64_t len; };
+    std::vector<Row> rows;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        Stmt q(db_, "SELECT key, sha, len FROM chunks");
+        while (q.row()) rows.push_back({q.col_text(0), q.col_text(1), static_cast<uint64_t>(q.col_num(2))});
+    }
+    uint64_t bad = 0;
+    for (const auto& r : rows) {
+        std::vector<uint8_t> data;
+        int rc = read_exact(chunk_path(r.key), static_cast<size_t>(r.len), data);
+        if (rc == 1 && sha256_hex(data.data(), data.size()) == r.sha) continue;
+        std::lock_guard<std::mutex> lk(mu_);
+        remove_row_and_file(r.key, r.len);
+        st_.corrupt++;
+        bad++;
+    }
+    if (bad_out) *bad_out = bad;
+    return rows.size();
+}
+
 ChunkStats ChunkCache::stats() {
     std::lock_guard<std::mutex> lk(mu_);
     return st_;

@@ -2,6 +2,7 @@
 // readahead) against a real backend process. No FUSE and no kernel cache in
 // the way, so every assertion is about our own code. `make test-client`.
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -9,6 +10,11 @@
 #include <unistd.h>
 #include <utime.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -19,6 +25,7 @@
 #include <vector>
 
 #include "../core/tierclient.h"
+#include "../core/wire.hpp"
 
 extern char** environ;
 namespace fs = std::filesystem;
@@ -47,7 +54,14 @@ struct Backend {
         std::string port = std::to_string(PORT);
         char* argv[] = {const_cast<char*>("tierfs-backend"), const_cast<char*>(g_root.c_str()),
                         const_cast<char*>(port.c_str()), nullptr};
-        posix_spawn(&pid, "./build/tierfs-backend", nullptr, nullptr, argv, envp.data());
+        // Backend output goes to /dev/null so an orphaned backend (after a test crash)
+        // can never keep the caller's pipes open and make a run look like a hang.
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+        posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+        posix_spawn(&pid, "./build/tierfs-backend", &fa, nullptr, argv, envp.data());
+        posix_spawn_file_actions_destroy(&fa);
         for (int i = 0; i < 60; i++) {  // wait until it accepts connections
             tc_config cfg = {};
             cfg.host = "127.0.0.1"; cfg.port = PORT; cfg.timeout_ms = 200;
@@ -113,11 +127,56 @@ static std::vector<fs::path> chunk_files(const std::string& cache) {
         if (e.is_regular_file() && e.path().extension() == ".chk") out.push_back(e.path());
     return out;
 }
+static std::string run(const std::string& cmd, int* exit_code = nullptr) {
+    std::string out;
+    FILE* f = popen((cmd + " 2>&1").c_str(), "r");
+    char buf[512];
+    while (f && fgets(buf, sizeof buf, f)) out += buf;
+    int rc = f ? pclose(f) : -1;
+    if (exit_code) *exit_code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+    return out;
+}
+static bool contains(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
+
+// A server that completes the handshake and then answers every request ONE BYTE
+// at a time: each byte arrives well inside any per-read timeout, but the whole
+// reply takes seconds.
+static void trickle_server(int lfd, std::atomic<bool>* stop) {
+    while (!*stop) {
+        pollfd p{lfd, POLLIN, 0};
+        if (poll(&p, 1, 100) <= 0) continue;
+        int fd = accept(lfd, nullptr, nullptr);
+        if (fd < 0) continue;
+        tierfs::Frame f;
+        if (tierfs::recv_frame(fd, f) == 1) {  // HELLO
+            tierfs::Writer w;
+            w.u16(tierfs::PROTO_VERSION);
+            w.str("trickle");
+            tierfs::send_frame(fd, f.type | tierfs::MSG_REPLY_FLAG, f.id, w.b);
+        }
+        if (tierfs::recv_frame(fd, f) == 1) {  // STAT: reply slowly
+            tierfs::Writer a;
+            a.u8(0); a.u64(5); a.i64(1); a.u32(0644);
+            tierfs::Writer fr;
+            fr.u32(5 + static_cast<uint32_t>(a.b.size()));
+            fr.u8(f.type | tierfs::MSG_REPLY_FLAG);
+            fr.u32(f.id);
+            fr.bytes(a.b.data(), a.b.size());
+            for (uint8_t byte : fr.b) {
+                if (write(fd, &byte, 1) != 1) break;
+                usleep(120000);
+            }
+        }
+        close(fd);
+    }
+}
+
 static double secs_since(std::chrono::steady_clock::time_point t) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
 }
 
 int main() {
+    signal(SIGPIPE, SIG_IGN);  // the fake trickle server writes to sockets the client closes
     char t[] = "/tmp/tierfs-clienttest-XXXXXX";
     g_tmp = mkdtemp(t);
     g_root = g_tmp + "/root";
@@ -370,6 +429,84 @@ int main() {
             });
         for (auto& x : th) x.join();
         CHECK(bad == 0);
+        tc_destroy(c);
+    }
+
+    {
+        printf("== a trickling server cannot hold a request open past its deadline\n");
+        int lfd = socket(AF_INET, SOCK_STREAM, 0);
+        int one = 1;
+        setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(PORT + 1);
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+        bind(lfd, (sockaddr*)&addr, sizeof addr);
+        listen(lfd, 4);
+        std::atomic<bool> stop{false};
+        std::thread srv(trickle_server, lfd, &stop);
+        tc_config cfg = {};
+        cfg.host = "127.0.0.1"; cfg.port = PORT + 1; cfg.timeout_ms = 500; cfg.readahead = 0;
+        std::string d = g_tmp + "/c9"; cfg.cache_dir = d.c_str();
+        tc_client* c = tc_create(&cfg);
+        tc_attr a;
+        auto t0 = std::chrono::steady_clock::now();
+        int rc = tc_getattr(c, "/x", &a);   // reply would take ~4 s to trickle in
+        double took = secs_since(t0);
+        printf("      rc=%d after %.2fs (reply needed ~4 s; timeout is 0.5 s)\n", rc, took);
+        CHECK(rc != 0);
+        CHECK(took < 1.5);
+        tc_destroy(c);
+        stop = true;
+        srv.join();
+        close(lfd);
+    }
+
+    {
+        printf("== one process per cache directory; tierctl inspects and clears safely\n");
+        be.start();
+        std::string cache = g_tmp + "/c10";
+        write_file("Z", pattern(2 * MiB + 5, 50));
+        tc_client* c = make_client(cache, 0);
+        CHECK(c != nullptr);
+        tc_attr a;
+        tc_getattr(c, "/Z", &a);
+        std::vector<uint8_t> got;
+        CHECK(read_range(c, "/Z", 0, 2 * MiB + 5, got));
+        CHECK(make_client(cache, 0) == nullptr);   // second user of the same cache is refused
+
+        int rc;
+        std::string out = run("./build/tierctl cache-info " + cache, &rc);
+        CHECK(rc == 0 && contains(out, "IN USE") && contains(out, "3 chunks"));
+        out = run("./build/tierctl cache-clear " + cache + " --yes", &rc);
+        CHECK(rc != 0 && contains(out, "unmount"));            // refuses while mounted
+        CHECK(chunk_files(cache).size() == 3);                  // ...and removed nothing
+        out = run("./build/tierctl cache-verify " + cache, &rc);
+        CHECK(rc != 0 && contains(out, "in use"));
+        tc_destroy(c);
+
+        out = run("./build/tierctl cache-info " + cache, &rc);
+        CHECK(rc == 0 && contains(out, "idle") && contains(out, "1 files"));
+        out = run("./build/tierctl cache-verify " + cache, &rc);
+        CHECK(rc == 0 && contains(out, "checked 3 chunks: 0 damaged"));
+        auto files = chunk_files(cache);
+        { int fd = open(files[0].c_str(), O_RDWR); uint8_t b; pread(fd, &b, 1, 9); b ^= 1; pwrite(fd, &b, 1, 9); close(fd); }
+        out = run("./build/tierctl cache-verify " + cache, &rc);
+        CHECK(rc == 3 && contains(out, "1 damaged"));
+        std::string precious = cache + "/precious.txt";   // not ours: must survive a clear
+        { std::ofstream f(precious); f << "do not delete"; }
+        out = run("./build/tierctl cache-clear " + cache, &rc);   // dry run
+        CHECK(rc == 0 && contains(out, "would remove") && chunk_files(cache).size() == 2);
+        out = run("./build/tierctl cache-clear " + cache + " --yes", &rc);
+        CHECK(rc == 0 && chunk_files(cache).empty() && !fs::exists(cache + "/chunks.db"));
+        CHECK(fs::exists(precious));                            // only tierfs's own files are removed
+        out = run("./build/tierctl cache-clear /tmp --yes", &rc);
+        CHECK(rc != 0 && contains(out, "does not look like"));  // refuses a folder that is not a cache
+        out = run("./build/tierctl cache-info " + cache, &rc);  // still a valid (empty) cache dir
+        c = make_client(cache, 0);
+        CHECK(c != nullptr);
+        tc_getattr(c, "/Z", &a);
+        CHECK(read_range(c, "/Z", 0, 2 * MiB + 5, got) && got.size() == 2 * MiB + 5);  // cache rebuilds on demand
         tc_destroy(c);
     }
 

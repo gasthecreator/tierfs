@@ -156,6 +156,7 @@ int main(int argc, char *argv[]) {
     cfg.cache_bytes = (uint64_t)o.cache_mb << 20;
     cfg.readahead = o.readahead;
     g_client = tc_create(&cfg);
+    if (!g_client) return 1; /* e.g. cache directory already in use */
     int rc = fuse_main(args.argc, args.argv, &ops, NULL);
     if (o.stats) { /* test hook: counters written at unmount */
         tc_stats st;

@@ -9,7 +9,7 @@ FUSE_INC := -I/usr/local/include -I/usr/local/include/fuse
 # rpath entry telling dyld where to search at launch.
 FUSE_LIB := -L/usr/local/lib -lfuse-t -Wl,-rpath,/usr/local/lib
 
-all: build/tierfs build/tierfs-backend build/hellofs
+all: build/tierfs build/tierfs-backend build/hellofs build/tierctl
 
 build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h core/sqlutil.hpp
 	@mkdir -p build
@@ -18,6 +18,10 @@ build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h core/
 build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp core/hash.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/tierctl: tools/tierctl.cpp build/chunkcache.o
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
 build/metastore_test: tests/metastore_test.cpp build/metastore.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
@@ -29,7 +33,7 @@ build/client_test: tests/client_test.cpp build/tierclient.o build/metastore.o bu
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
 # Needs the backend binary. Builds the whole client with ThreadSanitizer too.
-test-client: build/client_test build/tierfs-backend
+test-client: build/client_test build/tierfs-backend build/tierctl
 	./build/client_test
 
 test-tsan: build/tierfs-backend
