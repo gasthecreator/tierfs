@@ -21,6 +21,14 @@
 #include "../core/tierclient.h"
 
 static tc_client *g_client;
+/* Finding (docs/PHASE2.md): with metadata served locally, EIO survives FUSE-T intact.
+ * neterr=N overrides the errno for scripts/errno-probe.sh. Original question: which errno do apps see for a dead backend?
+ * FUSE-T converts our errno into an NFS status, so not all survive. */
+static int g_neterr; /* 0 = pass through (EIO for network failures) */
+static int net(int rc) {
+    if (g_neterr && (rc == -EHOSTUNREACH || rc == -ETIMEDOUT || rc == -EIO)) return -g_neterr;
+    return rc;
+}
 
 static void fill_stat(struct stat *st, const tc_attr *a) {
     memset(st, 0, sizeof(*st));
@@ -41,7 +49,7 @@ static void fill_stat(struct stat *st, const tc_attr *a) {
 static int t_getattr(const char *path, struct stat *st) {
     tc_attr a;
     int rc = tc_getattr(g_client, path, &a);
-    if (rc) return rc;
+    if (rc) return net(rc);
     fill_stat(st, &a);
     return 0;
 }
@@ -65,15 +73,16 @@ static int t_readdir(const char *path, void *buf, fuse_fill_dir_t fill, off_t of
     struct dir_ctx d = {buf, fill};
     fill(buf, ".", NULL, 0);
     fill(buf, "..", NULL, 0);
-    return tc_readdir(g_client, path, dir_cb, &d);
+    return net(tc_readdir(g_client, path, dir_cb, &d));
 }
 
+/* open() deliberately does no network I/O: lookup/getattr already proved the
+ * file exists, and a failure here is reported by FUSE-T as ENOENT whatever
+ * errno we return (see docs/PHASE2.md). Errors surface on read() instead. */
 static int t_open(const char *path, struct fuse_file_info *fi) {
+    (void)path;
     if ((fi->flags & O_ACCMODE) != O_RDONLY) return -EROFS;
-    tc_attr a;
-    int rc = tc_getattr(g_client, path, &a);
-    if (rc) return rc;
-    return a.is_dir ? -EISDIR : 0;
+    return 0;
 }
 
 #define CHUNK (1u << 20)
@@ -87,7 +96,7 @@ static int t_read(const char *path, char *buf, size_t size, off_t off,
     while (done < size) {
         uint32_t want = (size - done) > CHUNK ? CHUNK : (uint32_t)(size - done);
         int64_t n = tc_read(g_client, path, (uint64_t)off + done, want, buf + done);
-        if (n < 0) return done ? (int)done : (int)n;
+        if (n < 0) return done ? (int)done : net((int)n);
         if (n == 0) break;
         done += (size_t)n;
         if ((uint32_t)n < want) break;
@@ -106,16 +115,18 @@ struct opts {
     char *host;
     int port;
     int timeout_ms;
+    int neterr;
 };
 
 #define OPT(t, f) {t, offsetof(struct opts, f), 0}
 static struct fuse_opt specs[] = {OPT("host=%s", host), OPT("port=%d", port),
-                                  OPT("timeout=%d", timeout_ms), FUSE_OPT_END};
+                                  OPT("timeout=%d", timeout_ms), OPT("neterr=%d", neterr), FUSE_OPT_END};
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    struct opts o = {NULL, 9099, 3000};
+    struct opts o = {NULL, 9099, 3000, 0};
     if (fuse_opt_parse(&args, &o, specs, NULL) == -1) return 2;
+    g_neterr = o.neterr;
     g_client = tc_create(o.host ? o.host : "127.0.0.1", (uint16_t)o.port, o.timeout_ms);
     int rc = fuse_main(args.argc, args.argv, &ops, NULL);
     tc_destroy(g_client);

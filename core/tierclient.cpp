@@ -8,6 +8,9 @@
 #include <sys/socket.h>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "wire.hpp"
 
@@ -20,7 +23,24 @@ struct tc_client {
     int fd = -1;
     uint32_t next_id = 1;
     std::mutex mu;  // one connection, one request in flight (FUSE is multithreaded)
+
+    // Metadata cache (in memory for now; Phase 2 persists it in SQLite).
+    // Updated on every successful reply. Served ONLY when the network fails, so
+    // an online client always sees fresh data and an offline one never hangs
+    // Finder. Entries are removed when the server says a path no longer exists.
+    using DirList = std::vector<std::pair<std::string, tc_attr>>;
+    std::unordered_map<std::string, tc_attr> attrs;
+    std::unordered_map<std::string, DirList> dirs;
 };
+
+// Errors meaning "can't reach the backend", as opposed to an answer from it.
+static bool is_net_err(int rc) {
+    return rc == -EHOSTUNREACH || rc == -ETIMEDOUT || rc == -EIO;
+}
+
+static std::string join(const std::string& dir, const std::string& name) {
+    return dir == "/" ? "/" + name : dir + "/" + name;
+}
 
 static void drop(tc_client* c) {
     if (c->fd >= 0) close(c->fd);
@@ -148,11 +168,19 @@ int tc_getattr(tc_client* c, const char* path, tc_attr* out) {
     w.str(path);
     Frame resp;
     int rc = rpc(c, MSG_STAT, w, resp);
-    if (rc) return rc;
+    if (rc) {
+        if (rc == -ENOENT) { c->attrs.erase(path); c->dirs.erase(path); }
+        if (is_net_err(rc)) {
+            auto it = c->attrs.find(path);
+            if (it != c->attrs.end()) { *out = it->second; return 0; }  // stale but usable
+        }
+        return rc;
+    }
     try {
         Reader r(resp.payload);
         *out = read_attr(r);
     } catch (...) { drop(c); return -EPROTO; }
+    c->attrs[path] = *out;
     return 0;
 }
 
@@ -162,16 +190,32 @@ int tc_readdir(tc_client* c, const char* path, tc_dir_cb cb, void* ctx) {
     w.str(path);
     Frame resp;
     int rc = rpc(c, MSG_READDIR, w, resp);
-    if (rc) return rc;
+    if (rc) {
+        if (rc == -ENOENT) { c->attrs.erase(path); c->dirs.erase(path); }
+        if (is_net_err(rc)) {
+            auto it = c->dirs.find(path);
+            if (it != c->dirs.end()) {  // stale listing
+                for (auto& e : it->second)
+                    if (cb(ctx, e.first.c_str(), &e.second)) break;
+                return 0;
+            }
+        }
+        return rc;
+    }
+    Reader r(resp.payload);
+    tc_client::DirList list;
     try {
-        Reader r(resp.payload);
         uint32_t count = r.u32();
         for (uint32_t i = 0; i < count; i++) {
             std::string name = r.str();
             tc_attr a = read_attr(r);
-            if (cb(ctx, name.c_str(), &a)) break;
+            list.emplace_back(std::move(name), a);
         }
     } catch (...) { drop(c); return -EPROTO; }
+    for (auto& e : list) c->attrs[join(path, e.first)] = e.second;
+    for (auto& e : list)
+        if (cb(ctx, e.first.c_str(), &e.second)) break;
+    c->dirs[path] = std::move(list);
     return 0;
 }
 
