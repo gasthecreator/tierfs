@@ -151,6 +151,8 @@ public:
     std::optional<FileRec> get_file(const std::string& file_id);
     std::optional<FileRec> get_file_by_path(const std::string& path);
     std::vector<FileRec> list_files(std::optional<FileState> state = std::nullopt);
+    // Every tracked file whose path starts with `prefix` (a directory prefix ending in "/"), ordered by path.
+    std::vector<FileRec> list_files_under(const std::string& prefix);
     // The bytes changed locally: bumps generation, invalidating any replication or
     // drop prepared against the old bytes. False if the file is DROPPING/HYDRATING
     // (writers must be frozen) or OFFLOADED (hydrate first).

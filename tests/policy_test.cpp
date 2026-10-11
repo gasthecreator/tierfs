@@ -44,10 +44,14 @@ static void release_ramdisks() {
 
 template <class T> static const T& at(const std::vector<T>& v, size_t i) { static const T dummy{}; return i < v.size() ? v[i] : dummy; }
 static bool has(const std::string& s, const char* n) { return s.find(n) != std::string::npos; }
+// TIERFS_TEST_TMP / TIERFS_TEST_PORT let several copies of this test run side by side (the parallel mutation runner).
 static std::string tmpdir() {
-    char t[] = "/tmp/tierfs-policytest-XXXXXX";
-    return mkdtemp(t);
+    std::string t = std::string(getenv("TIERFS_TEST_TMP") ? getenv("TIERFS_TEST_TMP") : "/tmp") + "/tierfs-policytest-XXXXXX";
+    std::vector<char> buf(t.begin(), t.end());
+    buf.push_back(0);
+    return mkdtemp(buf.data());
 }
+static uint16_t port_base() { return getenv("TIERFS_TEST_PORT") ? static_cast<uint16_t>(atoi(getenv("TIERFS_TEST_PORT"))) : 9511; }
 static Bytes pattern(size_t n, uint8_t seed) {
     Bytes v(n);
     for (size_t i = 0; i < n; i++) v[i] = static_cast<uint8_t>(seed + i * 43 + (i >> 8) + (i >> 20) * 11);
@@ -138,7 +142,7 @@ struct RamDisk {
     ~RamDisk() { release(); }
 };
 
-static const uint16_t PA = 9511, PB = 9512;
+static const uint16_t PA = port_base(), PB = static_cast<uint16_t>(port_base() + 1);
 static const size_t MiB = 1u << 20;
 static int g_world_counter = 0;
 

@@ -3,11 +3,15 @@
 //   tierctl cache-info   <dir>          read-only; safe while mounted
 //   tierctl cache-verify <dir>          re-hash every chunk, drop damaged ones (needs unmounted)
 //   tierctl cache-clear  <dir> [--yes]  delete the caches (needs unmounted); dry run without --yes
+//   tierctl restore --out <dir> --device host:port [--device ...] [--phrase-file F] [--dry-run] [--only /prefix/]
+//                                       get files back from the devices with only the recovery phrase
+//   tierctl ledger-status <ledger-dir>  health of the ledger: files by state, open steps, quarantine, fsck
 //
 // cache-clear only ever removes the files tierfs itself creates (chunks/,
 // chunks.db*, meta.db*), never "everything in the directory", so pointing it at
 // the wrong folder cannot delete anything else.
 #include <fcntl.h>
+#include <termios.h>
 #include <sqlite3.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -16,9 +20,14 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "../core/chunkcache.hpp"
+#include "../core/ledger.hpp"
+#include "../core/recovery.hpp"
 
 namespace fs = std::filesystem;
 
@@ -71,12 +80,115 @@ static bool looks_like_cache(const std::string& dir) {
     return fs::exists(dir + "/chunks.db") || fs::exists(dir + "/meta.db") || fs::exists(dir + "/chunks");
 }
 
+// The phrase is never taken from argv (process lists and shell history would keep it).
+static bool read_phrase(const std::string& file, std::string& out) {
+    out.clear();
+    if (!file.empty()) {
+        FILE* f = fopen(file.c_str(), "r");
+        if (!f) { fprintf(stderr, "tierctl: cannot read %s: %s\n", file.c_str(), strerror(errno)); return false; }
+        char buf[512];
+        while (fgets(buf, sizeof buf, f)) out += buf;
+        fclose(f);
+        return true;
+    }
+    bool tty = isatty(0);
+    struct termios old, quiet;
+    if (tty) {
+        fprintf(stderr, "Recovery phrase (typing is hidden): ");
+        tcgetattr(0, &old);
+        quiet = old;
+        quiet.c_lflag &= ~static_cast<tcflag_t>(ECHO);
+        tcsetattr(0, TCSANOW, &quiet);
+    }
+    char buf[512];
+    while (fgets(buf, sizeof buf, stdin)) {
+        out += buf;
+        if (tty) break;   // one line when typed; a piped phrase may span lines
+    }
+    if (tty) { tcsetattr(0, TCSANOW, &old); fprintf(stderr, "\n"); }
+    return true;
+}
+
+static int cmd_restore(int argc, char** argv) {
+    std::string out, phrase_file, only;
+    std::vector<std::string> devs;
+    tierfs::RecoveryOptions opt;
+    for (int i = 2; i < argc; i++) {
+        std::string a = argv[i];
+        auto val = [&](std::string& dst) { if (i + 1 >= argc) { fprintf(stderr, "tierctl: %s needs a value\n", a.c_str()); return false; } dst = argv[++i]; return true; };
+        std::string tmp;
+        if (a == "--out") { if (!val(out)) return 2; }
+        else if (a == "--device") { if (!val(tmp)) return 2; devs.push_back(tmp); }
+        else if (a == "--phrase-file") { if (!val(phrase_file)) return 2; }
+        else if (a == "--only") { if (!val(opt.path_prefix)) return 2; }
+        else if (a == "--reserve-mb") { if (!val(tmp)) return 2; opt.reserve_bytes = strtoull(tmp.c_str(), nullptr, 10) << 20; }
+        else if (a == "--dry-run") opt.dry_run = true;
+        else { fprintf(stderr, "tierctl: unknown option %s\n", a.c_str()); return 2; }
+    }
+    if (out.empty() || devs.empty()) {
+        fprintf(stderr, "usage: tierctl restore --out <dir> --device host:port [--device ...] [--phrase-file F] [--dry-run] [--only /prefix/] [--reserve-mb N]\n");
+        return 2;
+    }
+    std::string phrase;
+    if (!read_phrase(phrase_file, phrase)) return 1;
+    std::string err;
+    auto key = tierfs::crypto::decode_recovery(phrase, &err);
+    for (auto& ch : phrase) ch = 0;
+    if (!key) { fprintf(stderr, "tierctl: the recovery phrase is not accepted: %s\n", err.c_str()); return 1; }
+
+    std::vector<std::unique_ptr<tierfs::DeviceClient>> clients;
+    std::vector<tierfs::RecoveryDevice> rd;
+    for (auto& d : devs) {
+        size_t colon = d.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 >= d.size()) { fprintf(stderr, "tierctl: device must be host:port, got %s\n", d.c_str()); return 2; }
+        int port = atoi(d.c_str() + colon + 1);
+        if (port <= 0 || port > 65535) { fprintf(stderr, "tierctl: bad port in %s\n", d.c_str()); return 2; }
+        clients.push_back(std::make_unique<tierfs::DeviceClient>(d.substr(0, colon), static_cast<uint16_t>(port), 15000));
+        rd.push_back({d, clients.back().get()});
+    }
+    opt.progress = [](const std::string& s) { fprintf(stderr, "  %s\n", s.c_str()); };
+    tierfs::RestoreReport rep = tierfs::recover_from_devices(*key, rd, out, opt);
+    fputs(tierfs::format_recovery_report(rep).c_str(), stdout);
+    if (!rep.fatal.empty()) return 1;
+    return rep.complete() ? 0 : 3;
+}
+
+static int cmd_ledger_status(int argc, char** argv) {
+    if (argc < 3) { fprintf(stderr, "usage: tierctl ledger-status <ledger-dir>\n"); return 2; }
+    std::string dir = argv[2];
+    if (!fs::exists(dir + "/ledger.db")) { fprintf(stderr, "tierctl: %s has no ledger.db (nothing was created)\n", dir.c_str()); return 1; }
+    std::string err;
+    auto L = tierfs::Ledger::open(dir, &err);
+    if (!L) { fprintf(stderr, "tierctl: cannot open the ledger: %s\n", err.c_str()); return 1; }
+    printf("ledger:      %s\nvolume:      %s\n", dir.c_str(), L->volume_id().c_str());
+    printf("recovery phrase acknowledged: %s;  backup acknowledged: %s\n", L->get_meta("recovery_acked").value_or("") == "1" ? "yes" : "NO",
+           L->get_meta("backup_acked").value_or("") == "1" ? "yes" : "NO");
+    for (auto& d : L->list_devices())
+        printf("device:      %s  %-16s class %s  %s\n", d.device_id.substr(0, 8).c_str(), d.name.c_str(), d.cls.c_str(), d.state.c_str());
+    std::map<std::string, int> by_state;
+    for (auto& f : L->list_files()) by_state[tierfs::to_string(f.state)]++;
+    for (auto& kv : by_state) printf("files:       %-11s %d\n", kv.first.c_str(), kv.second);
+    auto intents = L->open_intents();
+    printf("open steps:  %zu%s\n", intents.size(), intents.empty() ? "" : "   (an interrupted drop, purge or restore: it will be finished or undone at the next start)");
+    for (auto& i : intents) printf("             %s %s v%lld\n", i.kind.c_str(), i.file_id.substr(0, 8).c_str(), static_cast<long long>(i.version));
+    printf("quarantine:  held %zu, purging %zu, purged %zu, restoring %zu, restored %zu\n",
+           L->list_quarantine(tierfs::QuarantineState::HELD).size(), L->list_quarantine(tierfs::QuarantineState::PURGING).size(),
+           L->list_quarantine(tierfs::QuarantineState::PURGED).size(), L->list_quarantine(tierfs::QuarantineState::RESTORING).size(),
+           L->list_quarantine(tierfs::QuarantineState::RESTORED).size());
+    auto problems = L->fsck();
+    printf("consistency: %s\n", problems.empty() ? "ok" : "PROBLEMS");
+    for (auto& p : problems) printf("  - %s\n", p.c_str());
+    return problems.empty() && intents.empty() ? 0 : 3;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s cache-info|cache-verify|cache-clear <cache-dir> [--yes]\n", argv[0]);
+        fprintf(stderr, "usage: %s cache-info|cache-verify|cache-clear <cache-dir> [--yes] | restore --out <dir> --device host:port ... | ledger-status <ledger-dir>\n", argv[0]);
         return 2;
     }
     std::string cmd = argv[1], dir = argv[2];
+    if (cmd == "restore") return cmd_restore(argc, argv);
+    if (cmd == "ledger-status") return cmd_ledger_status(argc, argv);
     if (!fs::is_directory(dir)) { fprintf(stderr, "tierctl: %s is not a directory\n", dir.c_str()); return 1; }
     if (!looks_like_cache(dir)) { fprintf(stderr, "tierctl: %s does not look like a tierfs cache\n", dir.c_str()); return 1; }
 

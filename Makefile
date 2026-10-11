@@ -19,9 +19,9 @@ build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp cor
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-build/tierctl: tools/tierctl.cpp build/chunkcache.o
+build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) -lsqlite3
 
 build/ledger.o: core/ledger.cpp core/ledger.hpp core/sqlutil.hpp core/hash.hpp core/crashpoint.hpp
 	@mkdir -p build
@@ -58,6 +58,14 @@ build/spaceprobe.o: core/spaceprobe.cpp core/spaceprobe.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+build/recovery.o: core/recovery.cpp core/recovery.hpp core/crypto.hpp core/deviceclient.hpp core/fsutil.hpp core/crashpoint.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/overlay.o: core/overlay.cpp core/overlay.hpp core/ledger.hpp core/crypto.hpp core/dropengine.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
 build/policy.o: core/policy.cpp core/policy.hpp core/spaceprobe.hpp core/dropengine.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
@@ -90,6 +98,18 @@ build/policy_test: tests/policy_test.cpp build/policy.o build/spaceprobe.o build
 
 test-policy: build/policy_test build/tierfs-device
 	./build/policy_test
+
+build/recovery_test: tests/recovery_test.cpp build/recovery.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/recovery_test.cpp build/recovery.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+test-recovery: build/recovery_test build/tierfs-device build/tierctl build/drop_helper
+	./build/recovery_test
+
+build/overlay_test: tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+test-overlay: build/overlay_test build/tierfs-device build/drop_helper
+	./build/overlay_test
 
 test-dropengine: build/dropengine_test build/tierfs-device
 	./build/dropengine_test

@@ -665,3 +665,129 @@ What is NOT done
   dropped path). There is no daemon or approval UI; `format_plan` is the text such a UI would show.
 - The Keychain test and real-file use still wait for the owner (backups first).
 - Next: 3g (recovery tool and disaster drills).
+
+## 23. Phase 3g status: disaster recovery (implemented)
+
+`core/recovery.*` (library), `tierctl restore` and `tierctl ledger-status`, `tests/recovery_test.cpp` (the disaster drills).
+
+The scenario: the Mac is gone. No ledger, no keys, no cache, no files. What survives is the recovery phrase (paper) and
+the devices. Everything needed is on the devices, sealed under keys derived from the phrase: each manifest carries the
+file's path, size, mode, mtime, extended attributes and chunk list, and the device itself remembers which volume it
+belongs to (the volume id is needed to open anything, and it is not secret).
+
+`tierctl restore --out DIR --device host:port [--device ...] [--phrase-file F | phrase on stdin] [--dry-run] [--only /prefix/]`
+- Read-only towards the devices (INFO, LIST_MANIFESTS, GET_MANIFEST, GET_CHUNK): no BIND, nothing written or deleted there.
+  Never overwrites anything on the Mac: an existing identical file is "already present", a different one is a conflict and
+  is left alone, so the command can be re-run (and resumed) safely.
+- The phrase is never an argument (process lists, shell history): a file, a hidden prompt on a terminal, or a pipe. Case,
+  spaces and dashes are forgiven; a typo is pinpointed to its group; a valid phrase for another volume is detected because
+  no manifest opens (nothing is written).
+- Chunks are taken from whichever device has a good copy, chunk by chunk, so rot on A and loss on B in different chunks of
+  the same file still restores it. A device that lies (answers with the wrong chunk) is skipped because every chunk is
+  authenticated against its id and re-checked against the file's whole-file HMAC.
+- If the newest version of a file cannot be rebuilt from anything, the newest older version that can is restored, and the
+  report says so (exit code 3). Files that cannot be rebuilt at all are listed as FAILED; nothing half-written remains.
+- Paths in manifests are treated as hostile: `..`, NUL/control characters, the recovery temp-file namespace and any path
+  component that is a symlink are refused and reported; setuid/setgid bits from a manifest are never applied; a file with
+  a lying whole-file HMAC or size is refused.
+- Each file is written to a temp file, fsynced (F_FULLFSYNC), moved into place with an exclusive rename, and the directory
+  is synced. A kill at any point leaves either nothing or a whole file; a rerun clears its own leftovers.
+- Space is checked before the first byte is written (needed + a 256 MiB reserve vs free); refused with nothing written.
+- Exit codes: 0 everything recovered, 3 incomplete (failures, conflicts, refused paths, older versions), 1 nothing done.
+
+`tierctl ledger-status <ledger-dir>`: files by state, devices, whether the phrase and a backup were acknowledged, open steps
+(an interrupted drop/purge/restore: finished or undone at the next start), quarantine counts, `fsck`. Exit 3 if anything
+needs attention. It refuses (exit 1) while another process holds the ledger and creates nothing for a missing ledger.
+
+What is NOT recovered by this
+- The ledger itself (replication state, audits): after total loss the files come back, but a fresh ledger would be a new
+  volume. Re-adopting the old volume id so the same devices keep serving the new Mac is a later feature.
+- Deleted files stay on the devices (append-only) and are restored too; a tombstone mechanism does not exist yet.
+
+What the drills showed
+- The drills are in `tests/recovery_test.cpp`: total loss (with some files already offloaded), a replaced device,
+  bridged damage, a chunk lost everywhere, an unrecoverable newest version, every kind of wrong phrase, hostile manifests
+  (including a symlink planted in the output), kills mid-restore, an undersized target (a real RAM disk), a lying device,
+  mixed volumes, a catalogue larger than one listing page, damaged manifests, and `ledger-status` on a healthy ledger, a
+  busy one, a missing one and one with a crashed drop.
+- Mutation testing of `recovery.cpp`: 92 mutants; the first pass left 26 test gaps (an unreachable device counted as alive,
+  duplicate paths overwriting each other, damaged manifests ending the search early, an exact space fit refused, a symlink at
+  the destination, bridging a chunk from a device that never held the manifest, the reason reported for a failed file...),
+  all closed. 8 survivors are expected: two power-loss syncs, three races (a destination appearing during the restore, a
+  stale temp file), an optimisation (size check before the hash), a regular-file partial write, and a check that
+  `open_chunk` makes redundant.
+- A same-port pitfall again (two labs in one scope); and the mutation harness was too slow run serially, so it now runs
+  mutants in parallel (own ports and temp dir per worker via TIERFS_TEST_PORT / TIERFS_TEST_TMP).
+
+## 24. Phase 3h design: connecting the engines to the filesystem (the overlay)
+
+Until now the mount is a read-only view of a remote tree (Phases 1-2) and the ledger/engines (3a-3g) are libraries
+nothing calls. 3h joins them. It is built as a library first (`core/overlay.*`, no FUSE in it, fully testable with real
+devices) and only then wrapped by the FUSE driver. Slices: 3h-1 read side, 3h-2 write side + write gate + hydration,
+3h-3 namespace operations + scanner, 3h-4 the FUSE wrapper, the daemon and end-to-end mount tests.
+
+Layout
+- **Origin**: the real folder that holds the local bytes. The overlay is mounted over the same path (verified in Phase 1),
+  so the driver reaches the origin through a directory file descriptor opened BEFORE mounting (the library takes a path;
+  the driver will pass `/dev/fd/N`-style access). Nothing is moved or renamed to set this up.
+- **Bookkeeping** lives inside the origin in `.tierfs/` (quarantine, hydration temp files): same volume, so the drop is one
+  atomic rename. The overlay hides `.tierfs` completely (not listed, not openable, not creatable).
+- **Logical path** = a configured prefix + the path relative to the origin (`/Users/me/Projects/` + `a/b.txt`). It is what the
+  ledger and the manifests store.
+
+What a path is
+- A directory is always a real directory in the origin (directories are never offloaded).
+- A file that is present in the origin is a **local file**; its attributes come from the origin.
+- A file that is absent from the origin but tracked in the ledger in a state whose bytes are elsewhere (DROPPING after the
+  rename, OFFLOADED, HYDRATING, AT_RISK) is a **remote file**: it is listed, `stat`s with the ledger's size/mtime/mode, and
+  its contents are read from the devices. Anything else is ENOENT.
+
+Reading a remote file
+- Partial reads: the ledger holds the chunk list of the version (id, length), so offset -> chunk is arithmetic. Only the chunks a
+  read touches are fetched, from a device holding a committed replica first, then any other device. Every chunk is
+  authenticated (AEAD bound to its id), its length and its id (HMAC of the plaintext) are re-checked, so a lying or rotted
+  device is simply skipped and another is tried; if none has a good copy the read fails with EIO (never wrong bytes).
+- Verified chunks are kept in an in-memory LRU keyed by chunk id (content-addressed, so nothing ever needs invalidating).
+
+Writing, and the write gate (3h-2)
+- Opening for write registers the writer first, THEN records the modification in the ledger (generation + 1, state LOCAL), THEN
+  opens the file. The drop engine's `FileGate::freeze` refuses while any writer is registered and, once frozen, makes new
+  write-opens wait (bounded) until the drop finishes. Closing a writer records the final size/mtime again (so a replication
+  that raced the last writes can never be treated as current).
+- Writing to a remote file hydrates it first: from the quarantine copy when one is still HELD for that version (local rename +
+  re-verification, no network), else by streaming and verifying the version from the devices into a temp file and renaming
+  it into place. A crash mid-hydration is resolved at start (temp removed; a completed rename is re-verified chunk by chunk
+  against the ledger before it is trusted).
+
+Namespace operations (3h-3)
+- The ledger mirrors the origin; the origin is the authority for what exists locally and the ledger is the authority for what
+  exists remotely. unlink/rename/mkdir/rmdir/chmod/utimens act on the origin and then update the ledger; a scanner at start
+  (and periodically) reconciles anything done behind our back (new files tracked, changed files marked modified, vanished
+  files flagged, never silently forgotten).
+- Deleting or renaming a file does not erase what the devices hold (they are append-only): a deleted file stays recoverable by
+  `tierctl restore` until a tombstone mechanism exists. This is stated, not hidden.
+- Operations on a remote file that would need its bytes (chmod/utimens/xattrs/rename-over) are handled by hydrating, or refused
+  with a clear errno in the first slices; unlink of a remote file is refused until deletion semantics are settled.
+
+Failure semantics
+- Network failures surface as EIO (FUSE-T maps other errnos to misleading ones; Phase 2 finding).
+- A remote read never blocks the metadata path: getattr/readdir use the ledger and the origin only.
+
+Status of 3h-1 (the read side, implemented): `core/overlay.*` and `tests/overlay_test.cpp` (122 checks).
+- `getattr`, `readdir`, `read`, `readlink` over the origin and the ledger; local files are served from the origin, remote
+  files (DROPPING after the rename, OFFLOADED, HYDRATING, AT_RISK) from the devices, chunk by chunk, verified, with failover
+  and an LRU of verified plaintext chunks (least recently USED is evicted). The bookkeeping directory is invisible; paths with
+  `..`, NUL or a relative form are refused; names with SQL wildcard characters work (the ledger query is a byte range).
+- Tests show: dropped files keep their listing, attributes and bytes (whole-file reads in awkward piece sizes, ranges across
+  chunk boundaries, at EOF); a read inside one chunk fetches exactly that chunk and a read ending on a boundary does not
+  touch the next; a rotted or missing chunk fails only the reads that need it, with EIO, never short or wrong; one dead
+  device is bridged by the other; a device that lies is skipped; a retired device is never asked; with every device down
+  getattr/readdir still work and only reads fail; a power cut in the middle of a drop leaves the file readable from the
+  devices; eight threads reading at once all get exact bytes.
+- Mutation testing: 85 mutants, 17 expected survivors (equivalent or paired guards, a self-contradicting ledger, a race).
+  The first pass found 8 gaps (stable ordering, readlink errno, a vanished file must not be guessed at, retired/null/uncommitted
+  device handling, LRU recency, the chunk-boundary fetch count).
+- Found on the way: `open_chunk` already checks the plaintext against the chunk id, so the extra HMAC check I had added in both
+  the overlay and recovery is redundant (kept as defence in depth, tagged as such in the mutant lists).
+Next: 3h-2, the write side (write gate, hydration on write), then 3h-3 namespace operations and the scanner, then 3h-4 the
+FUSE wrapper.

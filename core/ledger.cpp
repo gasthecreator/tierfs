@@ -386,6 +386,16 @@ std::vector<FileRec> Ledger::list_files(std::optional<FileState> state) {
     return out;
 }
 
+std::vector<FileRec> Ledger::list_files_under(const std::string& prefix) {
+    std::vector<FileRec> out;
+    // Byte range [prefix, prefix + 0xFF): 0xFF never occurs in UTF-8, so this is exactly "starts with prefix"
+    // without LIKE's wildcard characters (paths may contain % and _).
+    Stmt s(db_, (std::string("SELECT ") + FILE_COLS + " FROM files WHERE path>=?1 AND path<?2 ORDER BY path").c_str());
+    s.text(1, prefix).text(2, prefix + "\xff");
+    while (s.row()) out.push_back(file_from(s));
+    return out;
+}
+
 Res Ledger::note_local_modified(const std::string& file_id, uint64_t new_size, int64_t new_mtime) {
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
