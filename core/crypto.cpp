@@ -51,11 +51,18 @@ Bytes aead_seal_with(const SecretKey& key, const Bytes& nonce, const std::string
     return out;
 }
 
-// Production path: a fresh random nonce per message, counted against the key's budget.
+// Production path: a synthetic IV, HMAC(K_nonce, "tfs1:siv:<len(aad)>:" || aad || plaintext)[:12].
+// The same (aad, plaintext) always seals to the same bytes; any difference in either gives an
+// unrelated nonce, so a nonce is never reused with different data.
 Bytes aead_seal(const Keys& k, const SecretKey& key, const std::string& aad, const uint8_t* plain, size_t len) {
-    if (!k.note_seal()) return {};
-    Bytes nonce = random_bytes(NONCE_LEN);
-    if (nonce.size() != NONCE_LEN) return {};
+    if (len > MAX_PLAINTEXT || (len && !plain)) return {};
+    std::string head = "tfs1:siv:" + std::to_string(aad.size()) + ":";
+    Bytes mac = hmac_sha256_parts(k.nonce().data(), KEY_LEN,
+                                  {{reinterpret_cast<const uint8_t*>(head.data()), head.size()},
+                                   {reinterpret_cast<const uint8_t*>(aad.data()), aad.size()},
+                                   {plain, len}});
+    if (mac.size() != 32) return {};
+    Bytes nonce(mac.begin(), mac.begin() + NONCE_LEN);
     return aead_seal_with(key, nonce, aad, plain, len);
 }
 
@@ -274,6 +281,23 @@ Bytes hmac_sha256(const uint8_t* key, size_t key_len, const uint8_t* data, size_
     return good ? out : Bytes{};
 }
 
+Bytes hmac_sha256_parts(const uint8_t* key, size_t key_len, const std::vector<std::pair<const uint8_t*, size_t>>& parts) {
+    EVP_MAC* mac = EVP_MAC_fetch(nullptr, "HMAC", nullptr);
+    EVP_MAC_CTX* ctx = mac ? EVP_MAC_CTX_new(mac) : nullptr;
+    Bytes out(32);
+    size_t outl = 0;
+    char digest[] = "SHA256";
+    OSSL_PARAM params[] = {OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, digest, 0), OSSL_PARAM_construct_end()};
+    uint8_t dummy = 0;
+    bool good = ctx && EVP_MAC_init(ctx, key_len ? key : &dummy, key_len, params) == 1;
+    for (const auto& p : parts)
+        if (good && p.second) good = EVP_MAC_update(ctx, p.first, p.second) == 1;
+    good = good && EVP_MAC_final(ctx, out.data(), &outl, out.size()) == 1 && outl == 32;
+    if (ctx) EVP_MAC_CTX_free(ctx);
+    if (mac) EVP_MAC_free(mac);
+    return good ? out : Bytes{};
+}
+
 // RFC 5869. Extract with the salt (zeros if empty), then expand.
 Bytes hkdf_sha256(const uint8_t* ikm, size_t ikm_len, const uint8_t* salt, size_t salt_len,
                   const uint8_t* info, size_t info_len, size_t out_len) {
@@ -339,6 +363,7 @@ Keys::Keys(const SecretKey& master) {
     derive("snapshot", snapshot_);
     derive("file", file_);
     derive("audit", audit_);
+    derive("nonce", nonce_);
 }
 
 std::string Keys::fingerprint() const {

@@ -66,6 +66,13 @@ static Sealed seal(const Bytes& plain) {
     s.blob = crypto::seal_chunk(keys(), VOL, s.id, plain.data(), plain.size());
     return s;
 }
+static Sealed seal_conflicting(const Bytes& plain, int variant) {   // different bytes under the same chunk id
+    Sealed s;
+    s.plain = plain;
+    s.id = crypto::chunk_id(keys(), plain.data(), plain.size());
+    s.blob = crypto::seal_chunk(keys(), "conflict-" + std::to_string(variant), s.id, plain.data(), plain.size());
+    return s;
+}
 static AuditItem chunk_audit(const std::string& id, uint32_t n) {
     AuditItem a;
     a.kind = 0; a.id = id; a.nonce = crypto::audit_nonce(keys(), id, n);
@@ -240,7 +247,7 @@ int main() {
         CHECK(proven == 3);
 
         // lost-ack retries are harmless: the original is kept and the Mac is told what the device holds
-        Sealed resealed = seal(chunks[0].plain);
+        Sealed resealed = seal_conflicting(chunks[0].plain, 1);
         PutChunkReply again;
         CHECK(resealed.blob != chunks[0].blob && c.put_chunk(resealed.id, resealed.blob, again).ok() && again.existed &&
               again.sha256_hex == crypto::sha256_hex(chunks[0].blob.data(), chunks[0].blob.size()));
@@ -500,7 +507,7 @@ int main() {
                     Sealed s = seal(pattern(4000, static_cast<uint8_t>(110 + t * 7 + i)));
                     PutChunkReply pr;
                     okc += c.put_chunk(s.id, s.blob, pr).ok();
-                    Sealed again = seal(shared.plain);   // everyone uploads the same chunk, differently sealed
+                    Sealed again = seal_conflicting(shared.plain, t * 10 + i);   // everyone uploads the same chunk, differently sealed
                     PutChunkReply sr;
                     if (c.put_chunk(again.id, again.blob, sr).ok()) (sr.existed ? existed : stored)++;
                 }

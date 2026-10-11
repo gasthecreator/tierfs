@@ -4,6 +4,12 @@
 // detection:
 //   chunk id  = HMAC-SHA256(K_id, plaintext)                      (dedupe, reveals no content hash)
 //   chunk blob = 0x01 || nonce(12) || AES-256-GCM(K_data, plaintext) || tag(16)
+//                nonce = HMAC(K_nonce, aad || plaintext)[:12]: a synthetic IV, so sealing is
+//                DETERMINISTIC. The same chunk sealed twice gives the same bytes, which is what
+//                lets a crashed upload resume exactly, and lets "the device already has it" be
+//                proven by comparing hashes. The price is that equal plaintexts give equal blobs,
+//                which the content-derived chunk id already reveals. Two different plaintexts
+//                get different nonces unless a 96-bit HMAC prefix collides (about 2^-97 per pair).
 //                AAD = "tfs1:chunk:" || volume_id || ":" || chunk_id
 //   manifest   = same layout under K_manifest,
 //                AAD = "tfs1:manifest:" || volume_id || ":" || file_id || ":" || version
@@ -36,10 +42,6 @@ constexpr size_t KEY_LEN = 32;
 constexpr size_t NONCE_LEN = 12;
 constexpr size_t TAG_LEN = 16;
 constexpr uint8_t FORMAT_V1 = 1;
-// Random 96-bit nonces stay collision-safe for about 2^32 messages per key
-// (NIST SP 800-38D). We stop well before that; a volume that reaches it needs
-// key rotation, which is not designed yet.
-constexpr uint64_t MAX_SEALS_PER_KEY = 1ull << 31;
 
 // ---- primitives ----
 Bytes random_bytes(size_t n);  // empty on failure
@@ -49,6 +51,8 @@ std::optional<Bytes> from_hex(const std::string& s);
 Bytes sha256(const uint8_t* p, size_t n);
 std::string sha256_hex(const uint8_t* p, size_t n);
 Bytes hmac_sha256(const uint8_t* key, size_t key_len, const uint8_t* data, size_t n);
+// HMAC over several pieces without concatenating them first.
+Bytes hmac_sha256_parts(const uint8_t* key, size_t key_len, const std::vector<std::pair<const uint8_t*, size_t>>& parts);
 Bytes hkdf_sha256(const uint8_t* ikm, size_t ikm_len, const uint8_t* salt, size_t salt_len,
                   const uint8_t* info, size_t info_len, size_t out_len);
 
@@ -84,17 +88,12 @@ public:
     const SecretKey& snapshot() const { return snapshot_; }
     const SecretKey& file() const { return file_; }
     const SecretKey& audit() const { return audit_; }
+    const SecretKey& nonce() const { return nonce_; }
     // Short public tag of the master key, safe to store in the ledger: detects a
     // mistyped recovery phrase before anything is decrypted with a wrong key.
     std::string fingerprint() const;
-    uint64_t seal_count() const { return seals_.load(); }
-    // Counts one more encryption under this master key; false once the nonce-safety
-    // limit is reached (the caller must then refuse to encrypt).
-    bool note_seal() const { return seals_.fetch_add(1) < MAX_SEALS_PER_KEY; }
-    void set_seal_count_for_test(uint64_t n) const { seals_ = n; }
 private:
-    SecretKey id_, data_, manifest_, snapshot_, file_, audit_;
-    mutable std::atomic<uint64_t> seals_{0};
+    SecretKey id_, data_, manifest_, snapshot_, file_, audit_, nonce_;
 };
 
 enum class OpenError { Ok, BadFormat, AuthFailed, IdMismatch, Unsupported };
@@ -102,7 +101,7 @@ const char* to_string(OpenError e);
 
 // ---- chunks ----
 std::string chunk_id(const Keys& k, const uint8_t* plain, size_t len);  // 64 hex chars
-// Empty result means failure (RNG failure or the per-key seal limit).
+// Deterministic. Empty result means failure.
 Bytes seal_chunk(const Keys& k, const std::string& volume_id, const std::string& chunk_id,
                  const uint8_t* plain, size_t len);
 // Decrypts, authenticates, and then re-derives the id from the plaintext, so a blob

@@ -58,6 +58,14 @@ static Sealed seal(const Bytes& plain) {
     s.blob = crypto::seal_chunk(keys(), "vol-test", s.id, plain.data(), plain.size());
     return s;
 }
+// A blob that is NOT the one seal() produces for this plaintext, but is filed under the same chunk id:
+// what an old seal, a corrupted copy or a hostile upload under a known id would look like.
+static Sealed seal_conflicting(const Bytes& plain, int variant) {
+    Sealed s;
+    s.id = crypto::chunk_id(keys(), plain.data(), plain.size());
+    s.blob = crypto::seal_chunk(keys(), "conflict-" + std::to_string(variant), s.id, plain.data(), plain.size());
+    return s;
+}
 static std::string chunk_file(const std::string& dir, const std::string& id) { return dir + "/chunks/" + id.substr(0, 2) + "/" + id + ".blob"; }
 static const std::string FID1 = "0123456789abcdef0123456789abcdef", FID2 = "fedcba9876543210fedcba9876543210";
 
@@ -163,9 +171,13 @@ int main() {
 
         // the same plaintext sealed again has different bytes (random nonce): the device keeps the original
         Sealed again = seal(pattern(100000, 1));
-        CHECK(again.id == a.id && again.blob != a.blob);
+        CHECK(again.id == a.id && again.blob == a.blob);    // sealing is deterministic: a retry is byte-identical
         PutChunkOut r2 = put(*d, again);
-        CHECK(r2.err == 0 && r2.existed && r2.sha256_hex == sha(a.blob));   // tells the sender what it actually holds
+        CHECK(r2.err == 0 && r2.existed && r2.sha256_hex == sha(a.blob));   // "existed", and the hash proves it is the same bytes
+        Sealed other = seal_conflicting(pattern(100000, 1), 1);             // DIFFERENT bytes under the same id
+        CHECK(other.id == a.id && other.blob != a.blob);
+        PutChunkOut r3 = put(*d, other);
+        CHECK(r3.err == 0 && r3.existed && r3.sha256_hex == sha(a.blob) && r3.sha256_hex != sha(other.blob));   // the original is kept and the sender can SEE the difference
         CHECK(d->get_chunk(a.id, got, nullptr) == 0 && got == a.blob);      // never overwritten
 
         // transit damage: the claimed hash does not match
@@ -543,7 +555,7 @@ int main() {
         Bytes plain = pattern(2000, 50);
         std::string id = crypto::chunk_id(keys(), plain.data(), plain.size());
         std::vector<Sealed> variants;
-        for (int i = 0; i < 8; i++) variants.push_back(seal(plain));   // same chunk id, 8 different ciphertexts
+        for (int i = 0; i < 8; i++) variants.push_back(seal_conflicting(plain, i));   // same chunk id, 8 different ciphertexts
         std::atomic<int> stored{0}, existed{0}, errors{0};
         std::vector<std::string> shas(8);
         std::vector<std::thread> th;

@@ -124,7 +124,7 @@ out.append(f"static const int kat_cases = {len(cases)};\n")
 # HKDF/HMAC cross-check with the exact labels the product uses
 master = rb(32)
 salt = b"tfs1-hkdf-salt"
-prk_labels = ["id", "data", "manifest", "snapshot", "file", "audit"]
+prk_labels = ["id", "data", "manifest", "snapshot", "file", "audit", "nonce"]
 out.append(arr("kat_master", master))
 for lab in prk_labels:
     out.append(arr(f"kat_key_{lab}", hkdf(master, salt, b"tfs1:" + lab.encode(), 32)))
@@ -139,6 +139,17 @@ out.append(arr("kat_audit_nonce3", hmac.new(kaud, b"tfs1:audit:" + cid.encode() 
 blob = rb(777)
 out.append(arr("kat_audit_blob", blob))
 out.append(arr("kat_audit_response", hashlib.sha256(hmac.new(kaud, b"tfs1:audit:" + cid.encode() + b":3", hashlib.sha256).digest() + blob).digest()))
+# deterministic sealing (synthetic IV): nonce = HMAC(K_nonce, "tfs1:siv:<len(aad)>:" || aad || plaintext)[:12],
+# blob = 0x01 || nonce || AES-256-GCM(K_data, nonce, aad, plaintext). Built here with the pure-Python AES-GCM.
+knon = hkdf(master, salt, b"tfs1:nonce", 32)
+kdat = hkdf(master, salt, b"tfs1:data", 32)
+vol = "vol-kat"
+aad = ("tfs1:chunk:" + vol + ":" + cid).encode()
+siv_nonce = hmac.new(knon, b"tfs1:siv:" + str(len(aad)).encode() + b":" + aad + plain, hashlib.sha256).digest()[:12]
+sct, stag = gcm_encrypt(kdat, siv_nonce, plain, aad)
+out.append(arr("kat_siv_chunk_blob", b"\x01" + siv_nonce + sct + stag))
+out.append(f'static const char* kat_siv_volume = "{vol}";\n')
+out.append(f'static const char* kat_siv_chunk_id = "{cid}";\n')
 # recovery phrase: independent encoder
 ALPH = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 payload = master + hashlib.sha256(b"tfs1:recovery" + master).digest()[:8]

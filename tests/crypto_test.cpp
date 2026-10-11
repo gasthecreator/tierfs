@@ -97,12 +97,16 @@ int main() {
         CHECK(Bytes(k.snapshot().data(), k.snapshot().data() + 32) == B(kat_key_snapshot));
         CHECK(Bytes(k.file().data(), k.file().data() + 32) == B(kat_key_file));
         CHECK(Bytes(k.audit().data(), k.audit().data() + 32) == B(kat_key_audit));
+        CHECK(Bytes(k.nonce().data(), k.nonce().data() + 32) == B(kat_key_nonce));
         std::set<std::string> distinct;
-        for (const SecretKey* sk : {&k.id(), &k.data(), &k.manifest(), &k.snapshot(), &k.file(), &k.audit()}) distinct.insert(hex(Bytes(sk->data(), sk->data() + 32)));
-        CHECK(distinct.size() == 6);   // no two purposes share a key
+        for (const SecretKey* sk : {&k.id(), &k.data(), &k.manifest(), &k.snapshot(), &k.file(), &k.audit(), &k.nonce()}) distinct.insert(hex(Bytes(sk->data(), sk->data() + 32)));
+        CHECK(distinct.size() == 7);   // no two purposes share a key
         CHECK(chunk_id(k, kat_chunk_plain, kat_chunk_plain_len) == hex(B(kat_chunk_id)));
         CHECK(k.fingerprint() == hex(B(kat_fingerprint)).substr(0, 16));
         std::string cid = chunk_id(k, kat_chunk_plain, kat_chunk_plain_len);
+        // the complete production seal (synthetic IV + AES-GCM) against the independent Python build
+        CHECK(cid == kat_siv_chunk_id);
+        CHECK(seal_chunk(k, kat_siv_volume, cid, kat_chunk_plain, kat_chunk_plain_len) == B(kat_siv_chunk_blob));
         CHECK(audit_nonce(k, cid, 3) == B(kat_audit_nonce3));
         CHECK(audit_nonce(k, cid, 3) != audit_nonce(k, cid, 4));
         CHECK(audit_response_hex(audit_nonce(k, cid, 3), kat_audit_blob, kat_audit_blob_len) == hex(B(kat_audit_response)));
@@ -170,25 +174,51 @@ int main() {
     }
 
     {
-        printf("== nonces are fresh, counted, and bounded\n");
+        printf("== sealing is deterministic, and nonces never repeat for different data\n");
         Keys k(SecretKey::random());
-        Bytes p = pattern(64, 1);
+        Bytes p = pattern(5000, 1);
         std::string cid = chunk_id(k, p.data(), p.size());
+        Bytes a = seal_chunk(k, "v", cid, p.data(), p.size());
+        CHECK(!a.empty() && seal_chunk(k, "v", cid, p.data(), p.size()) == a);   // same input, byte-identical output
+        Keys twin(SecretKey::random());
+        CHECK(seal_chunk(twin, "v", cid, p.data(), p.size()) != a);                // another key: unrelated bytes
+        auto nonce_of = [](const Bytes& b) { return hex(Bytes(b.begin() + 1, b.begin() + 1 + NONCE_LEN)); };
+        // a different volume or id (different AAD), or different plaintext, gives a different nonce
+        CHECK(nonce_of(seal_chunk(k, "w", cid, p.data(), p.size())) != nonce_of(a));
+        CHECK(nonce_of(seal_chunk(k, "v", std::string(64, 'f'), p.data(), p.size())) != nonce_of(a));
+        Bytes p2 = p;
+        p2[2500] ^= 1;
+        CHECK(nonce_of(seal_chunk(k, "v", cid, p2.data(), p2.size())) != nonce_of(a));
+        // The boundary between the AAD and the plaintext cannot be shifted: both of these feed the
+        // same bytes "tfs1:chunk:v:abcdef" into the nonce computation, but they are different messages,
+        // so they must not share a nonce (sharing one would reuse a keystream on different data).
+        Bytes cdef = bytes_of("cdef"), def = bytes_of("def");
+        CHECK(nonce_of(seal_chunk(k, "v", "ab", cdef.data(), cdef.size())) != nonce_of(seal_chunk(k, "v", "abc", def.data(), def.size())));
         std::set<std::string> nonces;
         for (int i = 0; i < 20000; i++) {
-            Bytes b = seal_chunk(k, "v", cid, p.data(), p.size());
-            nonces.insert(hex(Bytes(b.begin() + 1, b.begin() + 1 + NONCE_LEN)));
+            Bytes pl = pattern(64, static_cast<uint8_t>(i));
+            pl[0] = static_cast<uint8_t>(i >> 8);
+            pl[1] = static_cast<uint8_t>(i);
+            Bytes b = seal_chunk(k, "v", "id", pl.data(), pl.size());
+            nonces.insert(nonce_of(b));
         }
-        CHECK(nonces.size() == 20000);          // never reused
-        CHECK(k.seal_count() == 20000);
-        k.set_seal_count_for_test(MAX_SEALS_PER_KEY - 1);
-        CHECK(!seal_chunk(k, "v", cid, p.data(), p.size()).empty());   // last one allowed
-        CHECK(seal_chunk(k, "v", cid, p.data(), p.size()).empty());    // then it refuses rather than risk a nonce collision
-        Keys k2(SecretKey::random());
+        CHECK(nonces.size() == 20000);          // 20,000 different chunks, 20,000 different nonces
+        Keys shared(SecretKey::random());
+        std::vector<Bytes> results(4);
         std::thread t[4];
-        for (auto& th : t) th = std::thread([&] { for (int i = 0; i < 500; i++) seal_chunk(k2, "v", cid, p.data(), p.size()); });
+        for (int i = 0; i < 4; i++) t[i] = std::thread([&, i] { for (int j = 0; j < 300; j++) results[i] = seal_chunk(shared, "v", cid, p.data(), p.size()); });
         for (auto& th : t) th.join();
-        CHECK(k2.seal_count() == 2000);         // thread-safe accounting
+        CHECK(results[0] == results[1] && results[1] == results[2] && results[2] == results[3] && !results[0].empty());   // thread-safe and stable
+        // and every deterministic blob still opens
+        Bytes out;
+        CHECK(open_chunk(k, "v", cid, a.data(), a.size(), out) == OpenError::Ok && out == p);
+        // manifests are deterministic too: re-sealing after a crash reproduces the exact stored bytes
+        Manifest m;
+        m.file_id = "0123456789abcdef0123456789abcdef"; m.version = 2; m.path = "/x"; m.size = 5;
+        CHECK(seal_manifest(k, "v", m) == seal_manifest(k, "v", m));
+        Manifest m2 = m;
+        m2.mtime = 1;
+        CHECK(seal_manifest(k, "v", m2) != seal_manifest(k, "v", m));
     }
 
     {
