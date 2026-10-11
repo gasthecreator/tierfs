@@ -609,6 +609,119 @@ int main() {
     }
 
     {
+        printf("== a device that rolls back or resets loses its standing, and dependants fall back\n");
+        Fixture fx;
+        CHECK(fx.L->observe_device("nobody", 1, 1) == DeviceObservation::Unknown);
+        auto d0 = fx.L->get_device("devA");
+        CHECK(d0 && d0->epoch == 0 && d0->last_seq == 0 && d0->state == "active" && d0->cls == "A");
+        CHECK(fx.L->observe_device("devA", 111, 5) == DeviceObservation::First);
+        CHECK(fx.L->observe_device("devA", 111, 7) == DeviceObservation::Ok && fx.L->get_device("devA")->last_seq == 7);
+        CHECK(fx.L->observe_device("devA", 111, 7) == DeviceObservation::Ok);
+        CHECK(fx.L->observe_device("devA", 111, 6) == DeviceObservation::Rollback);      // same epoch, lower seq: restored from an old copy
+        auto d1 = fx.L->get_device("devA");
+        CHECK(d1->state == "suspect" && d1->last_seq == 7);                             // the high-water mark is kept
+        CHECK(fx.L->observe_device("devA", 111, 9) == DeviceObservation::Ok && fx.L->get_device("devA")->state == "suspect");   // catching up does not clear it
+        CHECK(!fx.L->clear_device_suspect("devB1", 1).ok);                              // only suspect devices can be cleared
+        CHECK(fx.L->clear_device_suspect("devA", 9).ok);
+        CHECK(fx.L->get_device("devA")->state == "active" && fx.L->get_device("devA")->last_seq == 9);
+        CHECK(fx.L->observe_device("devA", 111, 9) == DeviceObservation::Ok && fx.L->get_device("devA")->state == "active");   // 9 is the new normal
+        CHECK(fx.L->observe_device("devA", 222, 1) == DeviceObservation::EpochChanged);  // re-initialised or replaced
+        CHECK(fx.L->get_device("devA")->state == "suspect" && fx.L->get_device("devA")->epoch == 222);
+        fx.L->clear_device_suspect("devA", 1);
+        fx.L->retire_device("devB2");
+        CHECK(fx.L->observe_device("devB2", 5, 5) == DeviceObservation::First);
+        CHECK(fx.L->observe_device("devB2", 6, 1) == DeviceObservation::EpochChanged && fx.L->get_device("devB2")->state == "retired");   // retired stays retired
+        CHECK(fx.L->observe_device("devB2", 6, 0) == DeviceObservation::Rollback && fx.L->get_device("devB2")->state == "retired");   // ... also when it rolls back
+        CHECK(fx.L->list_devices().size() == 4);
+        CHECK(fx.L->fsck().empty());
+
+        // a REPLICATED file with two replicas survives losing one device but not both
+        auto id = fx.replicated("/testdata/dep", {"devA", "devB1"});
+        fx.L->observe_device("devB1", 50, 10);
+        CHECK(fx.L->observe_device("devA", 222, 0) == DeviceObservation::Rollback);      // seq 0 < 1
+        CHECK(fx.L->get_file(id)->state == FileState::REPLICATED);                       // devB1 still stands
+        CHECK(fx.L->observe_device("devB1", 50, 9) == DeviceObservation::Rollback);
+        CHECK(fx.L->get_file(id)->state == FileState::REPLICATING);                      // nothing left to rely on: replicate again
+        CHECK(fx.L->fsck().empty());
+        EXPECT_REFUSED(fx, id, fx.drop(id), "not REPLICATED");
+        CHECK(fx.L->replica_weight(id, 1, 600) == 0.0);                                  // suspect devices count for nothing
+        CHECK(fx.L->clear_device_suspect("devA", 4).ok);
+        CHECK(fx.L->finish_replication(id, 1).ok && fx.L->get_file(id)->state == FileState::REPLICATED && fx.L->fsck().empty());
+
+        // an OFFLOADED file whose devices are both suspect is AT_RISK, and can be recovered when they are cleared
+        CHECK(fx.L->clear_device_suspect("devB1", 9).ok);   // (it was left suspect by the step above)
+        auto off = fx.replicated("/testdata/off", {"devA", "devB1"});
+        fx.L->complete_drop(fx.drop(off).id);
+        CHECK(fx.L->get_file(off)->state == FileState::OFFLOADED);
+        fx.L->observe_device("devA", 222, 1);        // devA: rollback again (seq 1 < 4)
+        fx.L->observe_device("devB1", 50, 1);        // devB1 is already suspect and now even further back
+        CHECK(fx.L->get_file(off)->state == FileState::AT_RISK && fx.L->fsck().empty());
+        CHECK(fx.L->clear_device_suspect("devA", 1).ok && fx.L->clear_at_risk(off).ok);
+        CHECK(fx.L->get_file(off)->state == FileState::OFFLOADED);
+
+        {   // a device that comes back with a NEW epoch (wiped, replaced, reinstalled) is no better than a rolled-back one
+            Fixture ep;
+            CHECK(ep.L->observe_device("devA", 500, 3) == DeviceObservation::First);
+            auto e1 = ep.replicated("/testdata/epoch", {"devA"});
+            CHECK(ep.L->get_file(e1)->state == FileState::REPLICATED);
+            CHECK(ep.L->observe_device("devA", 501, 9) == DeviceObservation::EpochChanged);
+            CHECK(ep.L->get_device("devA")->state == "suspect" && ep.L->get_file(e1)->state == FileState::REPLICATING);
+            CHECK(ep.L->fsck().empty());
+        }
+
+        // the other ways to lose the last replica of a REPLICATED file behave the same
+        auto a = fx.replicated("/testdata/only-a", {"devA"});
+        CHECK(fx.L->set_replica(a, 1, "devA", ReplicaState::MISSING).ok);
+        CHECK(fx.L->get_file(a)->state == FileState::REPLICATING);
+        auto b = fx.replicated("/testdata/only-a2", {"devA"});
+        CHECK(fx.L->record_audit(b, 1, "devA", false, "gone").ok && fx.L->get_file(b)->state == FileState::REPLICATING);
+        auto c = fx.replicated("/testdata/only-a3", {"devA"});
+        fx.L->retire_device("devA");
+        CHECK(fx.L->get_file(c)->state == FileState::REPLICATING && fx.L->fsck().empty());
+        CHECK(fx.L->replicas_on_device("devA").size() >= 4);
+    }
+
+    {
+        printf("== manifest hashes are set once; audit challenges are used once\n");
+        Fixture fx;
+        std::string id = fx.L->track_file("/testdata/ch", 3000000, 1, 0644);
+        fx.L->begin_replication(id, Fixture::chunks(3000000), 3000000, 1);
+        std::string h1(64, 'a'), h2(64, 'b');
+        CHECK(!fx.L->get_manifest_hash(id, 1).has_value());
+        CHECK(!fx.L->set_manifest_hash(id, 9, h1).ok);                       // unknown version
+        CHECK(!fx.L->set_manifest_hash(id, 1, "short").ok);
+        CHECK(fx.L->set_manifest_hash(id, 1, h1).ok && fx.L->get_manifest_hash(id, 1) == h1);
+        CHECK(fx.L->set_manifest_hash(id, 1, h1).ok);                        // idempotent
+        Res other = fx.L->set_manifest_hash(id, 1, h2);
+        CHECK(!other.ok && has(other.why, "already recorded") && fx.L->get_manifest_hash(id, 1) == h1);
+
+        std::vector<Challenge> cs;
+        for (uint32_t n = 0; n < 4; n++) cs.push_back({n, std::string(64, char('0' + n))});
+        CHECK(fx.L->add_challenges(id, 1, 0, cs).ok);
+        CHECK(fx.L->challenges_left(id, 1, 0) == 4 && fx.L->next_challenge_n(id, 1, 0) == 4 && fx.L->challenges_left(id, 1, 1) == 0);
+        CHECK(!fx.L->add_challenges(id, 1, 0, {{2, std::string(64, 'e')}}).ok);       // a number is never reissued
+        CHECK(!fx.L->add_challenges(id, 1, 0, {{9, "short"}}).ok);
+        CHECK(!fx.L->add_challenges(id, 7, 0, {{0, std::string(64, 'e')}}).ok);       // no such version
+        for (uint32_t n = 0; n < 4; n++) {
+            auto c = fx.L->take_challenge(id, 1, 0);
+            CHECK(c && c->n == n && c->response == std::string(64, char('0' + n)));     // in order, each exactly once
+        }
+        CHECK(!fx.L->take_challenge(id, 1, 0).has_value() && fx.L->challenges_left(id, 1, 0) == 0);
+        CHECK(fx.L->next_challenge_n(id, 1, 0) == 4);                                    // refresh continues the numbering
+        CHECK(fx.L->add_challenges(id, 1, 0, {{4, std::string(64, 'f')}}).ok && fx.L->take_challenge(id, 1, 0)->n == 4);
+        CHECK(fx.L->add_challenges(id, 1, MANIFEST_CHALLENGE_IDX, {{0, std::string(64, '9')}}).ok);   // the manifest has its own pool
+        CHECK(fx.L->take_challenge(id, 1, MANIFEST_CHALLENGE_IDX)->response == std::string(64, '9'));
+        CHECK(fx.L->fsck().empty());
+        fx.L.reset();
+        sqlite3* db = raw_open(fx.dir);
+        CHECK(!raw_exec(db, "UPDATE chunk_challenges SET used=0"));                       // a burned challenge cannot be revived
+        CHECK(!raw_exec(db, "UPDATE chunk_challenges SET response='x'"));
+        CHECK(!raw_exec(db, "DELETE FROM chunk_challenges"));
+        CHECK(!raw_exec(db, ("UPDATE versions SET manifest_sha256='" + std::string(64, 'c') + "' WHERE file_id='" + id + "'").c_str()));
+        sqlite3_close(db);
+    }
+
+    {
         printf("== snapshots, reserve, access tracking\n");
         Fixture fx;
         auto id = fx.replicated("/testdata/snap", {"devA", "devB1"});

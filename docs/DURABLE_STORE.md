@@ -1,6 +1,6 @@
 # Durable store and safe offload (Phase 3 design)
 
-Status: design accepted. **3a (ledger), 3b (crypto) and 3c (device store + protocol v3) are implemented and tested** (sections 17-19);
+Status: design accepted. **3a (ledger), 3b (crypto), 3c (device store + protocol v3) and 3d (replicate engine + reconciliation) are implemented and tested** (sections 17-20);
 nothing else in Phase 3 exists yet and nothing deletes data. Written before any code because this is the
 one place where a bug destroys the only copy of someone's file. The caches
 (meta.db, chunks.db) are disposable; everything in this document is not.
@@ -207,14 +207,15 @@ conservative defaults (any phone is C).
 
 ## 11. Keys and recovery
 - Master key MK (32 random bytes). HKDF derives K_id, K_data, K_manifest,
-  K_snapshot, K_file, K_audit (separate labels). Stored in Keychain, not synced.
+  K_snapshot, K_file, K_audit, K_nonce (separate labels). Stored in Keychain, not synced.
 - **Recovery phrase:** MK plus an 8-byte checksum as 16 groups of `XXXXC` (Crockford base32: 4 data
   characters and 1 check character per group; I/L read as 1, O as 0); shown once. The user must re-enter
   3 randomly chosen groups before `recovery_acked` flips to true. Until then no offload (I9).
   Losing the Mac loses the Keychain; the phrase is what saves the data.
 - Phones and other agents never see MK; they store ciphertext only.
-- Random 96-bit nonces are safe up to ~2^32 blobs per key (about 4 PiB of 1 MiB
-  chunks); the format version `tfs1` leaves room to change this.
+- Nonces are synthetic: `HMAC(K_nonce, aad || plaintext)[:12]` (section 20). Identical input gives identical
+  output; different inputs collide only if a 96-bit HMAC prefix does (about 2^-97 per pair), so there is no
+  per-key message budget to track. Key rotation is still not designed.
 - Not designed yet: key rotation, multi-user.
 
 ## 12. Disasters and what the user does
@@ -371,8 +372,8 @@ What exists
 - Manifests: same AEAD under K_manifest; AAD binds volume, file id and version; the body
   is also checked against the requested slot; trailing bytes, oversized fields and xattr
   caps (1 MiB each, 4 MiB total) are rejected.
-- Nonces: random 96-bit, counted per key; refuses to seal past 2^31 messages instead of
-  risking a collision (rotation is not designed yet).
+- Nonces (changed in 3d): a synthetic IV, `HMAC(K_nonce, aad || plaintext)[:12]`, so sealing is
+  deterministic. See section 20 for why. (3b originally used random nonces with a per-key budget.)
 - `FileHmac` (streaming whole-file check), audit nonces/responses (see section 7).
 - Recovery phrase encode/decode with per-group typo pinpointing, a global checksum,
   forgiving input, and a confirm-3-random-groups helper.
@@ -429,9 +430,10 @@ What exists
   the index row), append-only (triggers), with an exclusive lock, a free-space reserve, upload hash
   checks, download self-checks, a commit-sequence log, volume binding, and challenge audits that
   read the disk at the moment of the request.
-- "Existed" semantics: because every seal uses a random nonce, a retried upload differs from the stored
-  original. The device keeps the first copy and reports the hash of what it holds, so the replicate
-  engine (3d) fetches and verifies it instead of assuming.
+- "Existed" semantics: the device keeps the first copy of anything it already has and reports the hash
+  of what it actually holds. With deterministic sealing (section 20) a retry is byte-identical, so
+  "existed with the same hash" means the same bytes; a different hash means a conflict, which the
+  replicate engine reports instead of assuming.
 - A server that validates every id (never a path), bounds every count, drops idle connections,
   caps connections, refuses to listen beyond loopback without an explicit flag, and rejects unknown
   fault names.
@@ -475,3 +477,73 @@ Not done / next
 - 3e: drop-local engine using audits; the ledger's `chunk_challenges` table (precomputed audit responses).
 - No authentication or TLS: loopback only, by enforcement, not by convention.
 - Files above ~225 GiB need manifest splitting.
+
+## 20. Phase 3d status: the replicate engine and reconciliation (implemented)
+Code: `core/replicator.{hpp,cpp}`; ledger additions in `core/ledger.*`; sealing change in `core/crypto.*`.
+Tests: `tests/replicator_test.cpp` (real files, device process, ledger and crypto; 316 checks),
+`tests/repl_helper.cpp` (crash injection), `scripts/mutate-replicator.py`. Run: `make test-replicator`.
+It deletes nothing: local bytes stay, remote data is append-only. What it produces is the evidence the
+dangerous drop step (3e) depends on.
+
+Design change made first: **deterministic sealing.** The nonce is now `HMAC(K_nonce, aad || plaintext)[:12]`
+(a synthetic IV). The same chunk or manifest always seals to the same bytes. That makes a crashed
+upload resume byte-for-byte, lets "the device already has it" be checked by comparing hashes, removes the
+random-nonce budget, and means the engine never has to stage blobs on disk. Cost: equal plaintexts give
+equal blobs, which the content-derived chunk id already reveals by design. Verified against the
+independent pure-Python AES-GCM build of the complete blob; 40/40 crypto mutants killed.
+
+How a file is replicated
+1. **pass 1 (plan):** read the file, cut 1 MiB chunks, compute each chunk id and sealed-blob hash; confirm
+   the file did not change; ledger `begin_replication` records the plan BEFORE anything is sent.
+2. **pass 2 (upload):** re-read, re-seal, check each chunk still equals the plan (else the file changed:
+   `note_local_modified` and nothing is committed); upload what the device lacks; every chunk the device
+   claims to have already is AUDITED with a fresh secret nonce, never trusted; a random sample of newly
+   uploaded chunks is audited too. A final snapshot of the file catches modification of an already-read chunk.
+3. **commit:** seal the manifest, record its hash in the ledger first, upload it, audit it, then ledger replica
+   COMMITTED and REPLICATING -> REPLICATED. Whenever the engine holds a blob it tops up that chunk's pool of
+   one-time audit challenges (4 per chunk and for the manifest).
+Failure handling: a timeout leaves the replica PENDING/UPLOADED (retryable); evidence of lying or conflict
+(failed audit, different bytes under the same id, different manifest for a version) marks the replica MISSING.
+
+Reconciliation (`reconcile`): list the device's whole commit log and compare with the ledger.
+- A manifest on the device whose hash equals the one the ledger recorded is **adopted** (this is the crash
+  between "device committed" and "ledger recorded"); a different hash is a **conflict**; a version the ledger
+  does not know is **reported, never adopted**.
+- A committed replica whose manifest the device no longer lists becomes MISSING (and, if it was the last
+  one, the file falls back or goes AT_RISK).
+- A device found rolled back (same epoch, lower sequence) or re-initialised (new epoch) becomes **suspect**: its
+  replicas stop counting, dependent files fall back to REPLICATING / AT_RISK, and the engine refuses to use it.
+  It earns standing back only when EVERY replica it still claims passes a challenge audit; one failure keeps
+  it suspect. Catching up in sequence number alone does not clear it.
+- `audit_replica` spends one-time challenges; when a chunk's pool is used up it downloads and verifies the real
+  bytes (AEAD, id, hash) and mints a fresh pool.
+
+Ledger changes this needed: device epoch/sequence/suspect state; `chunk_challenges` (each usable once, a used row
+cannot be revived, enforced by trigger); manifest hash recorded once per version; and a rule that a REPLICATED
+file whose last committed replica is lost goes back to REPLICATING (an OFFLOADED one to AT_RISK) so the
+invariants stay true. 51 ledger mutants killed.
+
+Crash injection: the process dies at `after_begin`, `mid_upload`, `before_manifest`, `after_manifest_put`
+(recovered both by a plain re-run and by reconcile-then-run) and `before_finish`; every time the ledger passes
+fsck, the file ends REPLICATED, the device holds exactly the 5 chunks and one manifest (nothing duplicated or
+lost), the data downloads and verifies byte-for-byte, and a full audit passes.
+
+What testing taught us
+- Each mutation batch found real gaps, now tests: growth of a file between plan and upload (only the size check
+  sees it), rewriting an already-uploaded chunk (only the final snapshot sees it), a manifest the device
+  acknowledges but does not keep, a device that rolled back between two calls, a suspect device that caught up
+  in sequence number, refetch verification (needs a device whose bytes are intact but wrong), recall of a manifest
+  that decrypts but does not add up, a corrupted plan.
+- A harness lesson: a mutant killed only by a crash may be a flaky crash hiding a survivor. The script now
+  reruns crash-only kills and trusts the second result.
+- Challenge pools were not topped up after a repair until a test showed the audit path running dry.
+
+Limits / not done
+- Files over ~225 GiB need manifest splitting; the engine refuses them up front.
+- `verify_chunks` (16) samples newly uploaded chunks before commit. That is a smoke test, not proof: a device that
+  lies about chunk 17 of 100 can slip through until the full pre-drop audit in 3e.
+- A device that once lied (its index claims chunks its disk lacks) stays unusable for those chunks: append-only
+  means we cannot overwrite them. Replicating elsewhere is the remedy.
+- Authentication and TLS are still absent: loopback only.
+- Next: 3e (drop-local engine: quarantine, fresh full audit under freeze, the ledger's two-transaction protocol
+  with crash points around the filesystem steps) and only then policy (3f) and recovery (3g).

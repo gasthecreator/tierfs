@@ -60,6 +60,33 @@ struct IntentRec {
     int64_t version = 0, generation = 0;
 };
 
+struct DeviceRec {
+    std::string device_id, name, cls, state;  // state: active, suspect (restored/reset), retired
+    int64_t epoch = 0;     // 0 until first observed
+    int64_t last_seq = 0;  // highest commit sequence number seen from the device
+};
+
+enum class DeviceObservation {
+    Unknown,       // the ledger does not know this device
+    First,         // first time we hear from it
+    Ok,
+    Rollback,      // same epoch, lower sequence: restored from an older copy. Device is now suspect.
+    EpochChanged,  // a different epoch: re-initialised or replaced. Device is now suspect.
+};
+
+struct Challenge {
+    uint32_t n = 0;
+    std::string response;  // hex of SHA-256(nonce_n || blob), precomputed when the chunk was sealed
+};
+
+struct DeviceReplica {
+    std::string file_id;
+    int64_t version = 0;
+    ReplicaState state = ReplicaState::PENDING;
+};
+
+constexpr int64_t MANIFEST_CHALLENGE_IDX = -1;  // chunk_challenges.idx used for a version's manifest
+
 // Outcome of an operation that can be refused, with the reason (for logs/UI).
 struct Res {
     bool ok = false;
@@ -97,6 +124,15 @@ public:
     // cls: "A" server, "B" single disk, "C" mobile/removable (weights 1, 1, 0.5).
     bool register_device(const std::string& device_id, const std::string& name, const std::string& cls);
     bool retire_device(const std::string& device_id);  // replicas on it stop counting
+    std::optional<DeviceRec> get_device(const std::string& device_id);
+    std::vector<DeviceRec> list_devices();
+    // What a device says about itself. A lower sequence under the same epoch (restored from an
+    // older copy) or a new epoch (re-initialised) makes it SUSPECT: its replicas stop counting and
+    // files that depended on them fall back to replication / AT_RISK until it is re-verified.
+    DeviceObservation observe_device(const std::string& device_id, uint64_t epoch, uint64_t seq);
+    // After every replica on it has been re-audited. `seq` becomes the new high-water mark.
+    Res clear_device_suspect(const std::string& device_id, uint64_t seq);
+    std::vector<DeviceReplica> replicas_on_device(const std::string& device_id);
 
     // --- files ---
     // Starts tracking `path` (returns the existing id if already tracked).
@@ -127,8 +163,21 @@ public:
     // OFFLOADED file with no committed replica it becomes AT_RISK automatically.
     Res record_audit(const std::string& file_id, int64_t version, const std::string& device_id,
                      bool ok, const std::string& detail);
+    // Hash of the sealed manifest, recorded BEFORE it is uploaded so that a manifest found on a
+    // device can be recognised exactly. Set once; the same value again is fine, another is refused.
+    Res set_manifest_hash(const std::string& file_id, int64_t version, const std::string& sha256_hex);
+    std::optional<std::string> get_manifest_hash(const std::string& file_id, int64_t version);
+
+    // One-time audit challenges (design doc section 7): responses precomputed when a chunk (or the
+    // manifest, idx == MANIFEST_CHALLENGE_IDX) was sealed. Each is usable once.
+    Res add_challenges(const std::string& file_id, int64_t version, int64_t idx, const std::vector<Challenge>& cs);
+    std::optional<Challenge> take_challenge(const std::string& file_id, int64_t version, int64_t idx);
+    size_t challenges_left(const std::string& file_id, int64_t version, int64_t idx);
+    uint32_t next_challenge_n(const std::string& file_id, int64_t version, int64_t idx);
+
     std::vector<ReplicaRec> get_replicas(const std::string& file_id, int64_t version);
     std::vector<ChunkRec> get_chunks(const std::string& file_id, int64_t version);
+    bool has_version(const std::string& file_id, int64_t version);   // (an empty file has a version but no chunks)
     // Sum of class weights of COMMITTED replicas audited within `max_audit_age` s.
     double replica_weight(const std::string& file_id, int64_t version, int64_t max_audit_age);
 
@@ -178,6 +227,10 @@ private:
                       const std::string& device_id, const std::string& detail);
     std::string new_id();
     bool exec(const char* sql);
+    // A file whose current version has lost its last committed replica: REPLICATED goes back to
+    // REPLICATING (the engine will resume it), OFFLOADED becomes AT_RISK. Inside the caller's txn.
+    void demote_if_orphaned(const std::string& file_id, int64_t version, const std::string& device_id, const std::string& why);
+    void reevaluate_for_device(const std::string& device_id, const std::string& why);
 
     sqlite3* db_ = nullptr;
     int lock_fd_ = -1;

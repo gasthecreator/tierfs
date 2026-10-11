@@ -24,7 +24,7 @@ MUTANTS = [
  ("fsck ignores broken chain",     'if (e.col_text(7) != prev) report(', 'if (false) report('),
  ("modification keeps generation", 'generation=generation+1, state=\'LOCAL\'', 'generation=generation, state=\'LOCAL\''),
  ("finish ignores generation",     'if (!g.row() || g.col_num(0) != f->generation) return fail("file changed since replication began");', ''),
- ("no AT_RISK on last replica lost (audit)", 'if (c.row() && c.col_num(0) == 0) {\n            Stmt m(db_, "UPDATE files SET prior_state=state, state=\'AT_RISK\' WHERE file_id=?1 AND state=\'OFFLOADED\'");\n            m.text(1, file_id).run();\n            append_event("file.at_risk", file_id, version, device_id, "last committed replica failed its audit");', 'if (false) {\n            Stmt m(db_, "UPDATE files SET prior_state=state, state=\'AT_RISK\' WHERE file_id=?1 AND state=\'OFFLOADED\'");\n            m.text(1, file_id).run();\n            append_event("file.at_risk", file_id, version, device_id, "last committed replica failed its audit");'),
+ ("failed audit does not demote file",   'demote_if_orphaned(file_id, version, device_id, "replica failed its audit: " + detail);', ''),
  ("clear_at_risk without evidence", 'else return fail("no committed replica and no local bytes: cannot clear (the data may be lost)");', 'else to = "OFFLOADED";'),
  ("adopt skips version check",     'if (!v.row()) return fail("unknown file version (import its manifest first)");', ''),
  ("hydrate without replica",       'if (!has_committed(db_, file_id, f->current_version)) return fail("no committed replica to hydrate from");', ''),
@@ -32,6 +32,26 @@ MUTANTS = [
  ("crash point A removed",         '    crash_point("ledger.drop.before_commit");\n', ''),
  ("crash point after-B removed",   '    crash_point("ledger.complete.after_commit");\n', ''),
  ("drop leaves state unchanged (txn A not atomic with intent)", 'append_event("drop.begin"', 'append_event("drop.begin2"'),
+ ("[3d] manifest hash can change",       'if (!q.col_null(0)) return q.col_text(0) == sha ? ok() : fail("a different manifest hash is already recorded for this version");', 'if (false) return ok();'),
+ ("[3d] manifest hash trigger removed",  '"CREATE TRIGGER manifest_hash_once BEFORE UPDATE ON versions"\n        " WHEN OLD.manifest_sha256 IS NOT NULL AND NEW.manifest_sha256 IS NOT OLD.manifest_sha256"\n        " BEGIN SELECT RAISE(ABORT,\'a recorded manifest hash never changes\'); END",', ''),
+ ("[3d] used challenge trigger removed", '"CREATE TRIGGER challenges_use_once BEFORE UPDATE ON chunk_challenges"\n        " WHEN OLD.used=1 OR NEW.response!=OLD.response OR NEW.n!=OLD.n OR NEW.idx!=OLD.idx"\n        " BEGIN SELECT RAISE(ABORT,\'a used challenge is never reused or altered\'); END",', ''),
+ ("[3d] challenge not marked used",      'Stmt u(db_, "UPDATE chunk_challenges SET used=1 WHERE', 'Stmt u(db_, "UPDATE chunk_challenges SET used=0 WHERE'),
+ ("[3d] challenges handed out backwards",'AND used=0 ORDER BY n LIMIT 1', 'AND used=0 ORDER BY n DESC LIMIT 1'),
+ ("[3d] challenge numbering reuses n",   'COALESCE(MAX(n)+1, 0)', 'COALESCE(MAX(n), 0)'),
+ ("[3d] rollback not detected",          '} else if (sq < d->last_seq) {', '} else if (false) {'),
+ ("[3d] epoch change not detected",      '} else if (d->epoch != e) {', '} else if (false) {'),
+ ("[3d] first observation not stored",   'UPDATE devices SET epoch=?2, last_seq=?3 WHERE device_id=?1 AND epoch=0', 'UPDATE devices SET epoch=0, last_seq=?3 WHERE device_id=?1 AND epoch=0'),
+ ("[3d] rollback leaves device trusted", 'UPDATE devices SET state=CASE WHEN state=\'retired\' THEN \'retired\' ELSE \'suspect\' END WHERE device_id=?1', 'UPDATE devices SET state=state WHERE device_id=?1'),
+ ("[3d] retired device revived (rollback)", 'UPDATE devices SET state=CASE WHEN state=\'retired\' THEN \'retired\' ELSE \'suspect\' END WHERE device_id=?1', 'UPDATE devices SET state=\'suspect\' WHERE device_id=?1'),
+ ("[3d] retired device revived (epoch)", 'SET epoch=?2, last_seq=?3, state=CASE WHEN state=\'retired\' THEN \'retired\' ELSE \'suspect\' END WHERE device_id=?1', 'SET epoch=?2, last_seq=?3, state=\'suspect\' WHERE device_id=?1'),
+ ("[3d] rollback does not demote files", 'reevaluate_for_device(device_id, "device sequence went backwards");', ''),
+ ("[3d] epoch change does not demote",   'reevaluate_for_device(device_id, "device epoch changed");', ''),
+ ("[3d] retire does not demote files",   'reevaluate_for_device(device_id, "device retired");', ''),
+ ("[3d] orphaned REPLICATED stays put",  'Stmt m(db_, "UPDATE files SET state=\'REPLICATING\' WHERE file_id=?1 AND state=\'REPLICATED\'");', 'Stmt m(db_, "UPDATE files SET state=\'REPLICATING\' WHERE file_id=?1 AND state=\'NEVER\'");'),
+ ("[3d] orphaned OFFLOADED not at risk", 'if (f->state != FileState::OFFLOADED && f->state != FileState::REPLICATED) return;', 'if (f->state != FileState::REPLICATED) return;'),
+ ("[3d] cleared device keeps old seq",   'UPDATE devices SET state=\'active\', last_seq=?2 WHERE device_id=?1 AND state=\'suspect\'', 'UPDATE devices SET state=\'active\', last_seq=last_seq WHERE device_id=?1 AND state=\'suspect\''),
+ ("[3d] any device can be 'cleared'",    'last_seq=?2 WHERE device_id=?1 AND state=\'suspect\'', 'last_seq=?2 WHERE device_id=?1'),
+ ("[3d] suspect replicas still count",   'return c.row() && c.col_num(0) >= 1;', 'return true;'),
  ("COMMITTED without device seq",  'if (state == ReplicaState::COMMITTED && device_seq <= 0)\n        return fail("a COMMITTED replica needs the device\'s commit sequence number");', ''),
  ("chunk list unchecked",          'if (total != size) return fail("chunk lengths do not add up to the file size");', ''),
 ]
@@ -40,7 +60,10 @@ src = open('core/ledger.cpp').read()
 os.makedirs('build/mut', exist_ok=True)
 survivors = []
 for name, frm, to in MUTANTS:
-    if only and not any(o in name for o in only): continue
+    inc = [o for o in only if not o.startswith('!')]
+    exc = [o[1:] for o in only if o.startswith('!')]
+    if inc and not any(o in name for o in inc): continue
+    if any(o in name for o in exc): continue
     if frm not in src:
         print(f"{name:<52} !! pattern not found (mutant list is stale)"); survivors.append(name + " (stale)"); continue
     open('build/mut/ledger.cpp','w').write(src.replace(frm, to, 1))

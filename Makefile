@@ -54,6 +54,19 @@ build/deviceclient.o: core/deviceclient.cpp core/deviceclient.hpp core/devicesto
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
+build/replicator.o: core/replicator.cpp core/replicator.hpp core/ledger.hpp core/deviceclient.hpp core/crypto.hpp core/crashpoint.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/repl_helper: tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+build/replicator_test: tests/replicator_test.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/repl_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/replicator_test.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+test-replicator: build/replicator_test build/tierfs-device
+	./build/replicator_test
+
 build/devicenet_test: tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
 

@@ -52,6 +52,8 @@ std::string event_hash(int64_t seq, int64_t ts, const std::string& kind, const s
     return sha256_hex(m.data(), m.size());
 }
 
+bool has_committed(sqlite3* db, const std::string& file_id, int64_t version);
+
 const char* const FILE_COLS = "file_id,path,current_version,generation,state,size,mtime,mode,local_present,last_access";
 
 FileRec file_from(Stmt& s) {
@@ -190,8 +192,8 @@ bool Ledger::init_schema(std::string* err) {
         "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID",
         "CREATE TABLE devices(device_id TEXT PRIMARY KEY, name TEXT NOT NULL,"
         " class TEXT NOT NULL CHECK(class IN('A','B','C')),"
-        " state TEXT NOT NULL DEFAULT 'active' CHECK(state IN('active','retired')),"
-        " registered_at INTEGER NOT NULL) WITHOUT ROWID",
+        " state TEXT NOT NULL DEFAULT 'active' CHECK(state IN('active','retired','suspect')),"
+        " registered_at INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, last_seq INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
         "CREATE TABLE files(file_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
         " current_version INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 1,"
         " state TEXT NOT NULL CHECK(state IN('LOCAL','REPLICATING','REPLICATED','DROPPING','OFFLOADED','HYDRATING','AT_RISK')),"
@@ -200,7 +202,11 @@ bool Ledger::init_schema(std::string* err) {
         " created_at INTEGER NOT NULL) WITHOUT ROWID",
         "CREATE TABLE versions(file_id TEXT NOT NULL REFERENCES files(file_id), version INTEGER NOT NULL,"
         " generation INTEGER NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL,"
-        " chunk_count INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(file_id,version)) WITHOUT ROWID",
+        " chunk_count INTEGER NOT NULL, created_at INTEGER NOT NULL, manifest_sha256 TEXT,"
+        " PRIMARY KEY(file_id,version)) WITHOUT ROWID",
+        "CREATE TABLE chunk_challenges(file_id TEXT NOT NULL, version INTEGER NOT NULL, idx INTEGER NOT NULL, n INTEGER NOT NULL,"
+        " response TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(file_id,version,idx,n),"
+        " FOREIGN KEY(file_id,version) REFERENCES versions(file_id,version)) WITHOUT ROWID",
         "CREATE TABLE version_chunks(file_id TEXT NOT NULL, version INTEGER NOT NULL, idx INTEGER NOT NULL,"
         " chunk_id TEXT NOT NULL, len INTEGER NOT NULL, blob_sha256 TEXT NOT NULL,"
         " PRIMARY KEY(file_id,version,idx), FOREIGN KEY(file_id,version) REFERENCES versions(file_id,version)) WITHOUT ROWID",
@@ -231,6 +237,15 @@ bool Ledger::init_schema(std::string* err) {
         "CREATE TRIGGER intents_no_delete BEFORE DELETE ON intents BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
         "CREATE TRIGGER consents_no_delete BEFORE DELETE ON consents BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
         "CREATE TRIGGER devices_no_delete BEFORE DELETE ON devices BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
+        "CREATE TRIGGER challenges_no_delete BEFORE DELETE ON chunk_challenges BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
+        // A challenge is used once: after its nonce has been shown to a device it is worthless (the device
+        // could have kept the answer), so a used row can never be reset or altered.
+        "CREATE TRIGGER challenges_use_once BEFORE UPDATE ON chunk_challenges"
+        " WHEN OLD.used=1 OR NEW.response!=OLD.response OR NEW.n!=OLD.n OR NEW.idx!=OLD.idx"
+        " BEGIN SELECT RAISE(ABORT,'a used challenge is never reused or altered'); END",
+        "CREATE TRIGGER manifest_hash_once BEFORE UPDATE ON versions"
+        " WHEN OLD.manifest_sha256 IS NOT NULL AND NEW.manifest_sha256 IS NOT OLD.manifest_sha256"
+        " BEGIN SELECT RAISE(ABORT,'a recorded manifest hash never changes'); END",
     };
     for (const char* q : ddl)
         if (!exec(q)) { *err = q; return false; }
@@ -325,6 +340,7 @@ bool Ledger::retire_device(const std::string& device_id) {
     Stmt s(db_, "UPDATE devices SET state='retired' WHERE device_id=?1 AND state='active'");
     if (!s.text(1, device_id).run() || sqlite3_changes(db_) != 1) return false;
     append_event("device.retired", "", 0, device_id, "");
+    reevaluate_for_device(device_id, "device retired");
     return t.commit();
 }
 
@@ -453,19 +469,8 @@ Res Ledger::set_replica(const std::string& file_id, int64_t version, const std::
             return fail("replica changed concurrently");
     }
     append_event("replica.state", file_id, version, device_id, to_string(state));
-    // Losing the last committed replica of an offloaded file is an emergency.
-    if (state != ReplicaState::COMMITTED) {
-        auto f = load_file(db_, file_id);
-        if (f && f->state == FileState::OFFLOADED && f->current_version == version) {
-            Stmt c(db_, "SELECT COUNT(*) FROM replicas r JOIN devices d USING(device_id) WHERE r.file_id=?1 AND r.version=?2 AND r.state='COMMITTED' AND d.state='active'");
-            c.text(1, file_id).num(2, version);
-            if (c.row() && c.col_num(0) == 0) {
-                Stmt m(db_, "UPDATE files SET prior_state=state, state='AT_RISK' WHERE file_id=?1 AND state='OFFLOADED'");
-                m.text(1, file_id).run();
-                append_event("file.at_risk", file_id, version, device_id, "last committed replica lost");
-            }
-        }
-    }
+    // Losing the last committed replica of a file that depends on it is not something to hide.
+    if (state != ReplicaState::COMMITTED) demote_if_orphaned(file_id, version, device_id, std::string("replica ") + to_string(state));
     return t.commit() ? ok() : fail("commit failed");
 }
 
@@ -529,16 +534,7 @@ Res Ledger::record_audit(const std::string& file_id, int64_t version, const std:
     Stmt u(db_, "UPDATE replicas SET state='AUDIT_FAILED' WHERE file_id=?1 AND version=?2 AND device_id=?3 AND state='COMMITTED'");
     if (!u.text(1, file_id).num(2, version).text(3, device_id).run() || sqlite3_changes(db_) != 1) return fail("replica changed concurrently");
     append_event("audit.failed", file_id, version, device_id, detail);
-    auto f = load_file(db_, file_id);
-    if (f && f->state == FileState::OFFLOADED && f->current_version == version) {
-        Stmt c(db_, "SELECT COUNT(*) FROM replicas r JOIN devices d USING(device_id) WHERE r.file_id=?1 AND r.version=?2 AND r.state='COMMITTED' AND d.state='active'");
-        c.text(1, file_id).num(2, version);
-        if (c.row() && c.col_num(0) == 0) {
-            Stmt m(db_, "UPDATE files SET prior_state=state, state='AT_RISK' WHERE file_id=?1 AND state='OFFLOADED'");
-            m.text(1, file_id).run();
-            append_event("file.at_risk", file_id, version, device_id, "last committed replica failed its audit");
-        }
-    }
+    demote_if_orphaned(file_id, version, device_id, "replica failed its audit: " + detail);
     return t.commit() ? ok() : fail("commit failed");
 }
 
@@ -556,6 +552,12 @@ std::vector<ReplicaRec> Ledger::get_replicas(const std::string& file_id, int64_t
         out.push_back(r);
     }
     return out;
+}
+
+bool Ledger::has_version(const std::string& file_id, int64_t version) {
+    Stmt s(db_, "SELECT 1 FROM versions WHERE file_id=?1 AND version=?2");
+    s.text(1, file_id).num(2, version);
+    return s.row();
 }
 
 std::vector<ChunkRec> Ledger::get_chunks(const std::string& file_id, int64_t version) {
@@ -578,6 +580,167 @@ double Ledger::replica_weight(const std::string& file_id, int64_t version, int64
                 " WHERE r.file_id=?1 AND r.version=?2 AND r.state='COMMITTED' AND d.state='active' AND r.last_audit_at>0 AND r.last_audit_at>=?3");
     s.text(1, file_id).num(2, version).num(3, now() - max_audit_age);
     return s.row() ? s.col_real(0) : 0.0;
+}
+
+// ---------------------------------------------------------------- orphaned files, devices, challenges
+
+void Ledger::demote_if_orphaned(const std::string& file_id, int64_t version, const std::string& device_id, const std::string& why) {
+    auto f = load_file(db_, file_id);
+    if (!f || f->current_version != version) return;
+    if (f->state != FileState::OFFLOADED && f->state != FileState::REPLICATED) return;
+    if (has_committed(db_, file_id, version)) return;
+    if (f->state == FileState::OFFLOADED) {
+        Stmt m(db_, "UPDATE files SET prior_state=state, state='AT_RISK' WHERE file_id=?1 AND state='OFFLOADED'");
+        if (m.text(1, file_id).run()) append_event("file.at_risk", file_id, version, device_id, "last committed replica lost: " + why);
+    } else {   // still has its bytes: just replicate it again (same version, the engine resumes it)
+        Stmt m(db_, "UPDATE files SET state='REPLICATING' WHERE file_id=?1 AND state='REPLICATED'");
+        if (m.text(1, file_id).run()) append_event("file.rereplicate", file_id, version, device_id, "last committed replica lost: " + why);
+    }
+}
+
+void Ledger::reevaluate_for_device(const std::string& device_id, const std::string& why) {
+    std::vector<std::pair<std::string, int64_t>> affected;
+    {
+        Stmt q(db_, "SELECT DISTINCT f.file_id, f.current_version FROM replicas r JOIN files f ON f.file_id=r.file_id AND f.current_version=r.version WHERE r.device_id=?1");
+        q.text(1, device_id);
+        while (q.row()) affected.emplace_back(q.col_text(0), q.col_num(1));
+    }
+    for (auto& a : affected) demote_if_orphaned(a.first, a.second, device_id, why);
+}
+
+namespace {
+DeviceRec device_from(Stmt& s) {
+    DeviceRec d;
+    d.device_id = s.col_text(0);
+    d.name = s.col_text(1);
+    d.cls = s.col_text(2);
+    d.state = s.col_text(3);
+    d.epoch = s.col_num(4);
+    d.last_seq = s.col_num(5);
+    return d;
+}
+}  // namespace
+
+std::optional<DeviceRec> Ledger::get_device(const std::string& device_id) {
+    Stmt s(db_, "SELECT device_id,name,class,state,epoch,last_seq FROM devices WHERE device_id=?1");
+    s.text(1, device_id);
+    if (!s.row()) return std::nullopt;
+    return device_from(s);
+}
+
+std::vector<DeviceRec> Ledger::list_devices() {
+    std::vector<DeviceRec> out;
+    Stmt s(db_, "SELECT device_id,name,class,state,epoch,last_seq FROM devices ORDER BY device_id");
+    while (s.row()) out.push_back(device_from(s));
+    return out;
+}
+
+DeviceObservation Ledger::observe_device(const std::string& device_id, uint64_t epoch, uint64_t seq) {
+    Txn t(db_);
+    if (!t.began()) return DeviceObservation::Unknown;
+    auto d = get_device(device_id);
+    if (!d) return DeviceObservation::Unknown;
+    DeviceObservation result = DeviceObservation::Ok;
+    const int64_t e = static_cast<int64_t>(epoch), sq = static_cast<int64_t>(seq);
+    if (d->epoch == 0) {
+        Stmt u(db_, "UPDATE devices SET epoch=?2, last_seq=?3 WHERE device_id=?1 AND epoch=0");
+        if (!u.text(1, device_id).num(2, e).num(3, sq).run() || sqlite3_changes(db_) != 1) return DeviceObservation::Unknown;
+        append_event("device.first_seen", "", 0, device_id, "epoch " + std::to_string(e) + " seq " + std::to_string(sq));
+        result = DeviceObservation::First;
+    } else if (d->epoch != e) {
+        Stmt u(db_, "UPDATE devices SET epoch=?2, last_seq=?3, state=CASE WHEN state='retired' THEN 'retired' ELSE 'suspect' END WHERE device_id=?1");
+        if (!u.text(1, device_id).num(2, e).num(3, sq).run()) return DeviceObservation::Unknown;
+        append_event("device.suspect", "", 0, device_id, "epoch changed " + std::to_string(d->epoch) + " -> " + std::to_string(e));
+        reevaluate_for_device(device_id, "device epoch changed");
+        result = DeviceObservation::EpochChanged;
+    } else if (sq < d->last_seq) {
+        Stmt u(db_, "UPDATE devices SET state=CASE WHEN state='retired' THEN 'retired' ELSE 'suspect' END WHERE device_id=?1");
+        if (!u.text(1, device_id).run()) return DeviceObservation::Unknown;
+        append_event("device.suspect", "", 0, device_id, "sequence went back " + std::to_string(d->last_seq) + " -> " + std::to_string(sq));
+        reevaluate_for_device(device_id, "device sequence went backwards");
+        result = DeviceObservation::Rollback;   // last_seq stays at the high-water mark: it is still behind until cleared
+    } else if (sq > d->last_seq) {
+        Stmt u(db_, "UPDATE devices SET last_seq=?2 WHERE device_id=?1");
+        if (!u.text(1, device_id).num(2, sq).run()) return DeviceObservation::Unknown;
+    }
+    return t.commit() ? result : DeviceObservation::Unknown;
+}
+
+Res Ledger::clear_device_suspect(const std::string& device_id, uint64_t seq) {
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    Stmt u(db_, "UPDATE devices SET state='active', last_seq=?2 WHERE device_id=?1 AND state='suspect'");
+    if (!u.text(1, device_id).num(2, static_cast<int64_t>(seq)).run() || sqlite3_changes(db_) != 1) return fail("device is not suspect");
+    append_event("device.cleared", "", 0, device_id, "seq " + std::to_string(seq));
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+std::vector<DeviceReplica> Ledger::replicas_on_device(const std::string& device_id) {
+    std::vector<DeviceReplica> out;
+    Stmt s(db_, "SELECT file_id, version, state FROM replicas WHERE device_id=?1 ORDER BY file_id, version");
+    s.text(1, device_id);
+    while (s.row()) out.push_back({s.col_text(0), s.col_num(1), parse_replica_state(s.col_text(2))});
+    return out;
+}
+
+Res Ledger::set_manifest_hash(const std::string& file_id, int64_t version, const std::string& sha) {
+    if (sha.size() != 64) return fail("a manifest hash is 64 hex characters");
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    Stmt q(db_, "SELECT manifest_sha256 FROM versions WHERE file_id=?1 AND version=?2");
+    q.text(1, file_id).num(2, version);
+    if (!q.row()) return fail("unknown file version");
+    if (!q.col_null(0)) return q.col_text(0) == sha ? ok() : fail("a different manifest hash is already recorded for this version");
+    Stmt u(db_, "UPDATE versions SET manifest_sha256=?3 WHERE file_id=?1 AND version=?2 AND manifest_sha256 IS NULL");
+    if (!u.text(1, file_id).num(2, version).text(3, sha).run() || sqlite3_changes(db_) != 1) return fail("version changed concurrently");
+    append_event("manifest.hash", file_id, version, "", sha);
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+std::optional<std::string> Ledger::get_manifest_hash(const std::string& file_id, int64_t version) {
+    Stmt q(db_, "SELECT manifest_sha256 FROM versions WHERE file_id=?1 AND version=?2");
+    q.text(1, file_id).num(2, version);
+    if (!q.row() || q.col_null(0)) return std::nullopt;
+    return q.col_text(0);
+}
+
+Res Ledger::add_challenges(const std::string& file_id, int64_t version, int64_t idx, const std::vector<Challenge>& cs) {
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    for (const auto& c : cs) {
+        if (c.response.size() != 64) return fail("a challenge response is 64 hex characters");
+        Stmt i(db_, "INSERT INTO chunk_challenges(file_id,version,idx,n,response) VALUES(?1,?2,?3,?4,?5)");
+        if (!i.text(1, file_id).num(2, version).num(3, idx).num(4, c.n).text(5, c.response).run()) return fail("cannot record challenge (duplicate n?)");
+    }
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+std::optional<Challenge> Ledger::take_challenge(const std::string& file_id, int64_t version, int64_t idx) {
+    Txn t(db_);
+    if (!t.began()) return std::nullopt;
+    Challenge c;
+    {
+        Stmt q(db_, "SELECT n, response FROM chunk_challenges WHERE file_id=?1 AND version=?2 AND idx=?3 AND used=0 ORDER BY n LIMIT 1");
+        q.text(1, file_id).num(2, version).num(3, idx);
+        if (!q.row()) return std::nullopt;
+        c.n = static_cast<uint32_t>(q.col_num(0));
+        c.response = q.col_text(1);
+    }
+    Stmt u(db_, "UPDATE chunk_challenges SET used=1 WHERE file_id=?1 AND version=?2 AND idx=?3 AND n=?4 AND used=0");
+    if (!u.text(1, file_id).num(2, version).num(3, idx).num(4, c.n).run() || sqlite3_changes(db_) != 1) return std::nullopt;
+    return t.commit() ? std::optional<Challenge>(c) : std::nullopt;   // burned even if the caller never gets to use it
+}
+
+size_t Ledger::challenges_left(const std::string& file_id, int64_t version, int64_t idx) {
+    Stmt q(db_, "SELECT COUNT(*) FROM chunk_challenges WHERE file_id=?1 AND version=?2 AND idx=?3 AND used=0");
+    q.text(1, file_id).num(2, version).num(3, idx);
+    return q.row() ? static_cast<size_t>(q.col_num(0)) : 0;
+}
+
+uint32_t Ledger::next_challenge_n(const std::string& file_id, int64_t version, int64_t idx) {
+    Stmt q(db_, "SELECT COALESCE(MAX(n)+1, 0) FROM chunk_challenges WHERE file_id=?1 AND version=?2 AND idx=?3");
+    q.text(1, file_id).num(2, version).num(3, idx);
+    return q.row() ? static_cast<uint32_t>(q.col_num(0)) : 0;
 }
 
 // ---------------------------------------------------------------- consent
