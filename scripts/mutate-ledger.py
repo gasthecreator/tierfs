@@ -55,7 +55,10 @@ MUTANTS = [
  ("COMMITTED without device seq",  'if (state == ReplicaState::COMMITTED && device_seq <= 0)\n        return fail("a COMMITTED replica needs the device\'s commit sequence number");', ''),
  ("chunk list unchecked",          'if (total != size) return fail("chunk lengths do not add up to the file size");', ''),
 ]
-only = sys.argv[1:] 
+only = sys.argv[1:]
+sys.path.insert(0, 'scripts')
+from ledger_mutants_3e import M3E   # mutants for the quarantine rules, kept in their own file
+MUTANTS += [(n, a, b) for (n, a, b) in M3E] 
 src = open('core/ledger.cpp').read()
 os.makedirs('build/mut', exist_ok=True)
 survivors = []

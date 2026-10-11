@@ -1,6 +1,6 @@
 # Durable store and safe offload (Phase 3 design)
 
-Status: design accepted. **3a (ledger), 3b (crypto), 3c (device store + protocol v3) and 3d (replicate engine + reconciliation) are implemented and tested** (sections 17-20);
+Status: design accepted. **3a (ledger), 3b (crypto), 3c (device store + protocol v3) and 3d (replicate engine + reconciliation) and 3e (drop-local engine) are implemented and tested** (sections 17-21);
 nothing else in Phase 3 exists yet and nothing deletes data. Written before any code because this is the
 one place where a bug destroys the only copy of someone's file. The caches
 (meta.db, chunks.db) are disposable; everything in this document is not.
@@ -547,3 +547,54 @@ Limits / not done
 - Authentication and TLS are still absent: loopback only.
 - Next: 3e (drop-local engine: quarantine, fresh full audit under freeze, the ledger's two-transaction protocol
   with crash points around the filesystem steps) and only then policy (3f) and recovery (3g).
+
+## 21. Phase 3e status: the drop-local engine (implemented)
+Code: `core/dropengine.{hpp,cpp}`, `core/fsutil.hpp` (durable filesystem operations), quarantine bookkeeping in
+`core/ledger.*`. Tests: `tests/dropengine_test.cpp` (219 checks; real files, two real device processes, a real
+ledger, real encryption, a real second volume), `tests/drop_helper.cpp` (crash injection),
+`scripts/mutate-dropengine.py` + `scripts/dropengine_mutants.py`. Run: `make test-dropengine`.
+This is the only code that makes local bytes go away, and it never deletes in the same step as it decides.
+
+The protocol, as built
+- **drop** (moves, never deletes): freeze writers -> verify that the LOCAL file still equals the replicated
+  version chunk by chunk (chunk id, length, sealed-blob hash, total size) -> fresh audit of every reachable replica ->
+  ledger `begin_drop` (consent, replica weight, audit freshness, gates, generation: one transaction) -> prepare the
+  quarantine (same volume, durable directory, a plain-text note beside the bytes) -> re-check the file's identity
+  (size, mtime to the nanosecond, inode) -> ONE atomic rename into quarantine + sync of both directories -> ledger
+  `complete_drop` (which re-checks the evidence) -> unfreeze. If `complete_drop` refuses, the bytes are moved back.
+- **purge** (the deletion): fresh audits -> ledger `begin_purge` (retention elapsed unless emergency; replica weight from
+  audits younger than `max_audit_age`, ALWAYS, including in an emergency; the file must not be AT_RISK; all gates) ->
+  unlink -> `complete_purge`. The ledger records the intent BEFORE the unlink.
+- **restore**: ledger `begin_restore` -> verify the quarantined bytes against the plan -> rename back (never over an
+  occupied path) -> `complete_restore`. Bytes that no longer match come back as LOCAL data with a new generation, never
+  as "REPLICATED".
+- **recover()** after any crash: a DROPPING intent whose bytes never left is abandoned (and the file re-checked for
+  modifications meanwhile); one whose bytes moved is completed after re-auditing, or put back if the replicas no longer
+  suffice; bytes in both places, or in neither with unverifiable replicas, are reported and left alone. Interrupted
+  purges are finished, interrupted restores are finished or reported.
+
+Invariant, tested at every crash point (7 for drop, 4 for purge, 3 for restore): the original bytes exist somewhere
+recoverable (original path, quarantine, or verified replicas), the ledger passes fsck, and recovery converges.
+
+What the tests showed (so the code and the doc agree)
+- **A real bug found by the race test:** on detecting a modification just before the move, the engine told the ledger
+  "file modified" BEFORE withdrawing the drop; the ledger rightly refuses that while a drop is open, so the file ended up
+  marked REPLICATED with local bytes that no longer matched. Order reversed (withdraw, then mark modified).
+- A drop must not trust only remote evidence: the local bytes are re-read and compared with the plan, because a
+  modification the filesystem layer failed to report would otherwise be destroyed.
+- Recovery after a crash must re-audit, not reuse the evidence seen before the crash: a test rots a replica during
+  the crash window and requires the bytes to be restored instead of the drop completed.
+- Testing the "same volume" rule needed a real second volume: the test creates a RAM disk (no privileges needed) and
+  removes it, also on a fail-fast exit.
+- Two flaky tests were really bugs in the tests (assuming a position in an id-sorted list; two worlds on one port).
+- Mutation testing: 39 mutants, 35 killed. Expected survivors: removing the directory syncs (power-loss only), a
+  chunk-hash check that the chunk-id check also covers, and `move_back`'s overwrite guard that `restore` checks first.
+
+What is NOT done
+- **Nothing in the mounted filesystem calls this yet.** The mount today is the read-only remote view (Phases 1-2); the
+  overlay with an origin store, the freeze gate (refuse writers), and what appears at a dropped file's path are the
+  filesystem layer's job (policy 3f / the write phase). `FileGate` is the contract that layer must satisfy.
+- Quarantined bytes still occupy disk until purge; freeing space needs the retention period or an emergency purge.
+- Power-loss durability rests on the fsync ordering, not on a test.
+- Next: 3f (policy: cold detection, thresholds, background replication, the consent prompt) and 3g (recovery tool
+  and the disaster drills). Real-file use stays off until the owner has set up backups.

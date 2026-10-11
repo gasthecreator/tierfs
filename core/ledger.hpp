@@ -26,9 +26,13 @@ namespace tierfs {
 
 enum class FileState { LOCAL, REPLICATING, REPLICATED, DROPPING, OFFLOADED, HYDRATING, AT_RISK };
 enum class ReplicaState { PENDING, UPLOADED, COMMITTED, AUDIT_FAILED, MISSING };
+// What happens to the local bytes after a drop: they are MOVED aside (HELD), then either deleted for good
+// (PURGING -> PURGED) or brought back (RESTORING -> RESTORED). PURGED and RESTORED are final.
+enum class QuarantineState { HELD, PURGING, PURGED, RESTORING, RESTORED };
 
 const char* to_string(FileState s);
 const char* to_string(ReplicaState s);
+const char* to_string(QuarantineState s);
 
 struct FileRec {
     std::string file_id, path;
@@ -83,6 +87,13 @@ struct DeviceReplica {
     std::string file_id;
     int64_t version = 0;
     ReplicaState state = ReplicaState::PENDING;
+};
+
+struct QuarantineRec {
+    std::string intent_id, file_id, note;
+    int64_t version = 0;
+    QuarantineState state = QuarantineState::HELD;
+    int64_t held_at = 0, resolved_at = 0;
 };
 
 constexpr int64_t MANIFEST_CHALLENGE_IDX = -1;  // chunk_challenges.idx used for a version's manifest
@@ -200,6 +211,23 @@ public:
     // Bytes were restored (e.g. a late audit failed): DROPPING -> REPLICATED.
     Res abort_drop(const std::string& intent_id, const std::string& reason);
     std::vector<IntentRec> open_intents();
+
+    // --- quarantine: the last chance to undo a drop (design doc section 7, steps 4 and 7) ---
+    std::optional<QuarantineRec> get_quarantine(const std::string& intent_id);
+    std::vector<QuarantineRec> list_quarantine(std::optional<QuarantineState> state = std::nullopt);
+    // Permission to delete the quarantined bytes for good, recorded BEFORE the unlink. Enforces: recovery
+    // phrase, backup/test-prefix and reserve gates; the file is OFFLOADED or already hydrated (never AT_RISK:
+    // that means restore); the quarantine period has elapsed unless `emergency`; and, always, replica weight
+    // >= min_weight from audits younger than max_audit_age. Deleting the quarantine is the last chance to
+    // restore, so even an emergency cannot skip the fresh evidence. Idempotent while PURGING (a retry).
+    Res begin_purge(const std::string& intent_id, int64_t retention_seconds, bool emergency, double min_weight, int64_t max_audit_age);
+    Res complete_purge(const std::string& intent_id);   // after the bytes are gone
+    // Permission to move the quarantined bytes back. Non-destructive, so no gates; needs the file to be
+    // OFFLOADED or AT_RISK and the quarantine HELD. Idempotent while RESTORING.
+    Res begin_restore(const std::string& intent_id, const std::string& reason);
+    // After the bytes are back. If they were verified against the plan and a committed replica exists the
+    // file is REPLICATED; otherwise LOCAL with its generation bumped (nothing prepared before may be reused).
+    Res complete_restore(const std::string& intent_id, bool bytes_verified);
 
     // --- recall ---
     Res begin_hydrate(const std::string& file_id);     // OFFLOADED -> HYDRATING

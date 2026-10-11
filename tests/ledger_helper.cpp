@@ -5,6 +5,8 @@
 //
 //   ledger_helper drop     <dir> <file_id> <consent_id>
 //   ledger_helper complete <dir> <intent_id>
+//   ledger_helper purge    <dir> <intent_id>
+//   ledger_helper restore  <dir> <intent_id>
 // TIERFS_FAKE_NOW=<unix seconds> makes it use the test's clock.
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +30,16 @@ int main(int argc, char** argv) {
         if (!f) return 4;
         Res r = L->begin_drop(argv[3], f->current_version, f->generation, argv[4], 2.0, 600);
         fprintf(stderr, "helper: begin_drop -> %s %s\n", r.ok ? "ok" : "refused", r.why.c_str());
+        return r.ok ? 0 : 5;
+    }
+    if (cmd == "purge") {   // emergency purge with the standard policy: retention is not what these tests are about
+        Res r = L->begin_purge(argv[3], 0, true, 2.0, 600);
+        fprintf(stderr, "helper: begin_purge -> %s %s\n", r.ok ? "ok" : "refused", r.why.c_str());
+        return r.ok ? 0 : 5;
+    }
+    if (cmd == "restore") {
+        Res r = L->begin_restore(argv[3], "test");
+        fprintf(stderr, "helper: begin_restore -> %s %s\n", r.ok ? "ok" : "refused", r.why.c_str());
         return r.ok ? 0 : 5;
     }
     if (cmd == "complete") {

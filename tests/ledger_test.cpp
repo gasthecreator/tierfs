@@ -722,6 +722,210 @@ int main() {
     }
 
     {
+        printf("== quarantine: dropped bytes are held, and deleting them is gated by fresh evidence\n");
+        Fixture fx;
+        auto id = fx.replicated("/testdata/q1", {"devA", "devB1"});
+        Res d = fx.drop(id);
+        CHECK(d.ok && !fx.L->get_quarantine(d.id).has_value());                // nothing is quarantined until the drop completes
+        CHECK(fx.L->complete_drop(d.id).ok);
+        auto q = fx.L->get_quarantine(d.id);
+        CHECK(q && q->state == QuarantineState::HELD && q->held_at == g_time && q->version == 1 && q->file_id == id);
+        CHECK(fx.L->list_quarantine().size() == 1 && fx.L->list_quarantine(QuarantineState::PURGED).empty() && fx.L->fsck().empty());
+        CHECK(!fx.L->get_quarantine("nope").has_value());
+
+        const int64_t WEEK = 7 * 86400;
+        auto refuse = [&](Res r, const char* why) {
+            auto after = fx.L->get_quarantine(d.id);
+            bool unchanged = after && after->state == QuarantineState::HELD;
+            CHECK(!r.ok && has(r.why, why) && unchanged);
+            if (r.ok || !has(r.why, why)) printf("      got: ok=%d why='%s'\n", r.ok, r.why.c_str());
+        };
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "has not elapsed");                       // the same day
+        refuse(fx.L->begin_purge("nope", 0, true, 2.0, 600), "no such quarantine");
+        refuse(fx.L->begin_purge(d.id, 0, true, 0.0, 600), "positive");
+        refuse(fx.L->begin_purge(d.id, 0, true, 2.0, 0), "finite audit age");
+        g_time += 10 * 86400;                                                                              // ten days later: the period is over, but the audits are stale
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "insufficient replica weight");
+        fx.L->record_audit(id, 1, "devA", true, "again");
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "have 1.0");                              // one fresh audit is not enough
+        fx.L->record_audit(id, 1, "devB1", true, "again");
+        // gates, one at a time
+        fx.L->set_meta("recovery_acked", "0");
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "recovery phrase");
+        fx.L->set_meta("recovery_acked", "1");
+        fx.L->release_reserve();
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "reserve");
+        fx.L->ensure_reserve(1 << 20);
+        fx.L->set_meta("backup_acked", "0");
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "backup not acknowledged");
+        fx.L->set_meta("backup_acked", "1");
+        // a device that stops being trustworthy takes its weight with it
+        fx.L->observe_device("devB1", 9, 9);
+        fx.L->observe_device("devB1", 9, 5);                                                              // rolled back: suspect
+        refuse(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600), "have 1.0");
+        fx.L->clear_device_suspect("devB1", 5);
+        fx.L->record_audit(id, 1, "devB1", true, "cleared and re-audited");
+        CHECK(fx.L->fsck().empty());
+
+        // now it is allowed
+        CHECK(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600).ok);
+        CHECK(fx.L->get_quarantine(d.id)->state == QuarantineState::PURGING);
+        uint64_t ev = fx.L->event_count();
+        CHECK(fx.L->begin_purge(d.id, WEEK, false, 2.0, 600).ok && fx.L->event_count() == ev);           // a retry is harmless
+        CHECK(!fx.L->begin_restore(d.id, "too late").ok);                                                 // the bytes may already be going
+        CHECK(fx.L->complete_purge(d.id).ok);
+        auto done = fx.L->get_quarantine(d.id);
+        CHECK(done->state == QuarantineState::PURGED && done->resolved_at == g_time);
+        CHECK(!fx.L->complete_purge(d.id).ok && !fx.L->begin_purge(d.id, 0, true, 2.0, 600).ok && !fx.L->begin_restore(d.id, "x").ok);
+        CHECK(fx.L->get_file(id)->state == FileState::OFFLOADED && fx.L->fsck().empty());
+        fx.L.reset();
+        sqlite3* db = raw_open(fx.dir);
+        CHECK(!raw_exec(db, "UPDATE quarantine SET state='held'"));                                       // a purge cannot be un-purged
+        CHECK(!raw_exec(db, "DELETE FROM quarantine"));
+        sqlite3_close(db);
+    }
+
+    {
+        printf("== quarantine: the completing steps cannot be used to skip the gated beginning\n");
+        Fixture fx;
+        auto id = fx.replicated("/testdata/skip", {"devA", "devB1"});
+        Res d = fx.drop(id);
+        fx.L->complete_drop(d.id);
+        Res c1 = fx.L->complete_purge(d.id);                       // never begun: the gates were never consulted
+        CHECK(!c1.ok && has(c1.why, "not PURGING"));
+        Res c2 = fx.L->complete_restore(d.id, true);
+        CHECK(!c2.ok && has(c2.why, "not RESTORING"));
+        CHECK(fx.L->get_quarantine(d.id)->state == QuarantineState::HELD && fx.L->get_file(id)->state == FileState::OFFLOADED);
+        fx.L->begin_restore(d.id, "x");
+        Res c3 = fx.L->complete_purge(d.id);                       // wrong direction
+        CHECK(!c3.ok && fx.L->get_quarantine(d.id)->state == QuarantineState::RESTORING);
+        CHECK(fx.L->fsck().empty());
+    }
+
+    {
+        printf("== quarantine: emergency purge, hydrated files, AT_RISK files\n");
+        Fixture fx;
+        auto id = fx.replicated("/testdata/q2", {"devA", "devB1"});
+        Res d = fx.drop(id);
+        fx.L->complete_drop(d.id);
+        // an emergency (low disk) skips the waiting period, NEVER the evidence
+        CHECK(fx.L->begin_purge(d.id, 7 * 86400, true, 2.0, 600).ok);
+        CHECK(fx.L->get_quarantine(d.id)->state == QuarantineState::PURGING);
+
+        Fixture fy;
+        auto id2 = fy.replicated("/testdata/q3", {"devA", "devB1"});
+        Res d2 = fy.drop(id2);
+        fy.L->complete_drop(d2.id);
+        g_time += 5000;                                                                                    // audits are stale
+        Res stale = fy.L->begin_purge(d2.id, 0, true, 2.0, 600);
+        CHECK(!stale.ok && has(stale.why, "insufficient replica weight"));
+        fy.L->record_audit(id2, 1, "devA", true, "a"); fy.L->record_audit(id2, 1, "devB1", true, "b");
+        // the file is recalled (hydrated), then the leftover quarantine can go
+        CHECK(fy.L->begin_hydrate(id2).ok && fy.L->complete_hydrate(id2).ok && fy.L->get_file(id2)->state == FileState::REPLICATED);
+        CHECK(fy.L->begin_purge(d2.id, 0, false, 2.0, 600).ok && fy.L->complete_purge(d2.id).ok);
+        CHECK(fy.L->fsck().empty());
+
+        Fixture fz;
+        auto id3 = fz.replicated("/testdata/q4", {"devA", "devB1"});
+        Res d3 = fz.drop(id3);
+        fz.L->complete_drop(d3.id);
+        CHECK(fz.L->record_audit(id3, 1, "devB1", false, "gone").ok);                                    // one replica fails: 1.0 left
+        fz.L->record_audit(id3, 1, "devA", true, "ok");
+        Res weak = fz.L->begin_purge(d3.id, 0, true, 2.0, 600);
+        CHECK(!weak.ok && has(weak.why, "have 1.0"));
+        CHECK(fz.L->record_audit(id3, 1, "devA", false, "gone too").ok);                                 // now none: the file is AT_RISK
+        CHECK(fz.L->get_file(id3)->state == FileState::AT_RISK);
+        Res risky = fz.L->begin_purge(d3.id, 0, true, 0.5, 600);
+        CHECK(!risky.ok && has(risky.why, "restore the quarantined bytes instead"));                     // the quarantine may be the only copy left
+        CHECK(fz.L->get_quarantine(d3.id)->state == QuarantineState::HELD && fz.L->fsck().empty());
+    }
+
+    {
+        printf("== quarantine: restoring\n");
+        Fixture fx;
+        auto id = fx.replicated("/testdata/r1", {"devA", "devB1"});
+        Res d = fx.drop(id);
+        fx.L->complete_drop(d.id);
+        CHECK(!fx.L->begin_restore("nope", "x").ok);
+        CHECK(fx.L->begin_restore(d.id, "a replica failed").ok);
+        auto q = fx.L->get_quarantine(d.id);
+        CHECK(q->state == QuarantineState::RESTORING && q->note == "a replica failed");
+        uint64_t ev = fx.L->event_count();
+        CHECK(fx.L->begin_restore(d.id, "again").ok && fx.L->event_count() == ev);                        // retry is harmless
+        CHECK(!fx.L->begin_purge(d.id, 0, true, 2.0, 600).ok);                                            // cannot purge while restoring
+        CHECK(fx.L->complete_restore(d.id, true).ok);
+        auto f = fx.L->get_file(id);
+        CHECK(f->state == FileState::REPLICATED && f->local_present && fx.L->fsck().empty());             // bytes vouched for, committed replicas exist
+        CHECK(fx.L->get_quarantine(d.id)->state == QuarantineState::RESTORED && !fx.L->complete_restore(d.id, true).ok);
+
+        // bytes we cannot vouch for come back as LOCAL data with a new generation
+        auto id2 = fx.replicated("/testdata/r2", {"devA", "devB1"});
+        Res d2 = fx.drop(id2);
+        fx.L->complete_drop(d2.id);
+        int64_t gen = fx.L->get_file(id2)->generation;
+        CHECK(fx.L->begin_restore(d2.id, "damaged?").ok && fx.L->complete_restore(d2.id, false).ok);
+        auto f2 = fx.L->get_file(id2);
+        CHECK(f2->state == FileState::LOCAL && f2->local_present && f2->generation == gen + 1 && fx.L->fsck().empty());
+
+        // every replica gone while quarantined: the file is AT_RISK and the quarantine is what is left
+        auto id3 = fx.replicated("/testdata/r3", {"devA", "devB1"});
+        Res d3 = fx.drop(id3);
+        fx.L->complete_drop(d3.id);
+        fx.L->record_audit(id3, 1, "devA", false, "gone");
+        fx.L->record_audit(id3, 1, "devB1", false, "gone");
+        CHECK(fx.L->get_file(id3)->state == FileState::AT_RISK);
+        CHECK(fx.L->begin_restore(d3.id, "last copy").ok && fx.L->complete_restore(d3.id, true).ok);
+        auto f3 = fx.L->get_file(id3);
+        CHECK(f3->state == FileState::LOCAL && f3->local_present);                                         // nothing to be REPLICATED against: replicate it again
+        CHECK(fx.L->fsck().empty());
+
+        // not offered for files that are not offloaded
+        auto id4 = fx.replicated("/testdata/r4", {"devA", "devB1"});
+        Res d4 = fx.drop(id4);
+        fx.L->complete_drop(d4.id);
+        fx.L->begin_hydrate(id4);
+        fx.L->complete_hydrate(id4);                                                                       // recalled: REPLICATED again
+        Res nope = fx.L->begin_restore(d4.id, "x");
+        CHECK(!nope.ok && has(nope.why, "OFFLOADED or AT_RISK"));
+    }
+
+    {
+        printf("== quarantine: crash injection around purge and restore\n");
+        struct Setup { std::string dir, id, intent; };
+        auto setup = []() {
+            Setup s;
+            Fixture* fx = new Fixture;
+            s.dir = fx->dir;
+            s.id = fx->replicated("/testdata/qc", {"devA", "devB1"});
+            s.intent = fx->drop(s.id).id;
+            fx->L->complete_drop(s.intent);
+            fx->dir = tmpdir();
+            fx->L.reset();
+            delete fx;
+            return s;
+        };
+        {   Setup s = setup();
+            CHECK(crash_run("ledger.purge.before_commit", {"purge", s.dir, s.intent}));
+            auto L = open_ledger(s.dir);
+            CHECK(L && L->get_quarantine(s.intent)->state == QuarantineState::HELD && L->fsck().empty());   // nothing happened
+            fs::remove_all(s.dir);
+        }
+        {   Setup s = setup();
+            CHECK(crash_run("ledger.purge.after_commit", {"purge", s.dir, s.intent}));
+            auto L = open_ledger(s.dir);
+            CHECK(L && L->get_quarantine(s.intent)->state == QuarantineState::PURGING && L->fsck().empty());
+            CHECK(L->begin_purge(s.intent, 0, true, 2.0, 600).ok && L->complete_purge(s.intent).ok);       // the engine can finish it
+            fs::remove_all(s.dir);
+        }
+        {   Setup s = setup();
+            CHECK(crash_run("ledger.restore.before_commit", {"restore", s.dir, s.intent}));
+            auto L = open_ledger(s.dir);
+            CHECK(L && L->get_quarantine(s.intent)->state == QuarantineState::HELD && L->fsck().empty());
+            fs::remove_all(s.dir);
+        }
+    }
+
+    {
         printf("== snapshots, reserve, access tracking\n");
         Fixture fx;
         auto id = fx.replicated("/testdata/snap", {"devA", "devB1"});

@@ -94,6 +94,10 @@ bool replica_transition_allowed(const std::optional<ReplicaState>& from, Replica
 
 const char* to_string(FileState s) { return FILE_STATES[static_cast<int>(s)]; }
 const char* to_string(ReplicaState s) { return REPLICA_STATES[static_cast<int>(s)]; }
+const char* to_string(QuarantineState s) {
+    static const char* const names[] = {"held", "purging", "purged", "restoring", "restored"};
+    return names[static_cast<int>(s)];
+}
 
 int64_t Ledger::now() const { return clock_ ? clock_() : static_cast<int64_t>(time(nullptr)); }
 
@@ -221,6 +225,9 @@ bool Ledger::init_schema(std::string* err) {
         " state TEXT NOT NULL CHECK(state IN('open','done','aborted')), created_at INTEGER NOT NULL,"
         " done_at INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
         "CREATE UNIQUE INDEX one_open_drop ON intents(file_id) WHERE state='open' AND kind='DROP_LOCAL'",
+        "CREATE TABLE quarantine(intent_id TEXT PRIMARY KEY REFERENCES intents(intent_id), file_id TEXT NOT NULL REFERENCES files(file_id),"
+        " version INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN('held','purging','purged','restoring','restored')),"
+        " held_at INTEGER NOT NULL, resolved_at INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '') WITHOUT ROWID",
         "CREATE TABLE consents(consent_id TEXT PRIMARY KEY, scope_prefix TEXT NOT NULL CHECK(length(scope_prefix)>0),"
         " created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ack_text TEXT NOT NULL) WITHOUT ROWID",
         "CREATE TABLE events(seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, kind TEXT NOT NULL, file_id TEXT NOT NULL,"
@@ -237,6 +244,9 @@ bool Ledger::init_schema(std::string* err) {
         "CREATE TRIGGER intents_no_delete BEFORE DELETE ON intents BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
         "CREATE TRIGGER consents_no_delete BEFORE DELETE ON consents BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
         "CREATE TRIGGER devices_no_delete BEFORE DELETE ON devices BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
+        "CREATE TRIGGER quarantine_no_delete BEFORE DELETE ON quarantine BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
+        "CREATE TRIGGER quarantine_final BEFORE UPDATE ON quarantine WHEN OLD.state IN ('purged','restored')"
+        " BEGIN SELECT RAISE(ABORT,'a resolved quarantine is final'); END",
         "CREATE TRIGGER challenges_no_delete BEFORE DELETE ON chunk_challenges BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
         // A challenge is used once: after its nonce has been shown to a device it is worthless (the device
         // could have kept the answer), so a used row can never be reset or altered.
@@ -844,6 +854,8 @@ Res Ledger::complete_drop(const std::string& intent_id) {
     if (!u.text(1, file_id).num(2, generation).run() || sqlite3_changes(db_) != 1) return fail("file changed concurrently");
     Stmt d(db_, "UPDATE intents SET state='done', done_at=?2 WHERE intent_id=?1 AND state='open'");
     if (!d.text(1, intent_id).num(2, now()).run() || sqlite3_changes(db_) != 1) return fail("intent changed concurrently");
+    Stmt qi(db_, "INSERT INTO quarantine(intent_id,file_id,version,state,held_at) VALUES(?1,?2,?3,'held',?4)");
+    if (!qi.text(1, intent_id).text(2, file_id).num(3, version).num(4, now()).run()) return fail("cannot record the quarantine");
     append_event("drop.complete", file_id, version, "", "intent " + intent_id);
     crash_point("ledger.complete.before_commit");
     if (!t.commit()) return fail("commit failed");
@@ -881,6 +893,142 @@ std::vector<IntentRec> Ledger::open_intents() {
         out.push_back(r);
     }
     return out;
+}
+
+// ---------------------------------------------------------------- quarantine
+
+namespace {
+QuarantineState parse_qstate(const std::string& s) {
+    if (s == "held") return QuarantineState::HELD;
+    if (s == "purging") return QuarantineState::PURGING;
+    if (s == "purged") return QuarantineState::PURGED;
+    if (s == "restoring") return QuarantineState::RESTORING;
+    return QuarantineState::RESTORED;
+}
+QuarantineRec quarantine_from(Stmt& s) {
+    QuarantineRec q;
+    q.intent_id = s.col_text(0);
+    q.file_id = s.col_text(1);
+    q.version = s.col_num(2);
+    q.state = parse_qstate(s.col_text(3));
+    q.held_at = s.col_num(4);
+    q.resolved_at = s.col_num(5);
+    q.note = s.col_text(6);
+    return q;
+}
+const char* const QCOLS = "intent_id,file_id,version,state,held_at,resolved_at,note";
+}  // namespace
+
+std::optional<QuarantineRec> Ledger::get_quarantine(const std::string& intent_id) {
+    Stmt s(db_, (std::string("SELECT ") + QCOLS + " FROM quarantine WHERE intent_id=?1").c_str());
+    s.text(1, intent_id);
+    if (!s.row()) return std::nullopt;
+    return quarantine_from(s);
+}
+
+std::vector<QuarantineRec> Ledger::list_quarantine(std::optional<QuarantineState> state) {
+    std::vector<QuarantineRec> out;
+    std::string q = std::string("SELECT ") + QCOLS + " FROM quarantine";
+    if (state) q += std::string(" WHERE state='") + to_string(*state) + "'";
+    q += " ORDER BY held_at, intent_id";
+    Stmt s(db_, q.c_str());
+    while (s.row()) out.push_back(quarantine_from(s));
+    return out;
+}
+
+Res Ledger::begin_purge(const std::string& intent_id, int64_t retention_seconds, bool emergency, double min_weight, int64_t max_audit_age) {
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    if (get_meta("recovery_acked").value_or("") != "1") return fail("recovery phrase not acknowledged");
+    if (!has_reserve()) return fail("ledger reserve missing (disk-full safety)");
+    if (min_weight <= 0 || max_audit_age <= 0 || retention_seconds < 0) return fail("policy must require a positive replica weight and a finite audit age");
+    auto q = get_quarantine(intent_id);
+    if (!q) return fail("no such quarantine");
+    if (q->state != QuarantineState::HELD && q->state != QuarantineState::PURGING)
+        return fail(std::string("quarantine is ") + to_string(q->state) + ", not HELD");
+    auto f = load_file(db_, q->file_id);
+    if (!f) return fail("unknown file");
+    if (get_meta("backup_acked").value_or("") != "1") {
+        std::string pre = get_meta("test_prefix").value_or("");
+        if (pre.empty() || f->path.compare(0, pre.size(), pre) != 0)
+            return fail("backup not acknowledged and path is outside the test prefix");
+    }
+    // AT_RISK means a replica was lost while the bytes sat in quarantine: they may be the only good copy.
+    if (f->state != FileState::OFFLOADED && f->state != FileState::REPLICATED)
+        return fail(std::string("file is ") + to_string(f->state) + "; restore the quarantined bytes instead of deleting them");
+    if (!emergency && now() - q->held_at < retention_seconds) return fail("the quarantine period has not elapsed");
+    double w = replica_weight(q->file_id, q->version, max_audit_age);
+    if (w < min_weight) {
+        char buf[110];
+        snprintf(buf, sizeof buf, "insufficient replica weight to delete the quarantined bytes (have %.1f, need %.1f)", w, min_weight);
+        return fail(buf);
+    }
+    if (q->state == QuarantineState::HELD) {
+        Stmt u(db_, "UPDATE quarantine SET state='purging' WHERE intent_id=?1 AND state='held'");
+        if (!u.text(1, intent_id).run() || sqlite3_changes(db_) != 1) return fail("quarantine changed concurrently");
+        append_event("purge.begin", q->file_id, q->version, "", "intent " + intent_id + (emergency ? " (emergency)" : ""));
+    }
+    crash_point("ledger.purge.before_commit");
+    if (!t.commit()) return fail("commit failed");
+    crash_point("ledger.purge.after_commit");
+    return ok();
+}
+
+Res Ledger::complete_purge(const std::string& intent_id) {
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto q = get_quarantine(intent_id);
+    if (!q) return fail("no such quarantine");
+    Stmt u(db_, "UPDATE quarantine SET state='purged', resolved_at=?2 WHERE intent_id=?1 AND state='purging'");
+    if (!u.text(1, intent_id).num(2, now()).run() || sqlite3_changes(db_) != 1)
+        return fail(std::string("quarantine is ") + to_string(q->state) + ", not PURGING");
+    append_event("purge.complete", q->file_id, q->version, "", "intent " + intent_id);
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+Res Ledger::begin_restore(const std::string& intent_id, const std::string& reason) {
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto q = get_quarantine(intent_id);
+    if (!q) return fail("no such quarantine");
+    if (q->state != QuarantineState::HELD && q->state != QuarantineState::RESTORING)
+        return fail(std::string("quarantine is ") + to_string(q->state) + ", not HELD");
+    auto f = load_file(db_, q->file_id);
+    if (!f) return fail("unknown file");
+    if (f->state != FileState::OFFLOADED && f->state != FileState::AT_RISK)
+        return fail(std::string("file is ") + to_string(f->state) + "; only OFFLOADED or AT_RISK files can be restored from quarantine");
+    if (q->state == QuarantineState::HELD) {
+        Stmt u(db_, "UPDATE quarantine SET state='restoring', note=?2 WHERE intent_id=?1 AND state='held'");
+        if (!u.text(1, intent_id).text(2, reason).run() || sqlite3_changes(db_) != 1) return fail("quarantine changed concurrently");
+        append_event("restore.begin", q->file_id, q->version, "", "intent " + intent_id + ": " + reason);
+    }
+    crash_point("ledger.restore.before_commit");
+    if (!t.commit()) return fail("commit failed");
+    return ok();
+}
+
+Res Ledger::complete_restore(const std::string& intent_id, bool bytes_verified) {
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto q = get_quarantine(intent_id);
+    if (!q) return fail("no such quarantine");
+    if (q->state != QuarantineState::RESTORING) return fail(std::string("quarantine is ") + to_string(q->state) + ", not RESTORING");
+    auto f = load_file(db_, q->file_id);
+    if (!f) return fail("unknown file");
+    if (f->state != FileState::OFFLOADED && f->state != FileState::AT_RISK)
+        return fail(std::string("file is ") + to_string(f->state) + "; cannot complete the restore");
+    bool as_replicated = bytes_verified && q->version == f->current_version && has_committed(db_, q->file_id, q->version);
+    if (as_replicated) {
+        Stmt u(db_, "UPDATE files SET state='REPLICATED', prior_state=NULL, local_present=1 WHERE file_id=?1 AND state=?2");
+        if (!u.text(1, q->file_id).text(2, to_string(f->state)).run() || sqlite3_changes(db_) != 1) return fail("file changed concurrently");
+    } else {   // we cannot vouch for these bytes: they are LOCAL data again, and anything prepared against the old state is void
+        Stmt u(db_, "UPDATE files SET state='LOCAL', prior_state=NULL, local_present=1, generation=generation+1 WHERE file_id=?1 AND state=?2");
+        if (!u.text(1, q->file_id).text(2, to_string(f->state)).run() || sqlite3_changes(db_) != 1) return fail("file changed concurrently");
+    }
+    Stmt qu(db_, "UPDATE quarantine SET state='restored', resolved_at=?2 WHERE intent_id=?1 AND state='restoring'");
+    if (!qu.text(1, intent_id).num(2, now()).run() || sqlite3_changes(db_) != 1) return fail("quarantine changed concurrently");
+    append_event("restore.complete", q->file_id, q->version, "", std::string("intent ") + intent_id + (as_replicated ? " (as REPLICATED)" : " (as LOCAL: bytes not vouched for)"));
+    return t.commit() ? ok() : fail("commit failed");
 }
 
 // ---------------------------------------------------------------- recall / risk
@@ -1011,6 +1159,10 @@ std::vector<std::string> Ledger::fsck() {
          "DROPPING file without a matching open intent");
     each("SELECT f.path FROM intents i JOIN files f USING(file_id) WHERE i.kind='DROP_LOCAL' AND i.state='open' AND f.state!='DROPPING'",
          "open drop intent for a file that is not DROPPING");
+    each("SELECT q.intent_id FROM quarantine q LEFT JOIN intents i ON i.intent_id=q.intent_id WHERE i.state IS NOT 'done' OR i.kind IS NOT 'DROP_LOCAL'",
+         "quarantine without a completed drop");
+    each("SELECT f.path FROM quarantine q JOIN files f USING(file_id) WHERE q.state IN('held','purging','restoring') AND f.state IN('LOCAL','REPLICATING') AND f.local_present=0",
+         "file lost its bytes with a quarantine still open");
     each("SELECT path FROM files WHERE current_version>0 AND NOT EXISTS (SELECT 1 FROM versions v WHERE v.file_id=files.file_id AND v.version=files.current_version)",
          "current version has no record");
     each("SELECT f.path FROM versions v JOIN files f USING(file_id) WHERE v.chunk_count != (SELECT COUNT(*) FROM version_chunks c WHERE c.file_id=v.file_id AND c.version=v.version)",
