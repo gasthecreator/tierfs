@@ -61,3 +61,12 @@ the test was strengthened); integration tests in scripts/phase2-test.sh.
 2. Sequential readahead.
 3. Overall per-request deadline (see PHASE1.md item 6).
 4. Test with real tools: git status/clone, a compile, Finder, mmap.
+
+## Finder check (driven via AppleScript, macOS 26.6.2)
+Computer-use screen control was not available, so Finder was driven with
+`osascript` against a live mount. Covered: listing (0.2 s vs 0.3 s for a normal
+folder), opening a window, Finder "duplicate" of a 3 MB file out of the mount
+(sha256 identical), no stray `.DS_Store`/`._*` files written onto the read-only
+mount, offline listing instant, offline duplicate of a never-read file fails in
+<1 s without hanging. NOT covered: icon/thumbnail/Quick Look rendering, Spotlight
+indexing, drag-and-drop in the UI, and how errors look in Finder's dialogs.
