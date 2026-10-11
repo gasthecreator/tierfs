@@ -1,0 +1,5 @@
+build/
+scratch-mnt/
+scratch-over/
+testdata/sample/big.bin
+.DS_Store

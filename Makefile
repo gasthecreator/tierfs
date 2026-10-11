@@ -1,0 +1,37 @@
+# FUSE-T installs headers/libs under /usr/local.
+CC       ?= clang
+CXX      ?= clang++
+SAN      ?= -fsanitize=address,undefined
+CFLAGS   ?= -Wall -Wextra -g $(SAN) -D_FILE_OFFSET_BITS=64
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -g $(SAN)
+FUSE_INC := -I/usr/local/include -I/usr/local/include/fuse
+# The dylib's install name is @rpath/libfuse-t.dylib, so the binary needs an
+# rpath entry telling dyld where to search at launch.
+FUSE_LIB := -L/usr/local/lib -lfuse-t -Wl,-rpath,/usr/local/lib
+
+all: build/tierfs build/tierfs-backend build/hellofs
+
+build/tierfs-backend: backend/server.cpp core/wire.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+build/tierclient.o: core/tierclient.cpp core/tierclient.h core/wire.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/tierfs.o: mount/tierfs.c core/tierclient.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
+
+# Linked with the C++ compiler so libc++ comes along for the client library.
+build/tierfs: build/tierfs.o build/tierclient.o
+	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB)
+
+build/hellofs: mount/hellofs.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(FUSE_INC) $< -o $@ $(FUSE_LIB)
+
+clean:
+	rm -rf build
+
+.PHONY: all clean
