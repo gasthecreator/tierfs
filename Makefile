@@ -9,7 +9,7 @@ FUSE_INC := -I/usr/local/include -I/usr/local/include/fuse
 # rpath entry telling dyld where to search at launch.
 FUSE_LIB := -L/usr/local/lib -lfuse-t -Wl,-rpath,/usr/local/lib
 
-all: build/tierfs build/tierfs-backend build/hellofs build/tierctl
+all: build/tierfs build/tierfs-backend build/hellofs build/tierctl build/tierfs-device
 
 build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h core/sqlutil.hpp
 	@mkdir -p build
@@ -46,6 +46,29 @@ build/keychain_mac.o: core/keychain_mac.cpp core/crypto.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+build/devicestore.o: core/devicestore.cpp core/devicestore.hpp core/crypto.hpp core/sqlutil.hpp core/crashpoint.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/deviceclient.o: core/deviceclient.cpp core/deviceclient.hpp core/devicestore.hpp core/net.hpp core/wire.hpp core/crypto.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/devicenet_test: tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+test-device: build/devicenet_test build/tierfs-device
+	./build/devicenet_test
+
+build/tierfs-device: backend/device_server.cpp build/devicestore.o build/crypto.o core/wire.hpp
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) backend/device_server.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+build/devicestore_test: tests/devicestore_test.cpp build/devicestore.o build/crypto.o build/device_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicestore_test.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+build/device_helper: tests/device_helper.cpp build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/device_helper.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
 build/crypto_test: tests/crypto_test.cpp tests/crypto_kat.hpp build/crypto.o build/keychain_mac.o
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/crypto_test.cpp build/crypto.o build/keychain_mac.o $(OPENSSL_LIB) -framework Security -framework CoreFoundation -o $@
 
@@ -67,11 +90,12 @@ test-tsan: build/tierfs-backend
 	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test -lsqlite3
 	./build/tsan/client_test
 
-test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test
+test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test build/devicestore_test
 	./build/metastore_test | tail -1
 	./build/chunkcache_test | tail -1
 	./build/ledger_test | tail -1
-	./build/crypto_test
+	./build/crypto_test | tail -1
+	./build/devicestore_test
 
 build/tierfs-backend: backend/server.cpp core/wire.hpp
 	@mkdir -p build

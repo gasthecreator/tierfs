@@ -1,0 +1,146 @@
+// The storage side of a replica: what a device (the reference backend today, a phone
+// agent later) does with the encrypted chunks and manifests the Mac sends it.
+// See docs/DURABLE_STORE.md sections 6, 8, 10 and proto/PROTOCOL.md (device protocol).
+//
+// Rules this class enforces on the device, because the Mac must be able to trust an ack:
+//   - an ack means the bytes are on disk: temp file -> F_FULLFSYNC -> rename ->
+//     F_FULLFSYNC of the directory -> only then the index row (also full-fsync);
+//   - append-only: nothing is ever deleted or overwritten (database triggers back this
+//     up). Re-sending something that exists returns "existed" and the ORIGINAL's hash,
+//     because random nonces make a re-sealed chunk differ from the stored one;
+//   - every upload is checked against the hash the sender claims, every download and
+//     audit reads the bytes from disk again;
+//   - a manifest is accepted only when every chunk it lists is already present;
+//   - the device is bound to one volume and refuses another;
+//   - commit sequence numbers only go up, so a rolled-back device is detectable.
+//
+// The device never sees keys or plaintext. Thread-safe.
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+struct sqlite3;
+
+namespace tierfs {
+
+// Deliberate misbehaviour for tests ("simulate a lying, forgetful, full device").
+struct DeviceFaults {
+    bool lie_ack_chunk = false;            // acknowledge a chunk without writing it
+    bool lie_ack_manifest = false;         // ... or a manifest
+    bool corrupt_on_store = false;         // flip a byte in each chunk file after acknowledging it
+    bool truncate_on_store = false;        // cut each chunk file in half after acknowledging it
+    bool swap_get = false;                 // answer GET_CHUNK with a different chunk's bytes
+    bool lose_manifest_after_commit = false;  // delete the manifest file after committing it
+    bool enospc = false;                   // report "disk full" for every write
+    bool drop_connection_after_put = false;   // (server) execute a put, then close without replying
+    int slow_ms = 0;                       // sleep this long in every operation
+    // Comma-separated names, e.g. "corrupt_on_store,slow=50". False + *err on unknown names.
+    static bool parse(const std::string& csv, DeviceFaults* out, std::string* err);
+};
+
+struct DevInfo {
+    std::string device_id;
+    uint64_t epoch = 0;     // random, fixed when the store is created
+    uint64_t seq = 0;       // commit sequence number of the newest manifest
+    std::string volume_id;  // empty until bound
+    uint64_t free_bytes = 0;
+};
+
+struct PutChunkOut {
+    int err = 0;  // 0 or an errno value
+    std::string msg;
+    bool existed = false;     // true: the ORIGINAL was kept; sha256_hex describes it
+    std::string sha256_hex;   // hash of the blob the device holds
+};
+
+struct PutManifestOut {
+    int err = 0;
+    std::string msg;
+    bool existed = false;
+    uint64_t seq = 0;
+    std::string sha256_hex;
+};
+
+struct ManifestEntry {
+    uint64_t seq = 0;
+    std::string file_id;
+    int64_t version = 0;
+    std::string sha256_hex;
+};
+
+struct AuditItem {
+    uint8_t kind = 0;      // 0 chunk, 1 manifest
+    std::string id;        // chunk id, or file id
+    int64_t version = 0;   // manifests only
+    std::vector<uint8_t> nonce;  // 32 bytes
+};
+
+struct AuditOut {
+    uint8_t status = 0;    // 0 answered, 1 missing, 2 unreadable
+    std::string response_hex;  // SHA-256(nonce || stored bytes), computed from disk now
+};
+
+constexpr size_t MAX_CHUNK_BLOB = 8u << 20;
+constexpr size_t MAX_MANIFEST_BLOB = 15u << 20;
+constexpr size_t MAX_MANIFEST_CHUNKS = 1u << 20;
+constexpr size_t MAX_AUDIT_ITEMS = 64;
+constexpr size_t MAX_LIST_ENTRIES = 1000;
+constexpr uint64_t MIN_FREE_RESERVE = 16u << 20;  // never fill the disk to the last byte
+
+bool valid_chunk_id(const std::string& s);   // 64 lowercase hex
+bool valid_file_id(const std::string& s);    // 32 lowercase hex
+
+class DeviceStore {
+public:
+    // Creates the store if the directory is new. Never wipes or repairs an existing one:
+    // a corrupt index or an unknown version makes open() fail with the files untouched.
+    static std::unique_ptr<DeviceStore> open(const std::string& dir, std::string* err);
+    ~DeviceStore();
+    DeviceStore(const DeviceStore&) = delete;
+    DeviceStore& operator=(const DeviceStore&) = delete;
+
+    DevInfo info();
+    // First call binds; the same id again is fine; another id is refused (EPERM).
+    int bind_volume(const std::string& volume_id, std::string* msg);
+
+    std::vector<bool> has_chunks(const std::vector<std::string>& ids);
+    PutChunkOut put_chunk(const std::string& chunk_id, const std::vector<uint8_t>& blob, const std::string& claimed_sha256_hex);
+    int get_chunk(const std::string& chunk_id, std::vector<uint8_t>& out, std::string* msg);
+
+    PutManifestOut put_manifest(const std::string& file_id, int64_t version, const std::vector<uint8_t>& blob,
+                                const std::string& claimed_sha256_hex, const std::vector<std::string>& chunk_ids);
+    int get_manifest(const std::string& file_id, int64_t version, std::vector<uint8_t>& out, std::string* msg);
+    int list_manifests(uint64_t since_seq, size_t max, std::vector<ManifestEntry>& out, DevInfo* info_out);
+
+    std::vector<AuditOut> audit(const std::vector<AuditItem>& items);
+
+    // Free space that must remain after a write (default MIN_FREE_RESERVE). Tests raise it to
+    // simulate a nearly full disk without filling one.
+    void set_free_reserve(uint64_t bytes);
+    void set_faults(const DeviceFaults& f);
+    DeviceFaults faults();
+    uint64_t damaged_reads() const { return damaged_; }
+
+private:
+    DeviceStore() = default;
+    bool init(std::string* err);
+    bool exec(const char* sql);
+    std::string meta_get(const std::string& key);
+    std::string chunk_path(const std::string& id) const;
+    std::string manifest_path(const std::string& file_id, int64_t version) const;
+    int durable_write(const std::string& final_path, const std::vector<uint8_t>& data);
+
+    sqlite3* db_ = nullptr;
+    int lock_fd_ = -1;
+    std::string dir_;
+    std::mutex mu_;
+    DeviceFaults faults_;
+    uint64_t damaged_ = 0;
+    uint64_t min_free_ = MIN_FREE_RESERVE;
+};
+
+}  // namespace tierfs

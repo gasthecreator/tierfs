@@ -1,6 +1,6 @@
 # Durable store and safe offload (Phase 3 design)
 
-Status: design accepted. **3a (ledger library) and 3b (crypto layer) are implemented and tested** (sections 17, 18);
+Status: design accepted. **3a (ledger), 3b (crypto) and 3c (device store + protocol v3) are implemented and tested** (sections 17-19);
 nothing else in Phase 3 exists yet and nothing deletes data. Written before any code because this is the
 one place where a bug destroys the only copy of someone's file. The caches
 (meta.db, chunks.db) are disposable; everything in this document is not.
@@ -416,3 +416,62 @@ Not done / decisions left for later
 - Key rotation, multi-user, and wrapping the master key with a user passphrase are not designed.
 - OpenSSL's EVP_MAC API is not in BoringSSL (Android); the primitives are isolated in
   `crypto.cpp` so only that file changes for a port.
+
+## 19. Phase 3c status: the device side (implemented)
+Code: `core/devicestore.{hpp,cpp}` (the storage logic), `backend/device_server.cpp` (`tierfs-device`),
+`core/deviceclient.{hpp,cpp}` (what the Mac uses), `core/net.hpp` (shared connect helper). Protocol:
+`proto/PROTOCOL.md`, "Device protocol (version 3)". Tests: `tests/devicestore_test.cpp` (store),
+`tests/devicenet_test.cpp` (real server process, real client, real encryption), `tests/device_helper.cpp`
+(crash injection), `scripts/mutate-device.py`, `scripts/tsan-device.sh`. Run: `make test-unit`, `make test-device`.
+
+What exists
+- A device that stores chunks and manifests durably (temp, full fsync, rename, directory fsync, then
+  the index row), append-only (triggers), with an exclusive lock, a free-space reserve, upload hash
+  checks, download self-checks, a commit-sequence log, volume binding, and challenge audits that
+  read the disk at the moment of the request.
+- "Existed" semantics: because every seal uses a random nonce, a retried upload differs from the stored
+  original. The device keeps the first copy and reports the hash of what it holds, so the replicate
+  engine (3d) fetches and verifies it instead of assuming.
+- A server that validates every id (never a path), bounds every count, drops idle connections,
+  caps connections, refuses to listen beyond loopback without an explicit flag, and rejects unknown
+  fault names.
+- A client with whole-request deadlines (a device that trickles its reply is cut off), one safe retry
+  on a stale connection (all operations are idempotent), and paged `has_chunks`.
+- Fault modes for the tests: lie about storing, rot a byte, truncate, serve the wrong chunk, lose a
+  manifest, disk full, slow, drop the connection after executing (a lost ack).
+
+How it was verified
+- Crash injection (spawned helper process dies at each durability step): a renamed file with no index
+  row stays invisible and is replaced on retry; a transaction killed before commit rolls back the
+  manifest AND its sequence bump together, so the sequence has no gaps; after commit everything is
+  retrievable and a repeat returns "existed".
+- Every fault is shown to be detectable by the Mac: lies and rot via audits, wrong-chunk answers via the
+  AEAD binding, lost acks via "existed" on retry, rollback via epoch + seq, full disk via ENOSPC with
+  nothing half-recorded.
+- Hostile clients: requests before HELLO, wrong protocol version, unknown types, absurd counts, lying
+  lengths, a four-billion-id request, truncated payloads, a 4 GB frame length, path-like ids, 80 idle
+  connections. The server stays up and serves normally afterwards.
+- Mutation testing: 46 mutants over store, server and client. All killed except 3 that remove an fsync
+  (a missing fsync is only observable by cutting power) and 1 proven equivalent (the stored-size check
+  duplicates the hash check). Several test bugs were found and fixed along the way (see below).
+- ThreadSanitizer clean on the store, the client and the server process (141 + 107 checks);
+  38 stress runs without a failure.
+
+Findings along the way
+1. **Hostile files on disk.** A multi-gigabyte file at a chunk path would have been read entirely into
+   memory before being judged. Reads are now capped (15 MiB) before allocation; tested with a 2 GiB sparse file.
+2. **Test code, again.** After a failed check a test indexed an empty vector and crashed instead of
+   reporting. All assertion indexing now goes through bounds-safe helpers. A crash that prints no FAIL
+   line must never be mistaken for a pass, so the mutation script treats crashes as kills.
+3. **A check that was not a check.** My first ThreadSanitizer command silently built nothing (shell word
+   splitting) yet printed "0 warnings". It is now a script that verifies each binary exists and counts the
+   passes, and it reads the server process's log too.
+4. **Untestable by design:** the three power-loss mutants. Durability here rests on the documented
+   fsync ordering and F_FULLFSYNC, not on a test. An honest remaining risk, listed in the README.
+
+Not done / next
+- 3d: replicate engine (seal, upload, verify "existed", commit manifests, finish replication in the
+  ledger) and reconciliation (adopt, rollback detection, MISSING/AT_RISK).
+- 3e: drop-local engine using audits; the ledger's `chunk_challenges` table (precomputed audit responses).
+- No authentication or TLS: loopback only, by enforcement, not by convention.
+- Files above ~225 GiB need manifest splitting.

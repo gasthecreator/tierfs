@@ -21,7 +21,8 @@
 
 namespace tierfs {
 
-constexpr uint16_t PROTO_VERSION = 2;
+constexpr uint16_t PROTO_VERSION = 2;         // filesystem (tree) protocol
+constexpr uint16_t DEVICE_PROTO_VERSION = 3;  // device storage protocol (encrypted chunks and manifests)
 constexpr uint32_t MAX_FRAME = 16u << 20;
 constexpr uint32_t MAX_READ = 1u << 20;
 
@@ -30,6 +31,16 @@ enum MsgType : uint8_t {
     MSG_STAT = 0x02,
     MSG_READDIR = 0x03,
     MSG_READ = 0x04,
+    // device protocol (v3)
+    MSG_DEV_INFO = 0x10,
+    MSG_DEV_BIND = 0x11,
+    MSG_DEV_HAS_CHUNKS = 0x12,
+    MSG_DEV_PUT_CHUNK = 0x13,
+    MSG_DEV_GET_CHUNK = 0x14,
+    MSG_DEV_PUT_MANIFEST = 0x15,
+    MSG_DEV_GET_MANIFEST = 0x16,
+    MSG_DEV_LIST_MANIFESTS = 0x17,
+    MSG_DEV_AUDIT = 0x18,
     MSG_REPLY_FLAG = 0x80,
     MSG_ERROR = 0xFF,
 };
@@ -48,6 +59,8 @@ struct Writer {
         b.insert(b.end(), s.begin(), s.end());
     }
     void bytes(const uint8_t* p, size_t n) { b.insert(b.end(), p, p + n); }
+    // u32 length + data (for blobs bigger than a u16-prefixed string allows)
+    void blob(const uint8_t* p, size_t n) { u32(static_cast<uint32_t>(n)); bytes(p, n); }
 };
 
 // Reader never reads past the buffer: every accessor checks first and throws,
@@ -69,6 +82,14 @@ struct Reader {
     uint64_t u64() { uint64_t hi = u32(); return (hi << 32) | u32(); }
     int32_t i32() { return static_cast<int32_t>(u32()); }
     int64_t i64() { return static_cast<int64_t>(u64()); }
+    std::vector<uint8_t> blob(size_t max) {
+        uint32_t n = u32();
+        if (n > max) throw std::runtime_error("blob too large");
+        need(n);
+        std::vector<uint8_t> v(p + pos, p + pos + n);
+        pos += n;
+        return v;
+    }
     std::string str() {
         size_t len = u16();
         need(len);

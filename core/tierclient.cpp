@@ -29,6 +29,7 @@
 
 #include "chunkcache.hpp"
 #include "metastore.hpp"
+#include "net.hpp"
 #include "wire.hpp"
 
 using namespace tierfs;
@@ -101,51 +102,10 @@ static void drop(Conn& cn) {
     cn.fd = -1;
 }
 
-// Connect with a deadline. A plain connect() to an unreachable host can block
-// for over a minute, which would freeze every app touching the mount.
-static int connect_timeout(const char* host, const char* port, int timeout_ms) {
-    addrinfo hints{}, *res = nullptr;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, port, &hints, &res) != 0) return -1;
-    int fd = -1;
-    for (addrinfo* ai = res; ai; ai = ai->ai_next) {
-        int s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (s < 0) continue;
-        fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
-        int rc = connect(s, ai->ai_addr, ai->ai_addrlen);
-        if (rc != 0 && errno == EINPROGRESS) {
-            pollfd p{s, POLLOUT, 0};
-            if (poll(&p, 1, timeout_ms) == 1) {
-                int err = 0;
-                socklen_t el = sizeof err;
-                getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &el);
-                rc = err == 0 ? 0 : -1;
-            } else {
-                rc = -1;
-            }
-        }
-        if (rc == 0) {
-            fcntl(s, F_SETFL, fcntl(s, F_GETFL) & ~O_NONBLOCK);
-            fd = s;
-            break;
-        }
-        close(s);
-    }
-    freeaddrinfo(res);
-    return fd;
-}
-
 static bool ensure_connected(tc_client* c, Conn& cn) {
     if (cn.fd >= 0) return true;
-    int fd = connect_timeout(c->host.c_str(), c->port.c_str(), c->timeout_ms);
+    int fd = connect_with_deadline(c->host, c->port, c->timeout_ms);
     if (fd < 0) return false;
-    timeval tv{c->timeout_ms / 1000, (c->timeout_ms % 1000) * 1000};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-
     Writer w;
     w.u16(PROTO_VERSION);
     Frame resp;
