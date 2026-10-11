@@ -11,6 +11,16 @@ FUSE_LIB := -L/usr/local/lib -lfuse-t -Wl,-rpath,/usr/local/lib
 
 all: build/tierfs build/tierfs-backend build/hellofs
 
+build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/metastore_test: tests/metastore_test.cpp build/metastore.o
+	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+
+test-unit: build/metastore_test
+	./build/metastore_test
+
 build/tierfs-backend: backend/server.cpp core/wire.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $< -o $@
@@ -24,8 +34,8 @@ build/tierfs.o: mount/tierfs.c core/tierclient.h
 	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
 
 # Linked with the C++ compiler so libc++ comes along for the client library.
-build/tierfs: build/tierfs.o build/tierclient.o
-	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB)
+build/tierfs: build/tierfs.o build/tierclient.o build/metastore.o
+	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) -lsqlite3
 
 build/hellofs: mount/hellofs.c
 	@mkdir -p build
@@ -34,4 +44,4 @@ build/hellofs: mount/hellofs.c
 clean:
 	rm -rf build
 
-.PHONY: all clean
+.PHONY: all clean test-unit

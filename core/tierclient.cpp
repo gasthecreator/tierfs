@@ -8,10 +8,14 @@
 #include <sys/socket.h>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <memory>
 #include <utility>
 #include <vector>
 
+#include "metastore.hpp"
 #include "wire.hpp"
 
 using namespace tierfs;
@@ -24,22 +28,16 @@ struct tc_client {
     uint32_t next_id = 1;
     std::mutex mu;  // one connection, one request in flight (FUSE is multithreaded)
 
-    // Metadata cache (in memory for now; Phase 2 persists it in SQLite).
-    // Updated on every successful reply. Served ONLY when the network fails, so
-    // an online client always sees fresh data and an offline one never hangs
-    // Finder. Entries are removed when the server says a path no longer exists.
-    using DirList = std::vector<std::pair<std::string, tc_attr>>;
-    std::unordered_map<std::string, tc_attr> attrs;
-    std::unordered_map<std::string, DirList> dirs;
+    // Persistent metadata cache (SQLite). Updated on every successful reply and
+    // served ONLY when the network fails, so an online client always sees fresh
+    // data and an offline one never hangs Finder. Entries are removed when the
+    // server says a path no longer exists.
+    std::unique_ptr<MetaStore> meta;
 };
 
 // Errors meaning "can't reach the backend", as opposed to an answer from it.
 static bool is_net_err(int rc) {
     return rc == -EHOSTUNREACH || rc == -ETIMEDOUT || rc == -EIO;
-}
-
-static std::string join(const std::string& dir, const std::string& name) {
-    return dir == "/" ? "/" + name : dir + "/" + name;
 }
 
 static void drop(tc_client* c) {
@@ -148,11 +146,19 @@ static tc_attr read_attr(Reader& r) {
 
 extern "C" {
 
-tc_client* tc_create(const char* host, uint16_t port, int timeout_ms) {
+tc_client* tc_create(const char* host, uint16_t port, int timeout_ms, const char* cache_dir) {
     auto* c = new tc_client;
     c->host = host;
     c->port = std::to_string(port);
     c->timeout_ms = timeout_ms > 0 ? timeout_ms : 3000;
+    std::string db = ":memory:";
+    if (cache_dir && *cache_dir) {
+        std::error_code ec;
+        std::filesystem::create_directories(cache_dir, ec);
+        db = std::string(cache_dir) + "/meta.db";
+    }
+    c->meta = std::make_unique<MetaStore>(db);
+    if (c->meta->recovered()) fprintf(stderr, "tierfs: metadata cache was unreadable; rebuilt\n");
     return c;
 }
 
@@ -169,10 +175,14 @@ int tc_getattr(tc_client* c, const char* path, tc_attr* out) {
     Frame resp;
     int rc = rpc(c, MSG_STAT, w, resp);
     if (rc) {
-        if (rc == -ENOENT) { c->attrs.erase(path); c->dirs.erase(path); }
-        if (is_net_err(rc)) {
-            auto it = c->attrs.find(path);
-            if (it != c->attrs.end()) { *out = it->second; return 0; }  // stale but usable
+        if (rc == -ENOENT) c->meta->forget(path);
+        if (is_net_err(rc) && c->meta->get_attr(path, *out)) return 0;  // stale but usable
+        if (is_net_err(rc) && strcmp(path, "/") == 0) {
+            // The root exists by definition. Answering here lets a cold, offline
+            // mount complete: if getattr("/") fails, mount_nfs blocks forever in
+            // an uninterruptible state (found by scripts/phase2-test.sh).
+            *out = tc_attr{1, 0, time(nullptr), 0555};
+            return 0;
         }
         return rc;
     }
@@ -180,7 +190,7 @@ int tc_getattr(tc_client* c, const char* path, tc_attr* out) {
         Reader r(resp.payload);
         *out = read_attr(r);
     } catch (...) { drop(c); return -EPROTO; }
-    c->attrs[path] = *out;
+    c->meta->put_attr(path, *out);
     return 0;
 }
 
@@ -190,20 +200,17 @@ int tc_readdir(tc_client* c, const char* path, tc_dir_cb cb, void* ctx) {
     w.str(path);
     Frame resp;
     int rc = rpc(c, MSG_READDIR, w, resp);
+    MetaStore::DirList list;
     if (rc) {
-        if (rc == -ENOENT) { c->attrs.erase(path); c->dirs.erase(path); }
-        if (is_net_err(rc)) {
-            auto it = c->dirs.find(path);
-            if (it != c->dirs.end()) {  // stale listing
-                for (auto& e : it->second)
-                    if (cb(ctx, e.first.c_str(), &e.second)) break;
-                return 0;
-            }
+        if (rc == -ENOENT) c->meta->forget(path);
+        if (is_net_err(rc) && c->meta->get_dir(path, list)) {  // stale listing
+            for (auto& e : list)
+                if (cb(ctx, e.first.c_str(), &e.second)) break;
+            return 0;
         }
         return rc;
     }
     Reader r(resp.payload);
-    tc_client::DirList list;
     try {
         uint32_t count = r.u32();
         for (uint32_t i = 0; i < count; i++) {
@@ -212,16 +219,16 @@ int tc_readdir(tc_client* c, const char* path, tc_dir_cb cb, void* ctx) {
             list.emplace_back(std::move(name), a);
         }
     } catch (...) { drop(c); return -EPROTO; }
-    for (auto& e : list) c->attrs[join(path, e.first)] = e.second;
+    c->meta->put_dir(path, list);
     for (auto& e : list)
         if (cb(ctx, e.first.c_str(), &e.second)) break;
-    c->dirs[path] = std::move(list);
     return 0;
 }
 
 int64_t tc_read(tc_client* c, const char* path, uint64_t off, uint32_t len, void* buf) {
     std::lock_guard<std::mutex> lk(c->mu);
     if (len > MAX_READ) len = MAX_READ;
+    c->meta->touch(path, time(nullptr));  // feeds the Phase 3 tiering policy
     Writer w;
     w.str(path);
     w.u64(off);

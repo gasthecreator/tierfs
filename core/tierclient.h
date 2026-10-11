@@ -20,8 +20,10 @@ typedef struct {
 } tc_attr;
 
 /* Does not connect yet; the first call connects lazily and every call
- * reconnects if the previous connection died. */
-tc_client *tc_create(const char *host, uint16_t port, int timeout_ms);
+ * reconnects if the previous connection died. cache_dir holds the persistent
+ * metadata cache (created if missing); NULL or "" keeps it in memory only. */
+tc_client *tc_create(const char *host, uint16_t port, int timeout_ms,
+                     const char *cache_dir);
 void tc_destroy(tc_client *c);
 
 int tc_getattr(tc_client *c, const char *path, tc_attr *out);

@@ -25,14 +25,39 @@ as a deleted file.
 - macOS caches file *data* it has already read, so those files stay readable
   offline. Good for users; means "offline" tests must use never-read files.
 - The same NFS attribute cache can hide backend changes for a few seconds.
-- The metadata cache is in memory: lost on remount. Next step persists it in
-  SQLite so a fresh mount works offline too.
+- The metadata cache is persistent (step 2 below).
+
+## Step 2 result: persistent metadata cache (SQLite)
+core/metastore.{hpp,cpp}; unit tests in tests/metastore_test.cpp (`make test-unit`),
+mutation-checked (a boundary bug in subtree deletion was initially NOT caught and
+the test was strengthened); integration tests in scripts/phase2-test.sh.
+
+- Location: `-o cache=<dir>` -> `<dir>/meta.db` (WAL, synchronous=NORMAL).
+- Tables: attrs, dirs (listing-complete marker), entries (parent/child).
+- A listing replaces the old one atomically (one transaction); children that
+  vanished are deleted with their whole subtree. Subtree = key range
+  [p + "/", p + "0"), not LIKE, so names containing % _ ' are safe.
+- It is a CACHE: corrupt file or wrong schema version -> deleted and rebuilt.
+  Unopenable location -> runs with no cache. Phase 3's "only copy is on the
+  device" state is NOT cache data and must go in a separate durable store.
+- Last-access times are recorded on reads (max one write/minute/path) for the
+  Phase 3 tiering policy. Refreshing metadata preserves them.
+
+### Bugs this step found
+1. **Cold offline mount hung forever.** No cache + dead backend -> getattr("/")
+   failed -> `mount_nfs` blocked in uninterruptible state (needed kill -9).
+   My own first test mislabelled this "mount refused, acceptable". Fix: the
+   client answers getattr("/") itself when the backend is unreachable.
+2. **Wrong error text.** A refused connection returned EHOSTUNREACH, which
+   FUSE-T shows as "Permission denied" (readdir) or "No such file" (lookup).
+   The driver now maps every network failure to EIO by default.
+   (readdir errno table: EIO, ESTALE, ENXIO survive; most others become EACCES.)
+3. A test that passed for the wrong reason earlier (`timeout` missing on macOS)
+   taught us to assert on the error text, not just the exit code.
 
 ## Remaining Phase 2 work
-1. SQLite-backed metadata store (survives remount; also feeds the tiering
-   policy's last-access tracking in Phase 3).
-2. On-disk chunk cache: 1 MiB chunks keyed by (path, mtime, size, index), LRU
+1. On-disk chunk cache: 1 MiB chunks keyed by (path, mtime, size, index), LRU
    eviction, byte budget, pinned while a file is open.
-3. Sequential readahead.
-4. Overall per-request deadline (see PHASE1.md item 6).
-5. Test with real tools: git status/clone, a compile, Finder, mmap.
+2. Sequential readahead.
+3. Overall per-request deadline (see PHASE1.md item 6).
+4. Test with real tools: git status/clone, a compile, Finder, mmap.

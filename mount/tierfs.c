@@ -1,7 +1,9 @@
 /*
  * tierfs driver, Phase 1: read-only mount of a remote tree.
  *
- *   ./build/tierfs -f -o host=127.0.0.1,port=9099 <mountpoint>
+ *   ./build/tierfs -f -o host=127.0.0.1,port=9099,cache=<dir> <mountpoint>
+ *
+ * cache=<dir> keeps metadata in <dir>/meta.db so a fresh mount works offline.
  *
  * Every FUSE callback is a thin translation to the client library. Callbacks
  * return 0 / a byte count on success, or -errno.
@@ -26,7 +28,9 @@ static tc_client *g_client;
  * FUSE-T converts our errno into an NFS status, so not all survive. */
 static int g_neterr; /* 0 = pass through (EIO for network failures) */
 static int net(int rc) {
-    if (g_neterr && (rc == -EHOSTUNREACH || rc == -ETIMEDOUT || rc == -EIO)) return -g_neterr;
+    /* Always EIO unless overridden: left alone, EHOSTUNREACH reaches apps as
+     * "Permission denied" (readdir) or "No such file" (lookup). */
+    if (rc == -EHOSTUNREACH || rc == -ETIMEDOUT || rc == -EIO) return -(g_neterr ? g_neterr : EIO);
     return rc;
 }
 
@@ -116,18 +120,19 @@ struct opts {
     int port;
     int timeout_ms;
     int neterr;
+    char *cache;
 };
 
 #define OPT(t, f) {t, offsetof(struct opts, f), 0}
 static struct fuse_opt specs[] = {OPT("host=%s", host), OPT("port=%d", port),
-                                  OPT("timeout=%d", timeout_ms), OPT("neterr=%d", neterr), FUSE_OPT_END};
+                                  OPT("timeout=%d", timeout_ms), OPT("neterr=%d", neterr), OPT("cache=%s", cache), FUSE_OPT_END};
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
-    struct opts o = {NULL, 9099, 3000, 0};
+    struct opts o = {NULL, 9099, 3000, 0, NULL};
     if (fuse_opt_parse(&args, &o, specs, NULL) == -1) return 2;
     g_neterr = o.neterr;
-    g_client = tc_create(o.host ? o.host : "127.0.0.1", (uint16_t)o.port, o.timeout_ms);
+    g_client = tc_create(o.host ? o.host : "127.0.0.1", (uint16_t)o.port, o.timeout_ms, o.cache);
     int rc = fuse_main(args.argc, args.argv, &ops, NULL);
     tc_destroy(g_client);
     return rc;
