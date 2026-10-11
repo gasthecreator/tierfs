@@ -1,0 +1,283 @@
+# Durable store and safe offload (Phase 3 design)
+
+Status: DESIGN, nothing implemented. Written before any code because this is the
+one place where a bug destroys the only copy of someone's file. The caches
+(meta.db, chunks.db) are disposable; everything in this document is not.
+
+## 0. The problem in one paragraph
+Offloading deletes local bytes and leaves the device holding the only copy. Five
+things can go wrong: we crash half way, the device lies or forgets, the bytes
+rot, we lose our own records of where things went, or the user loses the Mac
+(or the key). The design answers each with a rule (section 2) that the code must
+never break, and a test that tries to break it (section 14).
+
+## 1. Failure model
+Defended against:
+- Mac crash, `kill -9`, or power loss at ANY instruction of an offload.
+- Device offline, asleep, restarted mid-write, or on another network.
+- Device acks a write that is not yet on disk (phones, cheap flash) [see 10].
+- Bit rot, truncated or swapped blobs on the device.
+- Device rolled back (restored from an old backup, factory reset, reinstall).
+- Our own ledger corrupt, deleted, or restored from an old Time Machine copy.
+- Mac disk full while we need to write a record.
+- User error: confirming without understanding, wrong device, lost phone.
+- Total loss of the Mac (stolen, dead SSD) while the device survives.
+
+NOT defended against (say so to the user, in the UI):
+- Mac AND every replica lost together. That is what replica count is for.
+- A device that deletes data on purpose (availability). It cannot forge or alter
+  data undetected (authenticated encryption), but it can delete.
+- An attacker with root on the Mac. APFS or drive firmware bugs beyond F_FULLFSYNC.
+- Losing the recovery phrase AND the Keychain: encrypted data is then unreadable.
+
+## 2. Invariants (rules the code must never break)
+- **I1  Local bytes are deleted only if** K verified replicas hold exactly this
+  file version (K from policy, section 10) and each was audited < T_audit ago.
+- **I2  Write-ahead.** Intent is durably logged before any irreversible step;
+  completion is logged after it. After a crash we can always tell which step ran.
+- **I3  Fail closed.** Any error, timeout, mismatch, or unwritable ledger means
+  "keep the local bytes". There is no code path where uncertainty deletes.
+- **I4  Remote data is append-only in Phase 3.** No remote delete or overwrite of
+  a committed chunk or manifest. (Garbage collection is a later, separate design.)
+- **I5  Versions are immutable.** A change creates version N+1; version N stays.
+- **I6  The device alone can rebuild the tree** (self-describing encrypted
+  manifests) given the recovery phrase. The Mac's ledger is an index, not the
+  only record.
+- **I7  "Verified" means read back from the device's storage by challenge**, never
+  "the upload call returned OK".
+- **I8  No offload without consent** recorded for that batch; consent expires.
+- **I9  No offload until the recovery phrase is acknowledged** (section 11).
+- **I10 Ordering uses F_FULLFSYNC**, not fsync (measured: macOS fsync does not
+  flush the drive cache, `man 2 fsync`).
+
+## 3. Where state lives
+| What | Where | If lost |
+|---|---|---|
+| Ledger (authoritative) | `~/Library/Application Support/tierfs/<volume>/ledger.db` | rebuild from device snapshot + manifests (S3) |
+| Local bytes of files | origin store `~/.tierfs-store/<volume>/objects/` | local-only files: gone unless backed up |
+| Master key | Keychain (not synced) + recovery phrase on paper | without BOTH: encrypted data unreadable |
+| Disposable caches | `~/Library/Caches/tierfs/...` (meta.db, chunks) | nothing; refetched |
+| Chunks, manifests, ledger snapshots | on each device | that replica is gone |
+
+The ledger is NOT in Caches (macOS may purge it, Time Machine skips it), is
+included in Time Machine, and is excluded from tiering itself.
+Finding on this Mac: no Time Machine destination is configured, so today nothing
+backs up the origin store. The setup flow must say so before first offload.
+
+## 4. Identity and data model
+IDs (random 128-bit): `volume_id`, `device_id`, `file_id` (stable across rename,
+so renaming never re-uploads). Per file: `version` (monotonic) and `generation`
+(bumped by ANY local modification of the current version; used for compare-and-swap).
+
+Chunks: plaintext cut into 1 MiB chunks (same size as the read cache).
+- `chunk_id  = HMAC-SHA256(K_id, plaintext)`: dedupes within a volume, and the
+  device learns nothing about content hashes.
+- blob on device = `nonce(12) || AES-256-GCM(K_data, plaintext, aad = chunk_id || "tfs1") || tag`.
+  Binding chunk_id into the AAD stops a device from swapping blobs.
+- `blob_sha256` (of the ciphertext) is kept in the ledger for audits.
+
+Manifest, one per (file_id, version), encrypted with K_manifest, stored on the
+device as `manifests/<file_id>/<version>.mf`:
+`{path, mode, mtime, size, xattrs, chunk_ids[], file_hmac, prev_version}`.
+A plaintext list of chunk_ids travels beside it so the device can check that every
+referenced chunk exists before accepting the manifest.
+
+Ledger tables (SQLite, WAL, `synchronous=FULL`, `fullfsync=ON`, `checkpoint_fullfsync=ON`):
+```sql
+meta(key, value)                        -- schema_version, volume_id, recovery_acked, policy
+devices(device_id PK, name, class, state, last_seen, device_epoch, last_device_seq)
+files(file_id PK, path UNIQUE, current_version, generation, state, size, mtime,
+      mode, local_present, last_access)
+versions(file_id, version, size, mtime, chunk_count, manifest_sha256, PRIMARY KEY(file_id,version))
+version_chunks(file_id, version, idx, chunk_id, len, blob_sha256)
+replicas(file_id, version, device_id, state, committed_at, last_audit_at, device_seq)
+intents(intent_id PK, kind, file_id, version, generation, payload, state, created_at, done_at)
+consents(consent_id PK, created_at, expires_at, scope, policy, ack_text)
+events(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, kind, file_id, version, device_id,
+       detail, prev_hash, hash)         -- append-only, hash-chained
+```
+`events` is protected by triggers that abort UPDATE and DELETE, and each row's
+`hash = SHA256(prev_hash || row)`. A broken chain is detected by `tierctl fsck`.
+
+## 5. State machine (per file; replicas have their own states)
+```
+LOCAL ──replicate──▶ REPLICATING ──all chunks + manifest committed──▶ REPLICATED
+                                                                   │  (bytes local AND remote)
+        audit ok, >=K replicas, consent, CAS(generation) ──────────┤
+                                                                   ▼
+                     OFFLOADED ◀──bytes gone── DROPPING (intent logged)
+                         │
+        read / recall ───┴──▶ HYDRATING ──▶ REPLICATED
+ any state ──audit fails / device inventory disagrees──▶ AT_RISK (alert; repair from another replica)
+```
+Key design choice: **replicate and drop are separate steps.** Replication is safe,
+reversible, and can run in the background whenever the device is reachable.
+Dropping only needs a fresh audit. So when the disk is nearly full we never
+upload under pressure; we verify and delete already-replicated cold files.
+
+Replica states: PENDING, UPLOADED, COMMITTED, AUDIT_FAILED, MISSING.
+
+## 6. Replicate (device-side commit)
+1. `HAS_CHUNKS(chunk_ids)` -> which are missing.
+2. `PUT_CHUNK(chunk_id, blob)` for each: idempotent. Device writes temp, F_FULLFSYNC/
+   fsync, rename, fsync the directory.
+3. `PUT_MANIFEST(file_id, version, manifest, chunk_id_list)`: device rejects unless
+   every chunk is present, then durably stores it and increments `device_seq` in a
+   persisted commit log. Ack = `{device_epoch, device_seq, manifest_sha256}`.
+4. Ledger transaction (full fsync): replica COMMITTED, file REPLICATED, event.
+A crash anywhere leaves either nothing, orphan chunks (harmless, never deleted in
+Phase 3), or a device manifest the ledger has not recorded yet (adopted by
+reconciliation, section 8).
+
+## 7. Drop local bytes (the dangerous step), with crash points
+0. **Pre-flight (read-only):** file REPLICATED at current version; >=K COMMITTED
+   replicas; valid consent; ledger reserve present (section 13); file not open for write.
+1. **Freeze:** FS refuses new writers on this file (EBUSY) until step 7.
+2. **AUDIT now:** per replica, send a fresh nonce and the chunk_ids; device returns
+   `SHA256(nonce || blob)` computed from disk. Mac compares with `blob_sha256`.
+   Also audits the manifest. The nonce stops cached or replayed answers.
+   **CP1**
+3. **Ledger txn A (full fsync):** compare-and-swap `files` where `generation == g`
+   and `current_version == v` -> state DROPPING; insert intent DROP_LOCAL; event.
+   If the CAS fails the file changed: abort, keep everything. **CP2**
+4. **Move bytes to quarantine:** rename `objects/<file>` to `trash/<intent_id>`
+   (atomic, same volume), then F_FULLFSYNC the directory. **CP3**
+5. **Ledger txn B (full fsync):** state OFFLOADED, `local_present=0`, intent done,
+   event. **CP4**
+6. **Unfreeze.** Reads now hydrate from the device.
+7. **Later:** after the quarantine period (or on disk pressure) unlink the trash
+   entry; event. **CP5**
+
+| Crash at | After restart | Action |
+|---|---|---|
+| before CP2 | file still REPLICATED | nothing lost; unfreeze |
+| CP2..CP3 | intent open, bytes in place | re-audit; resume, or set REPLICATED again |
+| CP3..CP4 | intent open, bytes in trash | re-audit; if ok complete txn B, if NOT ok restore from trash |
+| after CP4 | normal | continue step 7 |
+| step 7 half done | trash entry may exist | unlink is idempotent |
+
+Because bytes are renamed before they are unlinked, a bad audit discovered late is
+survivable. The price is that space is not freed until the quarantine ends; policy
+can shorten it to zero under real disk pressure (section 13).
+
+## 8. Reconciliation (on every connect, and daily)
+Ask the device for `LIST_MANIFESTS(since = last_device_seq)` plus presence of every
+chunk each of our replicas needs.
+- Ledger says COMMITTED, device agrees: fine.
+- Ledger says COMMITTED/OFFLOADED, device lacks the manifest or chunks: mark
+  MISSING / AT_RISK, alert loudly. If local bytes exist: re-replicate. If another
+  replica exists: repair. Otherwise the file is LOST and only the user can
+  acknowledge it. Never silent.
+- Device has a manifest the ledger lacks (crash between 6.3 and 6.4, or ledger
+  restored from backup): decrypt and verify it, check `volume_id`, then adopt and
+  log "adopted".
+- Device has chunks with no manifest: leave alone (aborted upload).
+- `device_epoch` changed or `device_seq` went BACKWARDS: the device was restored
+  or reset. Treat all its replicas as unverified and re-audit everything.
+- `volume_id` mismatch: refuse to write; it belongs to another volume.
+
+## 9. Recall (hydration)
+Reads of an OFFLOADED file fetch chunks from a replica. Each blob is checked
+(AEAD tag, then `HMAC(plaintext) == chunk_id`); a failure tries the next replica,
+else returns EIO and logs AT_RISK. After a full hydrate, `file_hmac` is checked.
+Hydrated bytes go to the origin store; the file becomes REPLICATED again and
+is a cheap candidate for dropping later.
+
+## 10. Devices and replica policy
+Devices declare a durability class; unknown means the worst class.
+- **A  server:** always on, fsync honoured, redundant storage. Weight 1.0.
+- **B  single disk:** a Pi, a spare Mac, an external drive. Weight 1.0 but not
+  counted if not audited within T_audit.
+- **C  mobile/removable:** phones, laptops, USB sticks; app uninstall, "clear
+  data", factory reset, or loss destroys the data. Weight 0.5, and never the sole
+  replica unless the user typed the override.
+Policy: sum of weights of COMMITTED, recently audited replicas >= K.
+Proposed default K = 2.0. Single-copy mode exists only as an explicit per-volume
+override that shows exactly what is at risk and asks for typed confirmation, with
+a long quarantine.
+Devices cannot prove they honour fsync, so class is user-declared with
+conservative defaults (any phone is C).
+
+## 11. Keys and recovery
+- Master key MK (32 random bytes). HKDF derives K_id, K_data, K_manifest,
+  K_snapshot (separate labels). Stored in Keychain, not synced.
+- **Recovery phrase:** MK encoded with a checksum, shown once; the user must re-enter
+  3 random words before `recovery_acked` flips to true. Until then no offload (I9).
+  Losing the Mac loses the Keychain; the phrase is what saves the data.
+- Phones and other agents never see MK; they store ciphertext only.
+- Random 96-bit nonces are safe up to ~2^32 blobs per key (about 4 PiB of 1 MiB
+  chunks); the format version `tfs1` leaves room to change this.
+- Not designed yet: key rotation, multi-user.
+
+## 12. Disasters and what the user does
+- **S1 Mac dead or stolen:** new Mac, `tierctl recover --device D --phrase ...` lists
+  and decrypts manifests and rebuilds the tree as stubs; files hydrate on demand.
+  Files that were never replicated are gone unless Time Machine has them. We can
+  say "everything offloaded or replicated is recoverable", nothing more.
+- **S2 Device dead:** REPLICATED files are still local, so re-replicate. OFFLOADED
+  with >=2 replicas: repair from the survivor. OFFLOADED with 1 replica: LOST (the
+  accepted risk of single-copy mode).
+- **S3 Ledger corrupt:** restore the newest encrypted ledger snapshot from a device,
+  then reconcile (adopts anything newer). Snapshots are pushed after every batch
+  and hourly via SQLite's backup API.
+- **S4 Old Time Machine ledger restored:** reconcile sees `device_seq` ahead of
+  `last_device_seq` and adopts; it never trusts the stale ledger over the device.
+- **S5 Phone app removed:** same as S2.
+
+## 13. Disk-full safety
+- At setup, preallocate `ledger.reserve` (64 MiB) beside the ledger. In an
+  emergency it is released to give SQLite and the WAL room, then recreated.
+- Before any offload step that needs a write: if the ledger cannot be written,
+  stop (I3). The free-space poller never blocks and never writes to the ledger.
+- Quarantine uses real space. Policy: normal free space -> full quarantine (7
+  days proposed); free space below a critical threshold -> shortened or zero,
+  only after a fresh audit. (APFS local snapshots can also keep deleted blocks
+  alive; none exist on this Mac now, but `tmutil listlocalsnapshots /` belongs in
+  the pre-flight check, and the UI must not promise freed space it cannot confirm.)
+
+## 14. Testing plan (nothing deletes real data until this passes)
+1. **Crash injection.** `TIERFS_CRASH_AT=CPn` calls `_exit(137)` at each named
+   point; also before and after each fsync. A harness runs every scenario at every
+   crash point, restarts, runs recovery, then checks the invariant checker.
+2. **Invariant checker (`tierctl fsck`).** For every OFFLOADED file: >=K replicas
+   whose blobs, fetched and decrypted, reproduce the recorded `file_hmac`. Ledger
+   hash chain intact. LOCAL/REPLICATED files have their bytes locally. No
+   intent left open.
+3. **Device fault modes in the reference backend:** drop acks; ack before persisting
+   (a lying device); corrupt, truncate or swap a blob; delete a manifest; roll the
+   device back to an older directory copy; wrong `volume_id`; slow responses.
+4. **Mutation tests** like the cache tests: delete the audit, skip the CAS, unlink
+   before the ledger commit, ignore a MISSING replica. Each must make a test fail.
+5. **Real power loss cannot be automated.** Residual risk is covered by F_FULLFSYNC
+   and ordering, and stated plainly in the README.
+6. Only the throwaway `testdata/` tree until the user explicitly says otherwise.
+
+## 15. Build order (Phase 3)
+- 3a Ledger library: schema, hash-chained events, CAS transactions, full-fsync
+  commits, reserve file, `fsck`. Unit tests.
+- 3b Crypto layer: chunk ids, AEAD, manifests; known-answer tests.
+- 3c Device store in the reference backend (protocol v3: HAS_CHUNKS, PUT_CHUNK,
+  PUT_MANIFEST, AUDIT, LIST_MANIFESTS, GET_CHUNK, DEVICE_INFO) plus fault modes.
+- 3d Replicate engine and reconciliation (including adoption). **Still deletes
+  nothing.**
+- 3e Drop-local with crash points, then the full fault-injection suite.
+  Deletion is switched on only when 3e passes.
+- 3f Tiering policy: cold detection from `last_access`, thresholds, consent prompt.
+- 3g `tierctl recover` and the disaster drills S1 to S4.
+Also needed first: the origin store (the overlay that holds local bytes) must exist
+before anything can be dropped; today the mount only serves a remote tree.
+
+## 16. Decisions needed from the owner
+1. Default K: require 2.0 (recommended), or allow single-device with override?
+2. Quarantine default (7 days proposed). It costs disk space exactly when space is short.
+3. Replicate cold candidates continuously in the background (recommended: makes the
+   emergency path "audit and drop"), or only on demand?
+4. Encrypted-at-rest with a recovery phrase: accepted?
+5. Set up Time Machine (or any backup) before the first real offload?
+
+## Open technical questions
+- AES-GCM via OpenSSL (installed) or CryptoKit; 1 MiB vs 4 MiB upload chunks.
+- Android: can `FileDescriptor.sync()` be trusted on all flash? Probably not; class C.
+- Partial offload (keep the first N MiB local for previews and mmap)? Later.
+- Garbage collection of remote data (mark and sweep from manifests with a grace
+  period) is deliberately excluded from Phase 3.
