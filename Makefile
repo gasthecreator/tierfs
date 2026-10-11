@@ -33,6 +33,22 @@ build/ledger_test: tests/ledger_test.cpp build/ledger.o build/ledger_helper
 build/ledger_helper: tests/ledger_helper.cpp build/ledger.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
+# Crypto: OpenSSL, linked statically so nothing but the macOS system libraries is needed at run time.
+OPENSSL_DIR ?= /opt/homebrew/opt/openssl@3
+OPENSSL_INC := -I$(OPENSSL_DIR)/include
+OPENSSL_LIB := $(OPENSSL_DIR)/lib/libcrypto.a
+
+build/crypto.o: core/crypto.cpp core/crypto.hpp core/wire.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/keychain_mac.o: core/keychain_mac.cpp core/crypto.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/crypto_test: tests/crypto_test.cpp tests/crypto_kat.hpp build/crypto.o build/keychain_mac.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/crypto_test.cpp build/crypto.o build/keychain_mac.o $(OPENSSL_LIB) -framework Security -framework CoreFoundation -o $@
+
 build/metastore_test: tests/metastore_test.cpp build/metastore.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
 
@@ -51,10 +67,11 @@ test-tsan: build/tierfs-backend
 	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test -lsqlite3
 	./build/tsan/client_test
 
-test-unit: build/metastore_test build/chunkcache_test build/ledger_test
+test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test
 	./build/metastore_test | tail -1
 	./build/chunkcache_test | tail -1
-	./build/ledger_test
+	./build/ledger_test | tail -1
+	./build/crypto_test
 
 build/tierfs-backend: backend/server.cpp core/wire.hpp
 	@mkdir -p build
