@@ -191,11 +191,16 @@ public:
     bool has_version(const std::string& file_id, int64_t version);   // (an empty file has a version but no chunks)
     // Sum of class weights of COMMITTED replicas audited within `max_audit_age` s.
     double replica_weight(const std::string& file_id, int64_t version, int64_t max_audit_age);
+    // Same weights, but counting every COMMITTED replica on an active device whether or not it was audited
+    // recently: for PLANNING ("will this file have enough copies?"). Never a basis for deleting anything.
+    double committed_weight(const std::string& file_id, int64_t version);
 
     // --- consent ---
     // Permission for paths starting with scope_prefix (must not be empty).
     std::string create_consent(const std::string& scope_prefix, int64_t ttl_seconds,
                                const std::string& ack_text);
+
+    std::optional<std::string> consent_ack(const std::string& consent_id);   // what the user was shown when they agreed
 
     // --- dropping local bytes: the dangerous step (design doc section 7) ---
     // Transaction A. Succeeds only if EVERY rule holds, all checked in one

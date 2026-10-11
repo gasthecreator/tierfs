@@ -753,6 +753,13 @@ uint32_t Ledger::next_challenge_n(const std::string& file_id, int64_t version, i
     return q.row() ? static_cast<uint32_t>(q.col_num(0)) : 0;
 }
 
+double Ledger::committed_weight(const std::string& file_id, int64_t version) {
+    Stmt s(db_, "SELECT COALESCE(SUM(CASE d.class WHEN 'C' THEN 0.5 ELSE 1.0 END),0) FROM replicas r JOIN devices d ON d.device_id=r.device_id"
+                " WHERE r.file_id=?1 AND r.version=?2 AND r.state='COMMITTED' AND d.state='active'");
+    s.text(1, file_id).num(2, version);
+    return s.row() ? s.col_real(0) : 0.0;
+}
+
 // ---------------------------------------------------------------- consent
 
 std::string Ledger::create_consent(const std::string& scope_prefix, int64_t ttl_seconds, const std::string& ack_text) {
@@ -764,6 +771,13 @@ std::string Ledger::create_consent(const std::string& scope_prefix, int64_t ttl_
     if (!s.text(1, id).text(2, scope_prefix).num(3, now()).num(4, now() + ttl_seconds).text(5, ack_text).run()) return "";
     append_event("consent.created", "", 0, "", scope_prefix + " ttl " + std::to_string(ttl_seconds));
     return t.commit() ? id : "";
+}
+
+std::optional<std::string> Ledger::consent_ack(const std::string& consent_id) {
+    Stmt s(db_, "SELECT ack_text FROM consents WHERE consent_id=?1");
+    s.text(1, consent_id);
+    if (!s.row()) return std::nullopt;
+    return s.col_text(0);
 }
 
 // ---------------------------------------------------------------- dropping local bytes

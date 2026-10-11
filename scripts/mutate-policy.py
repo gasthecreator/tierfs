@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Mutation test for core/policy.cpp. Each mutant removes one protection; tests/dropengine_test.cpp (with
+fail-fast) and its crash helper must notice. A mutant killed ONLY by a crash is rerun once (a flaky crash must
+not hide a survivor). Usage: mutate-policy.py [name filters ...]  (run in batches: each mutant takes a while)"""
+import subprocess, sys, os, shutil
+sys.path.insert(0, 'scripts')
+from policy_mutants import M
+OS = os.environ.get('OPENSSL_DIR', '/opt/homebrew/opt/openssl@3')
+CRYPTO = f'{OS}/lib/libcrypto.a'
+BASE = ['c++', '-std=c++17', '-g', '-w', f'-I{OS}/include', '-Icore', '-Itests']
+D = 'build/mutpolicy'
+def run(cmd, **kw): return subprocess.run(cmd, capture_output=True, text=True, **kw)
+def sh(cmd):
+    r = run(cmd)
+    if r.returncode: sys.exit('build failed: ' + ' '.join(cmd) + '\n' + r.stderr[-500:])
+os.makedirs(D, exist_ok=True)
+for src, out in [('core/crypto.cpp', 'crypto.o'), ('core/ledger.cpp', 'ledger.o'), ('core/deviceclient.cpp', 'deviceclient.o'),
+                 ('core/devicestore.cpp', 'devicestore.o'), ('core/replicator.cpp', 'replicator.o'),
+                 ('core/dropengine.cpp', 'dropengine.o'), ('core/spaceprobe.cpp', 'spaceprobe.o'), ('tests/policy_test.cpp', 'policy_test.o')]:
+    sh(BASE + ['-c', src, '-o', f'{D}/{out}'])
+OBJS = ['dropengine.o', 'spaceprobe.o', 'replicator.o', 'ledger.o', 'deviceclient.o', 'devicestore.o', 'crypto.o']
+filters = sys.argv[1:]
+survivors, expected = [], []
+for name, path, frm, to in M:
+    if filters and not any(f in name for f in filters): continue
+    src = open(path).read()
+    if frm not in src:
+        print(f'{name:<66} !! pattern not found (stale)'); survivors.append(name + ' (stale)'); continue
+    open(f'{D}/mut.cpp', 'w').write(src.replace(frm, to, 1))
+    r = run(BASE + ['-c', f'{D}/mut.cpp', '-o', f'{D}/mut.o'])
+    if r.returncode: print(f'{name:<66} (does not compile: {r.stderr.strip().splitlines()[-1][:60]})'); continue
+    for out, first in [('mut_test', 'policy_test.o')]:
+        sh(['c++', '-o', f'{D}/{out}', f'{D}/{first}', f'{D}/mut.o'] + [f'{D}/{o}' for o in OBJS] + [CRYPTO, '-lsqlite3', '-framework', 'CoreFoundation'])
+    env = dict(os.environ, TIERFS_TEST_FAILFAST='1')
+    def execute():
+        subprocess.run(['pkill', '-f', 'tierfs-device'])
+        try:
+            p = subprocess.run([f'{D}/mut_test'], capture_output=True, text=True, timeout=500, env=env)
+            out, rc = p.stdout, p.returncode
+        except subprocess.TimeoutExpired:
+            out, rc = 'FAIL timeout', 99
+        subprocess.run(['pkill', '-f', 'tierfs-device'])
+        # a fail-fast exit skips the test's destructors: each killed mutant would leave tens of MB in /tmp
+        subprocess.run('rm -rf /tmp/tierfs-policytest-*', shell=True)
+        return out, rc, [l for l in out.splitlines() if l.startswith('FAIL')]
+    out, rc, fails = execute()
+    if not fails and rc != 0:
+        out, rc, fails = execute()   # killed only by a crash: ask again
+    killed = bool(fails) or rc != 0
+    how = fails[0][:70] if fails else f'exit code {rc}'
+    tagged = name.startswith('[')
+    if killed:
+        print(f'{name:<66} killed ({how})')
+    elif tagged:
+        print(f'{name:<66} SURVIVED (expected: {name.split("]")[0][1:]})'); expected.append(name)
+    else:
+        print(f'{name:<66} SURVIVED  <-- test gap'); survivors.append(name)
+shutil.rmtree(D, ignore_errors=True)
+print('survivors:', survivors if survivors else 'none', '| expected survivors:', len(expected))

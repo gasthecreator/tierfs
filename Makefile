@@ -54,6 +54,14 @@ build/deviceclient.o: core/deviceclient.cpp core/deviceclient.hpp core/devicesto
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
+build/spaceprobe.o: core/spaceprobe.cpp core/spaceprobe.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+build/policy.o: core/policy.cpp core/policy.hpp core/spaceprobe.hpp core/dropengine.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
 build/dropengine.o: core/dropengine.cpp core/dropengine.hpp core/fsutil.hpp core/replicator.hpp core/ledger.hpp core/crashpoint.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
@@ -76,6 +84,12 @@ build/drop_helper: tests/drop_helper.cpp build/dropengine.o build/replicator.o b
 
 build/dropengine_test: tests/dropengine_test.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/dropengine_test.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+build/policy_test: tests/policy_test.cpp build/policy.o build/spaceprobe.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/policy_test.cpp build/policy.o build/spaceprobe.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -framework CoreFoundation -o $@
+
+test-policy: build/policy_test build/tierfs-device
+	./build/policy_test
 
 test-dropengine: build/dropengine_test build/tierfs-device
 	./build/dropengine_test

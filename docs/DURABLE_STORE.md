@@ -598,3 +598,70 @@ What is NOT done
 - Power-loss durability rests on the fsync ordering, not on a test.
 - Next: 3f (policy: cold detection, thresholds, background replication, the consent prompt) and 3g (recovery tool
   and the disaster drills). Real-file use stays off until the owner has set up backups.
+
+## 22. Phase 3f status: the policy layer (implemented)
+
+`core/spaceprobe.*` (how much room is there), `core/policy.*` (when to move files and which), `Ledger::committed_weight`.
+The policy decides; it never deletes. Every byte that goes away still goes through the drop engine and its ledger gates.
+
+Measuring space
+- The figure is macOS's "available for important usage" (what Finder and the OS's own low-disk warning use), because it
+  counts purgeable space the system will reclaim itself; offloading files to cover space the OS would free anyway is
+  pointless. When the OS gives no answer the raw `statvfs` figure is used. APFS local snapshots (`tmutil`) are counted
+  and reported: they keep deleted blocks alive, so freed space may not show up until they are thinned.
+- Levels: LOW when free < max(20 GiB, 15% of the volume); CRITICAL when free < max(8 GiB, 5%). The target is the LOW
+  threshold x 1.25 (headroom), so one run does not leave the machine one download away from LOW again.
+  (On the author's machine, 5 GiB free of 228 GiB, that is CRITICAL.)
+
+Which files
+- Only inside **managed roots** the user opted in (empty list: nothing is eligible). Roots match as whole path prefixes
+  ending in `/`, so `/Projects/` never covers `/Projects2/`. Excluded substrings (default `.git`) and tierfs's own
+  bookkeeping are never touched.
+- Eligible: LOCAL / REPLICATING / REPLICATED, bytes present locally, at least 1 MiB, and idle (no access AND no
+  modification) for 30 days. Idle time is `now - max(last_access, mtime)`.
+- Files with too few trusted devices to ever reach weight 2.0 are not candidates at all (the plan says so).
+- Ranking: size x days idle, biggest-and-coldest first, until the need is met or 500 files. Everything left out is
+  counted with the reason, and a plan that cannot reach the target says so.
+
+Plan, approval, execution
+- A plan is immutable and stamped with a SHA-256 digest over its content (files, generations, sizes, roots, mode, time).
+- `approve(plan)` verifies the digest and creates ONE expiring consent per root (1 hour), whose text records the digest,
+  the counts, the root and the mode. Consents are scoped: a file under another root cannot use them.
+- `execute(plan, approval)` refuses a plan whose digest does not match its approval, or whose mode differs. For each
+  file it re-checks at that moment: still tracked, same generation and size, still cold, still in a managed root, state
+  still allowed, a consent exists for its root. Then it copies to the required weight if needed and calls the drop
+  engine. A changed file is skipped, never moved.
+- LOW keeps the 7-day quarantine; the space is freed when `purge_due` runs after it. CRITICAL plans carry `free_now`:
+  the executor purges right after the drop, but through the same fresh audits (emergency purge). A rotten replica blocks
+  even that: the bytes stay in quarantine.
+
+Background work (`tick`)
+- Reconcile with the devices hourly; copy cold files (7 days idle) to devices within a byte budget (coldest first, never
+  touching the local files); purge quarantine whose period is over (switchable); and, when space is short, build a plan
+  and prompt the user (macOS notification via `osascript`, text only).
+- Prompts are rate-limited by state kept in the ledger, so a restart does not re-nag: the same level at most every 6 h,
+  but a worse level at once; back to OK resets it. `tick` never moves a file on its own.
+
+- Execution also looks at the file itself (`stat` size against the plan) and re-reads the ledger record after copying,
+  because the ledger only knows what the filesystem layer reported; the replicator copies whatever is on disk.
+  A file edited behind the ledger's back is skipped, never dropped under an approval for the old content.
+
+What the tests showed
+- Mutation testing: 103 mutants of `policy.cpp`; the first run left 43 survivors, i.e. 43 test gaps (floors on small
+  volumes, root prefix matching, idle boundary, ranking, per-field digest coverage, consent scoping, retired devices,
+  states such as DROPPING, purge failing after a successful move, prompt boundaries, the no-notifier path). All were
+  closed with tests. 8 survive by design: a pair of guards that cover each other (generation vs post-copy re-check;
+  policy retention vs engine retention), a state that fsck forbids, a redundant size check, one equivalent mutant, an
+  idempotent re-copy, and a write racing an upload. One test also found a real behaviour question (prompting after the
+  level improved) which changed the code: the rate limit is now "at most once per interval at the same or a better level".
+- Mutants killed by fail-fast `_exit` skip the test's destructors and each left a ~27 MB temp directory: ~100 of them
+  filled the disk and made even the shell tool fail. The mutation script now cleans `/tmp` after every mutant.
+- A second `World` in one scope reused the first one's device ports and silently produced an empty plan; scoping each
+  world fixed it. (The failure looked like a policy bug: the check "approve() refuses an empty plan" caught it.)
+- Several cases assumed the ranking could use a last-access time older than the mtime; activity is the later of the two.
+
+What is NOT done
+- The mounted filesystem does not call any of this yet (overlay/origin store, write-freeze gate, what appears at a
+  dropped path). There is no daemon or approval UI; `format_plan` is the text such a UI would show.
+- The Keychain test and real-file use still wait for the owner (backups first).
+- Next: 3g (recovery tool and disaster drills).
