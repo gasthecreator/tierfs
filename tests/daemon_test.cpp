@@ -502,6 +502,31 @@ int main() {
         CHECK(d2 && d2->start(nullptr) && d2->ledger().case_sensitive() == (pathconf(e2.origin.c_str(), _PC_CASE_SENSITIVE) == 1));
     }
 
+    {
+        printf("== offload on command honours the dated backup: a file made after the backup stays, an unchanged one moves\n");
+        Env e;
+        Bytes a = pattern(MiB + 5, 1), b = pattern(MiB + 6, 2);
+        spit(e.path("a.bin"), a);
+        auto d = make(e);
+        CHECK(d && d->start(nullptr));                                     // a.bin is tracked now
+        // real gates (no test area): the phrase acknowledged, a reserve, and a backup recorded AFTER a.bin was tracked
+        d->ledger().set_meta("recovery_acked", "1");
+        d->ledger().ensure_reserve(1 << 20);
+        d->ledger().set_meta("test_prefix", "/nowhere/");
+        sleep(2);
+        CHECK(d->ledger().ack_backup().ok);
+        sleep(2);
+        spit(e.path("b.bin"), b);                                          // created after the backup
+        CHECK(has(d->control("scan"), "new 1"));
+        std::string r = d->control("offload /a.bin");
+        CHECK(has(r, "offloaded /Users/me/proj/a.bin") && !exists(e.path("a.bin")) && read_through(d->overlay(), "/a.bin", a.size()) == a);
+        std::string rb = d->control("offload /b.bin");
+        CHECK(has(rb, "refused /Users/me/proj/b.bin") && has(rb, "created or changed after the backup") && has(rb, "ERR") && exists(e.path("b.bin")));
+        sleep(2);
+        CHECK(d->ledger().ack_backup().ok);                                // the owner backs up again and says so
+        CHECK(has(d->control("offload /b.bin"), "offloaded /Users/me/proj/b.bin") && !exists(e.path("b.bin")));
+    }
+
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
     return failures ? 1 : 0;
 }

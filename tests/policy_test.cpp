@@ -932,6 +932,45 @@ int main() {
         CHECK(has(format_notification(pe->space(), none), "No cold files"));
     }
 
+    {
+        printf("== plan: files the recorded backup does not hold are not planned to leave the Mac (they may still be copied)\n");
+        World w;
+        FakeProbe probe;
+        w.L->set_meta("test_prefix", "/nowhere/");                       // the real gate, not the test area
+        const int64_t DAY = 86400;
+        std::string a = put(w, "a", 3 * MiB, 1), b = put(w, "b", 2 * MiB, 2);
+        w.now_ += DAY;
+        CHECK(w.L->ack_backup().ok);
+        w.now_ += DAY;
+        std::string c = put(w, "c", 4 * MiB, 3);                           // created after the backup
+        w.now_ += 40 * DAY;
+        w.L->set_meta("backup_max_age_days", "90");
+        auto pe = make_pe(w, probe, base_policy());
+        TierPlan p = pe->plan(100 * MiB, false);
+        bool names_a = false, names_b = false, names_c = false;
+        for (auto& e : p.entries) { if (e.file_id == a) names_a = true; if (e.file_id == b) names_b = true; if (e.file_id == c) names_c = true; }
+        CHECK(names_a && names_b && !names_c && p.skipped["changed after the last recorded backup"] == 1);
+        bool warned = false;
+        for (auto& x : p.warnings) if (has(x.c_str(), "not covered by the recorded backup")) warned = true;
+        CHECK(warned);
+        // once the backup is renewed after the new file exists, everything is covered and there is nothing to warn about
+        w.L->set_meta("backup_max_age_days", "90");
+        w.now_ += DAY;
+        CHECK(w.L->ack_backup().ok);
+        TierPlan covered = pe->plan(100 * MiB, false);
+        bool still_warned = false;
+        for (auto& x : covered.warnings) if (has(x.c_str(), "not covered by the recorded backup")) still_warned = true;
+        CHECK(covered.entries.size() == 3 && !still_warned && covered.skipped.count("changed after the last recorded backup") == 0);
+        // an expired statement covers nothing
+        w.now_ += 100 * DAY;
+        w.L->set_meta("backup_max_age_days", "7");
+        TierPlan old = pe->plan(100 * MiB, false);
+        CHECK(old.entries.empty() && old.skipped["the recorded backup is too old or undated"] == 3);
+        // the background copy to the devices does not need a backup: the cold files are still replicated
+        w.L->set_meta("backup_acked_at", "");
+        CHECK(pe->plan(100 * MiB, false).entries.empty());
+    }
+
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
     return failures ? 1 : 0;
 }

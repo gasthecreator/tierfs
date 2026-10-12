@@ -98,4 +98,12 @@ M = [
  ('text: copy-first tag dropped', P, '(e.needs_replication ? "  [copy first]" : "")', '""'),
  ('text: digest missing', P, 's += "Plan " + plan.digest.substr(0, 16) + "\\n";', ''),
  ('text: no-files message', P, 'if (plan.entries.empty()) return head + "No cold files', 'if (false) return head + "No cold files'),
+
+ ('backup: changed files planned', P, 'if (!bc.ok && bc.kind == Ledger::BackupKind::ChangedAfter) { p.skipped["changed after the last recorded backup"]++; continue; }', ''),
+ ('backup: expired statement planned', P, 'if (!bc.ok && (bc.kind == Ledger::BackupKind::TooOld || bc.kind == Ledger::BackupKind::NoDate)) { p.skipped["the recorded backup is too old or undated"]++; continue; }', ''),
+ ('backup: no-date statement planned', P, '(bc.kind == Ledger::BackupKind::TooOld || bc.kind == Ledger::BackupKind::NoDate)', '(bc.kind == Ledger::BackupKind::TooOld)'),
+ ('backup: unacknowledged files skipped', P, 'if (!bc.ok && bc.kind == Ledger::BackupKind::ChangedAfter)', 'if (!bc.ok)'),
+ ('backup: skips not counted', P, 'p.skipped["changed after the last recorded backup"]++; continue;', 'continue;'),
+ ('backup: coverage warning lost', P, 'p.warnings.push_back("some files are not covered by the recorded backup: back up again and run tierctl ack-backup to make them movable");', ''),
+ ('backup: coverage warning always', P, 'else if (!p.skipped.empty() && (p.skipped.count("changed after the last recorded backup") || p.skipped.count("the recorded backup is too old or undated")))', 'else if (true)'),
 ]
