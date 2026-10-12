@@ -1,0 +1,16 @@
+# Last matching pattern wins. Enforced once the branch ruleset requires code-owner review (see docs/REPO_SETTINGS.md).
+# This is a one-person project; add a second owner to each safety-critical area as contributors arrive.
+
+*                           @gasthecreator
+
+# Data-safety critical: anything that can lose or leak a file
+/core/ledger.*              @gasthecreator
+/core/crypto.*              @gasthecreator
+/core/dropengine.*          @gasthecreator
+/core/recovery.*            @gasthecreator
+/core/overlay.*             @gasthecreator
+
+# Process and policy
+/.github/                   @gasthecreator
+/SECURITY.md                @gasthecreator
+/LICENSE                    @gasthecreator

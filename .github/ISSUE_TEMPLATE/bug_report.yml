@@ -1,0 +1,28 @@
+name: Bug report
+description: "Something behaves wrongly (security issues: see SECURITY.md)"
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a file was lost, corrupted, or exposed, say so first in the description: those get priority.
+        Do not paste recovery phrases or key files.
+  - type: textarea
+    id: what
+    attributes: { label: What happened, description: "And what did you expect?" }
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes: { label: Steps to reproduce, description: "A failing test is ideal." }
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes: { label: "Commit (git rev-parse --short HEAD)" }
+    validations: { required: true }
+  - type: input
+    id: macos
+    attributes: { label: "macOS version and chip (e.g. 26.6.2, M2)" }
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes: { label: Relevant output, render: shell }
