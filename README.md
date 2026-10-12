@@ -1,5 +1,10 @@
 # tierfs
 
+[![ci](https://github.com/gasthecreator/tierfs/actions/workflows/ci.yml/badge.svg)](https://github.com/gasthecreator/tierfs/actions/workflows/ci.yml)
+[![codeql](https://github.com/gasthecreator/tierfs/actions/workflows/codeql.yml/badge.svg)](https://github.com/gasthecreator/tierfs/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/gasthecreator/tierfs/badge)](https://scorecard.dev/viewer/?uri=github.com/gasthecreator/tierfs)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A tiered-storage filesystem for macOS: cold files move off your Mac to other devices and come back on demand, at the same path, as if they never left.
 Written in C/C++17 on FUSE-T (no kernel extension).
 
@@ -22,16 +27,25 @@ Written in C/C++17 on FUSE-T (no kernel extension).
 | `tools/tierctl.cpp` | the command-line tool: `init`, `restore`, `control`, `ledger-status`, `check-phrase`, ... |
 | `tests/` | unit, crash-injection, concurrency and disaster-drill tests |
 | `scripts/` | mutation-testing runners (`mutate_par.py`) and old mount scripts |
-| `docs/` | `DURABLE_STORE.md` (the design, in detail), `RUNBOOK.md` (operating it), phase notes |
+| `docs/` | start at [docs/README.md](docs/README.md): design, runbook, ADRs (`docs/adr/`), threat model |
 
 ## Build and test
 Requires macOS on Apple silicon, Xcode command-line tools, and `brew install openssl@3`. FUSE-T is needed only to build the mount drivers.
 ```bash
-make test-unit test-client test-device test-replicator test-dropengine test-policy \
-     test-recovery test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init
+make test        # everything that does not mount a filesystem (this is exactly what CI runs)
 ```
-None of these mount anything. The tests build with AddressSanitizer; `make test-ledger-tsan test-overlay-tsan test-ns-tsan` run ThreadSanitizer builds.
-Mutation testing: `python3 scripts/mutate_par.py <ledger|recovery|overlay|scanner> -j 4`.
+The tests build with AddressSanitizer and UBSan. `make test-ledger-tsan test-overlay-tsan test-ns-tsan` run ThreadSanitizer builds.
+Mutation testing of the safety-critical files: `python3 scripts/mutate_par.py <ledger|recovery|overlay|scanner> -j 4`.
+
+## Documentation
+[docs/README.md](docs/README.md) is the index. Highlights: the [runbook](docs/RUNBOOK.md) (setup, recovery, what is unsafe), the
+[design](docs/DURABLE_STORE.md), the [decision records](docs/adr/), and the [threat model](docs/THREAT_MODEL.md).
+
+## Contributing and security
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately: [SECURITY.md](SECURITY.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+[MIT](LICENSE).
 
 ## Design in one paragraph
 A ledger (SQLite, hash-chained history, full-fsync) is the source of truth for what exists where. The overlay joins an *origin folder* (local bytes), the
