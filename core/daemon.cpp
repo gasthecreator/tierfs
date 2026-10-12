@@ -1,5 +1,7 @@
 #include "daemon.hpp"
 
+#include "keysource.hpp"
+
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -33,18 +35,15 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     std::string& pfx = d->cfg_.logical_prefix;
     if (pfx.back() != '/') pfx += '/';
 
-    // the key (development form: a file holding the 32-byte master key as hex)
-    std::ifstream kf(cfg.key_file);
-    std::string hex;
-    if (!kf || !std::getline(kf, hex)) return fail("cannot read the key file " + cfg.key_file);
-    auto raw = crypto::from_hex(trim(hex));
-    if (!raw || raw->size() != crypto::KEY_LEN) return fail("the key file must hold 64 hex characters");
-    crypto::SecretKey master(raw->data());
-    d->keys_ = std::make_unique<crypto::Keys>(master);
-
     std::string lerr;
     d->ledger_ = Ledger::open(cfg.ledger_dir, &lerr);
     if (!d->ledger_) return fail("cannot open the ledger: " + lerr);
+
+    // the master key: from the Keychain, a development key store, or a key file (see core/keysource.hpp)
+    std::string kerr;
+    auto master = load_master_key(cfg.key_file, d->ledger_->volume_id(), &kerr);
+    if (!master) return fail(kerr);
+    d->keys_ = std::make_unique<crypto::Keys>(*master);
 
     d->replicator_ = std::make_unique<Replicator>(*d->ledger_, *d->keys_, d->ledger_->volume_id());
     const std::string origin = cfg.origin_dir;

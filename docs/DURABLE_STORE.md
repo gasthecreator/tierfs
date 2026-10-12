@@ -886,3 +886,9 @@ statement all refuse, with a reason that says what to do. Both `begin_drop` and 
 cover when planning a move (they are still copied to the devices) and warns. `tierctl ack-backup` records and explains the time, `ledger-status`
 shows its age, and `tierctl check-backup [folder]` is a read-only report of destination, latest backup and exclusion (tested with fake `tmutil`
 programs; the real one needs Full Disk Access and no Time Machine destination exists on the development Mac).
+
+Status of the Keychain key store (implemented; ADR-0008): `core/keysource.*` resolves a key source (`keychain`, `dir:PATH` or a key file) for a volume id;
+`tierctl init --store ...` and `check-phrase --store ...` use it, and the daemon resolves `keyfile=` through it after opening the ledger (so the volume id
+is known). The Keychain implementation (`core/keychain_mac.cpp`) had existed since Phase 3b; its opt-in test was run for the first time on 2026-10-12 with
+one throwaway item (created, read, refused a second store, deleted; no leftovers) and the real `tierctl init --store keychain` path was run the same way.
+

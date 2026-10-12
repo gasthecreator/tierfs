@@ -32,7 +32,7 @@ struct DaemonConfig {
     std::string ledger_dir;                  // the ledger and the control socket live here
     std::string origin_dir;                  // the real folder holding the local bytes
     std::string logical_prefix;              // e.g. "/Users/me/Projects/"
-    std::string key_file;                    // 64 hex characters: the master key (development; the Keychain comes later)
+    std::string key_file;                    // the key source: "keychain", "dir:PATH", or a key file of 64 hex characters (core/keysource.hpp)
     std::vector<std::string> devices;        // "host:port"
     std::string control_socket;              // default: <ledger_dir>/control.sock; "none" disables
     int device_timeout_ms = 5000;
