@@ -230,6 +230,19 @@ public:
     // recently: for PLANNING ("will this file have enough copies?"). Never a basis for deleting anything.
     double committed_weight(const std::string& file_id, int64_t version);
 
+    // --- the backup gate ---
+    // The owner states that a backup exists. The statement is DATED: a file may only leave the Mac if it was last created or changed
+    // before that moment (so the backup holds this version), and the statement expires (meta backup_max_age_days, default 30).
+    Res ack_backup();
+    enum class BackupKind { Ok, TestArea, NotAcknowledged, NoDate, TooOld, ChangedAfter };
+    struct BackupCheck {
+        bool ok = false;
+        BackupKind kind = BackupKind::NotAcknowledged;
+        std::string why;
+        int64_t acked_at = 0, last_change = 0;
+    };
+    BackupCheck backup_check(const FileRec& f);
+
     // --- consent ---
     // Permission for paths starting with scope_prefix (must not be empty).
     std::string create_consent(const std::string& scope_prefix, int64_t ttl_seconds,

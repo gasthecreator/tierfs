@@ -12,7 +12,7 @@ macOS VM without incident:
 - never `kill -9` a mounted driver or force-unmount it; stop it with `umount <mountpoint>` and wait for the process to exit.
 
 ## What you need before offloading anything
-1. **A backup.** Set up Time Machine (or equivalent) and let it finish a backup. tierfs refuses to move any file without it being recorded.
+1. **A backup, recorded with its date** (see "Backups" below). tierfs refuses to move a file off the Mac unless it was created or last changed *before* the backup you recorded.
 2. **The recovery phrase on paper.** It is the only way to get files back if this Mac is lost.
 3. **At least two devices** (one copy is never enough: a file is only moved off the Mac once copies worth weight 2.0 passed a fresh audit).
 
@@ -20,9 +20,20 @@ macOS VM without incident:
 ```bash
 ./build/tierctl init ~/tierfs-state/ledger ~/tierfs-state/keys/master.key   # shows the phrase once; you retype 3 groups
 ./build/tierctl check-phrase ~/tierfs-state/keys/master.key                  # later: does my paper copy still match?
-./build/tierctl ack-backup ~/tierfs-state/ledger I-HAVE-A-BACKUP             # only after a real backup exists
+./build/tierctl check-backup ~/Folder                                        # read-only: what macOS says about Time Machine
+./build/tierctl ack-backup ~/tierfs-state/ledger I-HAVE-A-BACKUP             # only after a real backup finished; records the TIME
 ```
 The key file is the development form (mode 0600). Keep the state directory on the internal disk and in your backups.
+
+## Backups
+tierfs never trusts itself with the only copy of a file, so before any file leaves the Mac you must state, with `ack-backup`, that a backup exists.
+The statement is **dated**, and the rule is per file:
+- a file may be moved only if it was created or last changed **before** the moment you recorded (so the backup holds this very version);
+- a statement older than 30 days expires (`backup_max_age_days` in the ledger's meta changes it);
+- after you edit or add files, back up again and re-run `ack-backup`; until then those files stay on the Mac (they are still copied to the devices).
+`tierctl check-backup [folder]` reads what macOS says (destination, latest backup, whether the folder is excluded). It changes nothing and
+may need Full Disk Access for your terminal; it cannot prove the backup contains a given file, which is why the statement stays yours.
+Once files are offloaded they disappear from later backups of the folder: the older backups and the devices hold them.
 
 ## Devices
 Start a device server on each storage device (another Mac, a NAS, a disk):

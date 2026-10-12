@@ -31,10 +31,11 @@ This is a living document; each row names the control and where it is tested.
 | T12 | Names that differ only in case or Unicode form collide | Folded unique key (ADR-0005) | `tests/ledger_test.cpp` |
 | T13 | Traffic on the device network is read or altered | Content is encrypted and authenticated end to end; metadata (sizes, timing, chunk ids) is visible; **no login**, so loopback only | `proto/PROTOCOL.md` |
 | T14 | A kernel or NFS-client bug panics the machine | Never mount-test on the development Mac; CI never mounts | ADR-0006 |
+| T15 | A file leaves the Mac although no backup holds it (new or edited since the last backup, or the backup is stale) | The backup statement is dated; the ledger refuses to drop or purge a file created or changed at or after it, or when it is older than 30 days; the policy does not plan such files | ADR-0007, `tests/ledger_test.cpp`, `tests/policy_test.cpp`, `tests/daemon_test.cpp` |
 
 ## Known gaps (tracked, not hidden)
 - The device server has no authentication or TLS; a device on another host must sit on a trusted link until this is added.
 - The key lives in a mode-0600 file; Keychain storage is implemented but its test has not been run.
 - Chunk ids and sizes leak the file-size distribution and which files share content (deduplication is visible to a device).
 - Deleted files and old versions remain on the devices (append-only) until a tombstone and garbage-collection design exists.
-- Offloaded files are not in Time Machine's view of the folder; the backup gate records a statement rather than checking coverage.
+- The backup gate trusts the owner's dated statement: `tierctl check-backup` shows what macOS reports, but nothing proves a given file is inside the backup. Offloaded files drop out of later backups of the folder (older backups and the devices keep them).

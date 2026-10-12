@@ -19,6 +19,8 @@ TARGETS = {
                    tools=[('tests/ledger_helper.cpp', 'TIERFS_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
     'scanner': dict(mutants='scanner_mutants', mutated='core/scanner.cpp', tests=['tests/scanner_test.cpp'], extra_objs=[('core/overlay.cpp', 'overlay')],
                     tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
+    'policy': dict(mutants='policy_mutants', mutated='core/policy.cpp', tests=['tests/policy_test.cpp'], extra_objs=[('core/spaceprobe.cpp', 'spaceprobe')],
+                   tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
     'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp', 'tests/overlay_ns_test.cpp'],
                     extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
 }

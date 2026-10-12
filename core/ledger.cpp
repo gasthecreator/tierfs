@@ -521,6 +521,62 @@ bool Ledger::migrate_1_to_2(std::string* err) {
     return t.commit();
 }
 
+Res Ledger::ack_backup() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    if (!set_meta("backup_acked", "1") || !set_meta("backup_acked_at", std::to_string(now()))) return fail("cannot record it");
+    return ok();
+}
+
+Ledger::BackupCheck Ledger::backup_check(const FileRec& f) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    BackupCheck r;
+    std::string pre = get_meta("test_prefix").value_or("");
+    if (!pre.empty() && f.path.compare(0, pre.size(), pre) == 0) {
+        r.ok = true;
+        r.kind = BackupKind::TestArea;
+        return r;
+    }
+    if (get_meta("backup_acked").value_or("") != "1") {
+        r.why = "backup not acknowledged and path is outside the test prefix";
+        return r;
+    }
+    int64_t at = 0;
+    {
+        std::string v = get_meta("backup_acked_at").value_or("");
+        char* end = nullptr;
+        at = strtoll(v.c_str(), &end, 10);
+        if (v.empty() || end == v.c_str() || *end != '\0' || at <= 0) {
+            r.kind = BackupKind::NoDate;
+            r.why = "the recorded backup has no date: run tierctl ack-backup again";
+            return r;
+        }
+    }
+    r.acked_at = at;
+    int64_t max_days = 30;
+    {
+        std::string v = get_meta("backup_max_age_days").value_or("");
+        if (!v.empty()) max_days = std::max<int64_t>(1, strtoll(v.c_str(), nullptr, 10));
+    }
+    if (now() - at > max_days * 86400) {
+        r.kind = BackupKind::TooOld;
+        r.why = "the recorded backup is older than " + std::to_string(max_days) + " days: make a new backup and run tierctl ack-backup again";
+        return r;
+    }
+    {  // when was this file's content last created or changed? (the history is append-only, so this cannot be rewritten)
+        Stmt q(db_, "SELECT COALESCE(MAX(ts),0) FROM events WHERE file_id=?1 AND kind IN ('file.tracked','file.modified')");
+        q.text(1, f.file_id);
+        if (q.row()) r.last_change = q.col_num(0);
+    }
+    if (r.last_change >= at) {
+        r.kind = BackupKind::ChangedAfter;
+        r.why = "this file was created or changed after the backup you recorded: back up again and run tierctl ack-backup";
+        return r;
+    }
+    r.ok = true;
+    r.kind = BackupKind::Ok;
+    return r;
+}
+
 Res Ledger::note_local_modified(const std::string& file_id, uint64_t new_size, int64_t new_mtime) {
     std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
@@ -1076,10 +1132,9 @@ Res Ledger::begin_drop(const std::string& file_id, int64_t version, int64_t gene
     auto f = load_file(db_, file_id);
     if (!f) return fail("unknown file");
 
-    if (get_meta("backup_acked").value_or("") != "1") {
-        std::string pre = get_meta("test_prefix").value_or("");
-        if (pre.empty() || f->path.compare(0, pre.size(), pre) != 0)
-            return fail("backup not acknowledged and path is outside the test prefix");
+    {
+        BackupCheck bc = backup_check(*f);
+        if (!bc.ok) return fail(bc.why);
     }
     {
         Stmt c(db_, "SELECT scope_prefix, expires_at FROM consents WHERE consent_id=?1");
@@ -1247,10 +1302,9 @@ Res Ledger::begin_purge(const std::string& intent_id, int64_t retention_seconds,
         return fail(std::string("quarantine is ") + to_string(q->state) + ", not HELD");
     auto f = load_file(db_, q->file_id);
     if (!f) return fail("unknown file");
-    if (get_meta("backup_acked").value_or("") != "1") {
-        std::string pre = get_meta("test_prefix").value_or("");
-        if (pre.empty() || f->path.compare(0, pre.size(), pre) != 0)
-            return fail("backup not acknowledged and path is outside the test prefix");
+    {
+        BackupCheck bc = backup_check(*f);
+        if (!bc.ok) return fail(bc.why);
     }
     // AT_RISK means a replica was lost while the bytes sat in quarantine: they may be the only good copy.
     if (f->state != FileState::OFFLOADED && f->state != FileState::REPLICATED)

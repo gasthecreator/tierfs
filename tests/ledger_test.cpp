@@ -54,11 +54,16 @@ struct Fixture {
         g_time = 1'000'000;
         L = open_ledger(dir);
         if (recovery) L->set_meta("recovery_acked", "1");
-        if (backup) L->set_meta("backup_acked", "1");
+        if (backup) ack_all();
         L->ensure_reserve(1 << 20);
         for (auto [id, cls] : {std::pair<const char*, const char*>{"devA", "A"}, {"devB1", "B"}, {"devB2", "B"}, {"devC", "C"}})
             L->register_device(id, id, cls);
         consent = L->create_consent("/testdata/", 3600, "I understand");
+    }
+    // The owner\'s statement about a backup that is newer than everything in these tests (year 2096): the dated gate is tested explicitly below.
+    void ack_all() {
+        L->set_meta("backup_acked", "1");
+        L->set_meta("backup_acked_at", "4000000000");
     }
     ~Fixture() { L.reset(); fs::remove_all(dir); }
 
@@ -350,7 +355,7 @@ int main() {
             auto out = fx.replicated("/home/user/real.doc", {"devA", "devB1"});
             fx.consent = fx.L->create_consent("/home/", 3600, "yes");
             EXPECT_REFUSED(fx, out, fx.drop(out), "backup not acknowledged");
-            fx.L->set_meta("backup_acked", "1");
+            fx.ack_all();
             CHECK(fx.drop(out).ok);                       // once the owner acknowledges the backup
         }
         {   Fixture fx;
@@ -1194,6 +1199,119 @@ int main() {
         { sqlite3* db = raw_open(d); raw_exec(db, "UPDATE files SET pkey='zzz' WHERE path='/testdata/two'"); sqlite3_close(db); }
         { auto L = open_ledger(d); auto bad = L->fsck(); CHECK(bad.size() == 1 && has(bad[0], "path key does not match") && has(bad[0], "/testdata/two")); }
         fs::remove_all(d); fs::remove_all(d2);
+    }
+
+    {
+        printf("== the backup statement is dated: only files unchanged since the backup may leave the Mac, and the statement expires\n");
+        Fixture fx(true, /*backup=*/false);
+        auto offer = [&](const std::string& id) { return fx.drop(id); };
+        const int64_t DAY = 86400;
+        g_time = 1'000'000;
+        fx.consent = fx.L->create_consent("/outside/", 100 * DAY, "test");
+        // two files exist before the owner records a backup at t0
+        g_time = 1'000'000;
+        std::string early = fx.replicated("/outside/early", {"devA", "devB1"});
+        std::string edited = fx.replicated("/outside/edited", {"devA", "devB1"});
+        std::string ren = fx.replicated("/outside/ren", {"devA", "devB1"});
+        auto fr = [&](const std::string& id) { return *fx.L->get_file(id); };
+        CHECK(!fx.L->backup_check(fr(early)).ok && fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NotAcknowledged);
+        EXPECT_REFUSED(fx, early, offer(early), "backup not acknowledged");
+        g_time = 1'000'100;
+        CHECK(fx.L->ack_backup().ok && fx.L->get_meta("backup_acked").value_or("") == "1" &&
+              fx.L->get_meta("backup_acked_at").value_or("") == "1000100");
+        // a statement without a date (an old ledger, or hand-edited) is refused
+        fx.L->set_meta("backup_acked_at", "");
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NoDate);
+        EXPECT_REFUSED(fx, early, offer(early), "has no date");
+        fx.L->set_meta("backup_acked_at", "soon");
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NoDate);
+        fx.L->set_meta("backup_acked_at", "-5");
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NoDate);
+        fx.L->set_meta("backup_acked_at", "0");
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NoDate);
+        fx.L->set_meta("backup_acked_at", "1000100x");  // a number followed by junk is not a date
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NoDate);
+        fx.L->set_meta("backup_acked_at", "1000100 ");
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::NoDate);
+        fx.L->ack_backup();
+        // a file created AFTER the backup is not in it
+        g_time = 1'000'200;
+        std::string late = fx.replicated("/outside/late", {"devA", "devB1"});
+        auto bl = fx.L->backup_check(fr(late));
+        CHECK(!bl.ok && bl.kind == Ledger::BackupKind::ChangedAfter && bl.acked_at == 1'000'100 && bl.last_change == 1'000'200);
+        EXPECT_REFUSED(fx, late, offer(late), "created or changed after the backup");
+        // a file edited after the backup is not either (even though it was replicated again since)
+        g_time = 1'000'300;
+        CHECK(fx.L->note_local_modified(edited, 7, 7).ok);
+        {
+            auto r = fx.L->begin_replication(edited, Fixture::chunks(7), 7, 7);
+            int64_t v = std::atoll(r.id.c_str());
+            for (const char* d : {"devA", "devB1"}) {
+                fx.L->set_replica(edited, v, d, ReplicaState::PENDING);
+                fx.L->set_replica(edited, v, d, ReplicaState::UPLOADED);
+                fx.L->set_replica(edited, v, d, ReplicaState::COMMITTED, 9);
+            }
+            fx.L->finish_replication(edited, v);
+            for (const char* d : {"devA", "devB1"}) fx.L->record_audit(edited, v, d, true, "ok");
+        }
+        CHECK(fx.L->backup_check(fr(edited)).kind == Ledger::BackupKind::ChangedAfter);
+        EXPECT_REFUSED(fx, edited, offer(edited), "created or changed after the backup");
+        // the file that did not change is fine; renaming and attribute changes do not count as content changes
+        g_time = 1'000'350;
+        CHECK(fx.L->rename_file(ren, "/outside/ren-renamed").ok && fx.L->note_attrs_changed(ren, 0600, std::nullopt).ok);
+        CHECK(fx.L->backup_check(fr(ren)).ok && fx.L->backup_check(fr(ren)).last_change == 1'000'000);
+        g_time = 1'000'300;
+        CHECK(fx.L->backup_check(fr(early)).ok && fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::Ok &&
+              fx.L->backup_check(fr(early)).last_change == 1'000'000);
+        // recording a new backup after the changes covers them all
+        g_time = 1'000'400;
+        CHECK(fx.L->ack_backup().ok && fx.L->backup_check(fr(late)).ok && fx.L->backup_check(fr(edited)).ok);
+        // a change in the very same second as the statement is NOT assumed covered
+        std::string same = fx.replicated("/outside/same", {"devA", "devB1"});
+        CHECK(fx.L->backup_check(fr(same)).kind == Ledger::BackupKind::ChangedAfter);
+        g_time = 1'000'401;
+        fx.L->ack_backup();
+        CHECK(fx.L->backup_check(fr(same)).ok);
+        // expiry: 30 days by default, adjustable, and exactly at the limit still counts
+        g_time = 1'000'401 + 30 * DAY;
+        CHECK(fx.L->backup_check(fr(early)).ok);
+        g_time += 1;
+        auto old = fx.L->backup_check(fr(early));
+        CHECK(!old.ok && old.kind == Ledger::BackupKind::TooOld && has(old.why.c_str(), "older than 30 days"));
+        EXPECT_REFUSED(fx, early, offer(early), "older than 30 days");
+        fx.L->set_meta("backup_max_age_days", "60");
+        CHECK(fx.L->backup_check(fr(early)).ok);
+        fx.L->set_meta("backup_max_age_days", "7");
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::TooOld &&
+              has(fx.L->backup_check(fr(early)).why.c_str(), "older than 7 days"));
+        fx.L->set_meta("backup_max_age_days", "0");  // nonsense is clamped to a day, not "never expires"
+        CHECK(fx.L->backup_check(fr(early)).kind == Ledger::BackupKind::TooOld &&
+              has(fx.L->backup_check(fr(early)).why.c_str(), "older than 1 days"));
+        // the test area bypasses the whole gate, and says so
+        fx.L->set_meta("test_prefix", "/outside/");
+        CHECK(fx.L->backup_check(fr(late)).ok && fx.L->backup_check(fr(late)).kind == Ledger::BackupKind::TestArea);
+        fx.L->set_meta("test_prefix", "/nowhere/");
+        CHECK(!fx.L->backup_check(fr(early)).ok);
+        // the same gate guards the purge of the quarantined bytes
+        fx.L->set_meta("backup_max_age_days", "30");
+        g_time = 1'000'500;
+        fx.L->ack_backup();
+        Res dd = fx.drop(early);
+        CHECK(dd.ok && fx.L->complete_drop(dd.id).ok);
+        g_time += 8 * DAY;
+        fx.L->ack_backup();  // (a fresh statement: the old one is 8 days old, still valid, but the audits must be fresh too)
+        for (const char* d : {"devA", "devB1"}) fx.L->record_audit(early, 1, d, true, "ok");
+        CHECK(fx.L->begin_purge(dd.id, 7 * DAY, false, 2.0, 600).ok);
+        // ... and a purge is refused when the statement has expired
+        std::string e2 = fx.replicated("/outside/e2", {"devA", "devB1"});
+        g_time += 1;
+        fx.L->ack_backup();
+        Res d2 = fx.drop(e2);
+        CHECK(d2.ok && fx.L->complete_drop(d2.id).ok);
+        g_time += 40 * DAY;
+        Res p2 = fx.L->begin_purge(d2.id, 7 * DAY, false, 2.0, 600);
+        CHECK(!p2.ok && has(p2.why.c_str(), "older than 30 days"));
+        g_time = 1'000'000;
     }
 
     printf("---- %d failure(s)\n", failures);
