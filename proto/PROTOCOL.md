@@ -107,11 +107,40 @@ Limits: a frame is at most 16 MiB, so a manifest listing more than about 230,000
 file at 1 MiB per chunk) does not fit in one request; larger files need manifest splitting (not designed).
 The server drops idle connections after 120 s and refuses connections beyond 64.
 
-**Security status:** no authentication and no TLS. `tierfs-device` therefore listens only on 127.0.0.1
-unless started with `--insecure-allow-network`. Mutual TLS with pinned keys and pairing must exist before a
-device is exposed on a real network.
+**Security status:** version 3 has no authentication and no encryption of the transport, so `tierfs-device` listens only on
+127.0.0.1 unless started with `--insecure-allow-network`. Version 4 (below) adds the authenticated, encrypted channel; the library
+(`core/securechannel.*`) is implemented and tested, and wiring it into `tierfs-device`, the client, pairing and the daemon is the next change.
+Until then nothing uses it.
+
+## Secure channel (version 4)
+Specified in docs/adr/0009; implemented in `core/securechannel.*`. All integers big-endian.
+
+Handshake, using the ordinary frame format (u32 length, u8 type, u32 id, payload), unsealed:
+
+| type | name | payload |
+|------|------|---------|
+| 0x20 | AUTH_INIT (client to device) | u16 version = 4, 8-byte key id, 32-byte client ephemeral X25519 public key, 32-byte client nonce |
+| 0xA0 | AUTH_REPLY (device to client) | 32-byte device ephemeral public key, 32-byte device nonce, 32-byte device confirmation |
+| 0x21 | AUTH_FINISH (client to device) | 32-byte client confirmation |
+| 0xA1 | AUTH_OK (device to client) | empty, **sealed** |
+
+The key id is `HMAC-SHA256(secret, "tierfs-key-id")[0..8]`. Let `T = SHA-256("tierfs-chan-v4" || 0x00 || u16 version || key id || client pub ||
+client nonce || device pub || device nonce)` and `okm = HKDF-SHA256(ikm = secret || X25519 shared secret, salt = T, info = "tierfs-chan-v4 keys", 128 bytes)`.
+`okm[0..32]` seals client to device frames, `okm[32..64]` device to client, `okm[64..96]` and `okm[96..128]` key the two confirmations:
+`device confirmation = HMAC(okm[96..128], T || 'S')`, `client confirmation = HMAC(okm[64..96], T || 'C')`. A low-order X25519 point (all-zero shared
+secret) is refused. On a wrong client confirmation the device sends a plain ERROR (EACCES, "authentication failed") and closes; an unknown key id or a
+malformed handshake is closed without an answer.
+
+Frames after the handshake: `u32 length` then `AES-256-GCM(type u8 || id u32 || payload)` sealed with the direction's key, a 96-bit nonce made of four
+zero bytes and a 64-bit big-endian counter that starts at 0 for each direction and increases by one per frame, and the 4 length bytes as additional
+authenticated data; the 16-byte tag follows the ciphertext, and `length` counts both. A receiver derives the expected counter itself: a replayed, reordered,
+dropped, modified or reflected frame fails authentication, after which the connection is closed. `length` is at most `MAX_FRAME + 16`.
+The device protocol messages of version 3 (above) then run unchanged inside the sealed frames.
+
+Known answers for the whole handshake and the first frames are in `tests/channel_kat.hpp`, generated independently by `scripts/gen_channel_kat.py`.
 
 ## Version history
+- v4: secure channel (above).
 - v3: device storage protocol (above).
 - v2: READ reply gained `size` and `mtime` (needed for a correct chunk cache).
 - v1: initial read-only protocol.

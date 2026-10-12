@@ -29,12 +29,12 @@ This is a living document; each row names the control and where it is tested.
 | T10 | A malicious local process talks to the control socket | Socket is mode 0600 in the user's state directory; commands are the user's own | `tests/daemon_test.cpp` |
 | T11 | The folder is unmounted and the scanner "forgets" every file | Refuses when more than half (and more than 10) tracked files are missing or the folder cannot be read | `tests/scanner_test.cpp` |
 | T12 | Names that differ only in case or Unicode form collide | Folded unique key (ADR-0005) | `tests/ledger_test.cpp` |
-| T13 | Traffic on the device network is read or altered | Content is encrypted and authenticated end to end; metadata (sizes, timing, chunk ids) is visible; **no login**, so loopback only | `proto/PROTOCOL.md` |
+| T13 | Traffic on the device network is read or altered, or someone impersonates the device or the Mac | Content is encrypted and authenticated end to end. Protocol v4 adds mutual authentication with a pairing secret, a fresh ephemeral key per connection and sealed, counted frames (library done; **not yet wired into the device**, so devices stay loopback-only for now) | `proto/PROTOCOL.md`, ADR-0009, `tests/securechannel_test.cpp` |
 | T14 | A kernel or NFS-client bug panics the machine | Never mount-test on the development Mac; CI never mounts | ADR-0006 |
 | T15 | A file leaves the Mac although no backup holds it (new or edited since the last backup, or the backup is stale) | The backup statement is dated; the ledger refuses to drop or purge a file created or changed at or after it, or when it is older than 30 days; the policy does not plan such files | ADR-0007, `tests/ledger_test.cpp`, `tests/policy_test.cpp`, `tests/daemon_test.cpp` |
 
 ## Known gaps (tracked, not hidden)
-- The device server has no authentication or TLS; a device on another host must sit on a trusted link until this is added.
+- The device server does not use the secure channel yet (the library exists, ADR-0009); until it is wired in, a device on another host must sit on a trusted link. After that, a leaked pairing secret lets its holder impersonate the device or the Mac to the other until re-paired, and there is no revocation list.
 - The key lives in the login Keychain (this device only) when set up with `--store keychain`; the older key-file and `dir:` forms are development-only and leave the key readable by anything running as you. Any process running as you can ask the Keychain for the item once macOS allows it.
 - Chunk ids and sizes leak the file-size distribution and which files share content (deduplication is visible to a device).
 - Deleted files and old versions remain on the devices (append-only) until a tombstone and garbage-collection design exists.

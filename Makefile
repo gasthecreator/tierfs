@@ -43,6 +43,10 @@ build/crypto.o: core/crypto.cpp core/crypto.hpp core/wire.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
+build/securechannel.o: core/securechannel.cpp core/securechannel.hpp core/crypto.hpp core/wire.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
 build/keysource.o: core/keysource.cpp core/keysource.hpp core/crypto.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
@@ -146,6 +150,12 @@ build/daemon_test: tests/daemon_test.cpp build/keysource.o build/keychain_mac.o 
 
 test-daemon: build/daemon_test build/tierfs-device build/drop_helper
 	./build/daemon_test
+
+build/securechannel_test: tests/securechannel_test.cpp tests/channel_kat.hpp build/securechannel.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/securechannel_test.cpp build/securechannel.o build/crypto.o -o $@ $(OPENSSL_LIB) -framework Security -framework CoreFoundation
+
+test-securechannel: build/securechannel_test
+	./build/securechannel_test
 
 build/keysource_test: tests/keysource_test.cpp build/keysource.o build/keychain_mac.o build/crypto.o
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) -framework Security -framework CoreFoundation
@@ -260,7 +270,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel
 test: $(NO_MOUNT_TESTS)
 
 .PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan
