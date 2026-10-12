@@ -79,7 +79,7 @@ for name, path, frm, to, nth in M:
     r = run(BASE + ['-c', f'{D}/mut.cpp', '-o', f'{D}/mut.o'])
     if r.returncode: print(f'{name:<42} (does not compile: {r.stderr.strip().splitlines()[-1][:60]})'); continue
     for out, first in [('mut_test', 'replicator_test.o'), ('mut_helper', 'repl_helper.o')]:
-        sh(['c++', '-o', f'{D}/{out}', f'{D}/{first}', f'{D}/mut.o'] + [f'{D}/{o}' for o in OBJS] + [CRYPTO, '-lsqlite3'])
+        sh(['c++', '-o', f'{D}/{out}', f'{D}/{first}', f'{D}/mut.o'] + [f'{D}/{o}' for o in OBJS] + [CRYPTO, '-lsqlite3', '-framework', 'CoreFoundation'])
     env = dict(os.environ, TIERFS_REPL_HELPER=f'./{D}/mut_helper')
     def execute():
         subprocess.run(['pkill', '-f', 'tierfs-device'])

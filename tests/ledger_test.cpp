@@ -1113,6 +1113,89 @@ int main() {
         CHECK(fx.L->event_count() == ev + 1203);
     }
 
+    {
+        printf("== names are unique the way the volume sees them: case and Unicode form do not make a second file\n");
+        Fixture fx;
+        const std::string nfc = "/testdata/caf\xC3\xA9.txt", nfd = "/testdata/cafe\xCC\x81.txt";
+        std::string a = fx.L->track_file("/testdata/Report.TXT", 10, 1, 0644);
+        CHECK(fx.L->track_file("/testdata/report.txt", 99, 2, 0600) == a && fx.L->track_file("/TESTDATA/REPORT.TXT", 1, 1, 0644) == a);
+        CHECK(fx.L->get_file_by_path("/testdata/rEpOrT.tXt")->file_id == a && fx.L->get_file(a)->path == "/testdata/Report.TXT" && fx.L->get_file(a)->size == 10);   // first spelling is kept
+        std::string c = fx.L->track_file(nfc, 5, 1, 0644);
+        CHECK(fx.L->track_file(nfd, 6, 1, 0644) == c && fx.L->get_file_by_path(nfd)->file_id == c && fx.L->get_file_by_path("/testdata/CAF\xC3\x89.txt")->file_id == c);
+        CHECK(fx.L->fold_path("/A/\xC3\x84") == fx.L->fold_path("/a/A\xCC\x88") && fx.L->fold_path("/a") != fx.L->fold_path("/b") && fx.L->fold_path("/ss") != fx.L->fold_path("/\xC3\x9F"));
+        // names that are not valid UTF-8 still fold (ASCII only) instead of colliding or crashing
+        std::string bad1 = fx.L->track_file("/testdata/\xFF\xFE-Name", 1, 1, 0644);
+        CHECK(fx.L->track_file("/TESTDATA/\xFF\xFE-NAME", 2, 2, 0644) == bad1 && fx.L->fold_path("/A\xFF") == "/a\xFF");
+        // listing and prefixes
+        fx.L->track_file("/testdata/Dir/One", 1, 1, 0644);
+        fx.L->track_file("/testdata/dir/two", 1, 1, 0644);       // same directory, different spelling of its name
+        CHECK(fx.L->list_files_under("/TESTDATA/DIR/").size() == 2 && fx.L->list_files_under("/testdata/dir/").size() == 2 && fx.L->list_files_under("/testdata/dirx/").empty());
+        // batches: a duplicate inside the batch, and one against an existing row, in different case
+        std::vector<Ledger::NewFile> nf = {{"/testdata/B/x", 1, 1, 0644}, {"/testdata/b/X", 2, 2, 0644}, {"/testdata/REPORT.txt", 3, 3, 0644}, {"/testdata/b/y", 4, 4, 0644}};
+        CHECK(fx.L->track_files(nf) == 2 && fx.L->get_file_by_path("/testdata/b/x")->size == 1 && fx.L->get_file_by_path("/testdata/Report.TXT")->size == 10);
+        // renames
+        CHECK(fx.L->rename_file(a, "/testdata/REPORT.txt").ok && fx.L->get_file(a)->path == "/testdata/REPORT.txt");              // a case-only rename is a rename, not a collision
+        std::string other = fx.L->track_file("/testdata/other", 1, 1, 0644);
+        CHECK(!fx.L->rename_file(other, "/testdata/Report.txt").ok && fx.L->get_file(other)->path == "/testdata/other");          // another file's name, in other case: taken
+        CHECK(!fx.L->rename_file(other, "/testdata/CAFE\xCC\x81.txt").ok);                                                            // ... also across Unicode forms
+        CHECK(fx.L->rename_prefix("/testdata/DIR/", "/testdata/Folder/").ok && fx.L->get_file_by_path("/testdata/folder/one")->path == "/testdata/Folder/One" && fx.L->get_file_by_path("/testdata/folder/TWO")->path == "/testdata/Folder/two");
+        CHECK(fx.L->rename_prefix("/testdata/Folder/", "/testdata/FOLDER/").ok && fx.L->get_file_by_path("/testdata/folder/one")->path == "/testdata/FOLDER/One");   // a case-only rename of a directory
+        CHECK(!fx.L->rename_prefix("/testdata/FOLDER/", "/TESTDATA/folder/inner/").ok);                                             // into itself, whatever the spelling
+        fx.L->track_file("/testdata/Dst/f", 1, 1, 0644);
+        fx.L->track_file("/testdata/Src/F", 1, 1, 0644);
+        CHECK(!fx.L->rename_prefix("/testdata/src/", "/testdata/DST/").ok && fx.L->get_file_by_path("/testdata/SRC/f")->path == "/testdata/Src/F");   // a taken name (differently spelled) refuses all of it
+        std::string nfd_dir = fx.L->track_file("/testdata/cafe\xCC\x81/f1", 1, 1, 0644);
+        CHECK(fx.L->rename_prefix("/testdata/caf\xC3\xA9/", "/testdata/cafes/").ok && fx.L->get_file(nfd_dir)->path == "/testdata/cafes/f1");   // the old directory was stored in another Unicode form (different length)
+        // delete and undelete keep the name's identity
+        std::string off = fx.replicated("/testdata/Off.bin", {"devA", "devB1"});
+        Res d = fx.drop(off);
+        CHECK(d.ok && fx.L->complete_drop(d.id).ok && fx.L->retire_file(off, "x").ok);
+        CHECK(fx.L->track_file("/testdata/OFF.BIN", 1, 1, 0644) != off);                                                              // the name is free again after a delete
+        CHECK(!fx.L->undelete_file(off).ok);                                                                                          // ... and a new file with that name (any case) blocks the undelete
+        CHECK(fx.L->fsck().empty());
+    }
+
+    {
+        printf("== a case-sensitive volume keeps both; the rule is fixed once files exist; it survives a reopen\n");
+        std::string dir = tmpdir();
+        {
+            auto L = open_ledger(dir);
+            CHECK(!L->case_sensitive() && L->set_case_sensitive(true).ok && L->case_sensitive());
+            std::string x = L->track_file("/a/File", 1, 1, 0644), y = L->track_file("/a/file", 2, 2, 0644);
+            CHECK(x != y && L->get_file_by_path("/a/File")->file_id == x && L->get_file_by_path("/a/file")->file_id == y && L->fold_path("/A/B") == "/A/B");
+            CHECK(!L->set_case_sensitive(false).ok && L->case_sensitive() && L->set_case_sensitive(true).ok);
+            CHECK(L->list_files_under("/a/").size() == 2 && L->list_files_under("/A/").empty() && L->fsck().empty());
+        }
+        {
+            auto L = open_ledger(dir);
+            CHECK(L->case_sensitive() && L->get_file_by_path("/a/File") && L->get_file_by_path("/a/file") && !L->get_file_by_path("/A/FILE"));
+        }
+        std::string d2 = tmpdir();
+        { auto L = open_ledger(d2); L->track_file("/a", 1, 1, 0644); CHECK(!L->set_case_sensitive(true).ok && !L->case_sensitive()); }
+        fs::remove_all(dir); fs::remove_all(d2);
+    }
+
+    {
+        printf("== upgrading a version 1 ledger: keys are filled, a collision refuses the upgrade and changes nothing, tampering shows in fsck\n");
+        std::string d = tmpdir();
+        { auto L = open_ledger(d); L->track_file("/testdata/One", 1, 1, 0644); L->track_file("/testdata/two", 1, 1, 0644); }
+        { sqlite3* db = raw_open(d); raw_exec(db, "PRAGMA user_version=1"); raw_exec(db, "UPDATE files SET pkey='old-'||file_id"); sqlite3_close(db); }
+        { auto L = open_ledger(d); CHECK(L && L->get_file_by_path("/testdata/ONE") && L->get_file_by_path("/TESTDATA/Two") && L->fsck().empty()); }
+        { sqlite3* db = raw_open(d); CHECK(raw_text(db, "PRAGMA user_version") == "2"); sqlite3_close(db); }
+        // a v1 ledger whose two paths differ only in case cannot be upgraded; it is left exactly as it was
+        std::string d2 = tmpdir();
+        { auto L = open_ledger(d2); L->set_case_sensitive(true); L->track_file("/x/File", 1, 1, 0644); L->track_file("/x/file", 1, 1, 0644); }
+        { sqlite3* db = raw_open(d2); raw_exec(db, "PRAGMA user_version=1"); raw_exec(db, "UPDATE files SET pkey='old-'||file_id"); raw_exec(db, "DELETE FROM meta WHERE key='case_sensitive'"); sqlite3_close(db); }
+        std::string err;
+        CHECK(!Ledger::open(d2, &err) && has(err, "upgrade") && has(err, "differ only in case"));
+        { sqlite3* db = raw_open(d2); CHECK(raw_text(db, "PRAGMA user_version") == "1" && has(raw_text(db, "SELECT pkey FROM files ORDER BY path LIMIT 1"), "old-")); sqlite3_close(db); }
+        // tampering with a key is caught
+        { auto L = open_ledger(d); CHECK(L->fsck().empty()); }
+        { sqlite3* db = raw_open(d); raw_exec(db, "UPDATE files SET pkey='zzz' WHERE path='/testdata/two'"); sqlite3_close(db); }
+        { auto L = open_ledger(d); auto bad = L->fsck(); CHECK(bad.size() == 1 && has(bad[0], "path key does not match") && has(bad[0], "/testdata/two")); }
+        fs::remove_all(d); fs::remove_all(d2);
+    }
+
     printf("---- %d failure(s)\n", failures);
     return failures != 0;
 }

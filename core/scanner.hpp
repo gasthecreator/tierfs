@@ -35,7 +35,7 @@ struct ScanOptions {
 struct ScanReport {
     bool aborted = false;
     std::string abort_reason;
-    size_t files_seen = 0, tracked_new = 0, marked_modified = 0, attrs_updated = 0, retired_vanished = 0, unchanged = 0;
+    size_t files_seen = 0, tracked_new = 0, marked_modified = 0, attrs_updated = 0, retired_vanished = 0, unchanged = 0, respelled = 0;
     size_t skipped_busy = 0;                 // open for writing, or in the middle of a drop/hydration: looked at again next time
     std::vector<std::string> problems;       // things only a person can settle (never resolved by guessing)
     std::vector<std::string> actions;        // what was changed in the ledger, for the log

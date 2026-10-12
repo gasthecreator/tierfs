@@ -105,6 +105,15 @@ void Daemon::attach_devices() {
 
 bool Daemon::start(std::string* err) {
     if (started_) return true;
+    {   // does the origin volume tell "A" from "a"? The ledger must fold names the same way, or two files could collide (or one be tracked twice)
+        long sens = pathconf(cfg_.origin_dir.c_str(), _PC_CASE_SENSITIVE);
+        if (sens >= 0) {
+            bool want = sens == 1;
+            if (ledger_->case_sensitive() != want && !ledger_->set_case_sensitive(want).ok)
+                notes_.push_back(std::string("NEEDS ATTENTION: the folder is on a ") + (want ? "case-sensitive" : "case-insensitive") +
+                                 " volume but this ledger was created for the other kind; names that differ only in case may be mishandled");
+        }
+    }
     attach_devices();
     DeviceMap devs = devices_snapshot();
     {   // finish every interrupted step before anything is served

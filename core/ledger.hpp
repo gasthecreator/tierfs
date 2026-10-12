@@ -153,6 +153,12 @@ public:
     // are already tracked are left as they are. Returns how many were new.
     struct NewFile { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32_t mode = 0; };
     size_t track_files(const std::vector<NewFile>& files);
+    // The key under which paths are unique: lower-cased and Unicode-decomposed (what APFS treats as the same name), or the path itself on a
+    // case-sensitive volume. Two paths with the same fold are ONE name: tracking, renaming and lookup all go through it.
+    std::string fold_path(const std::string& path) const;
+    bool case_sensitive() const { return case_sensitive_; }
+    // Declare the origin volume case-sensitive (default: not, like APFS). Only allowed while no file is tracked.
+    Res set_case_sensitive(bool on);
     std::optional<FileRec> get_file(const std::string& file_id);
     std::optional<FileRec> get_file_by_path(const std::string& path);
     std::vector<FileRec> list_files(std::optional<FileState> state = std::nullopt);
@@ -287,6 +293,8 @@ private:
     // the policy thread and the engines. It is held only inside one call, never across network or disk-heavy work of the callers.
     mutable std::recursive_mutex mu_;
     Ledger() = default;
+    bool case_sensitive_ = false;
+    bool migrate_1_to_2(std::string* err);
     bool init_schema(std::string* err);
     void append_event(const std::string& kind, const std::string& file_id, int64_t version,
                       const std::string& device_id, const std::string& detail);

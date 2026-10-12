@@ -1,5 +1,9 @@
 #include "ledger.hpp"
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -22,7 +26,7 @@ namespace {
 using sql::Stmt;
 using sql::Txn;
 
-constexpr int SCHEMA_VERSION = 1;
+constexpr int SCHEMA_VERSION = 2;   // 2: files.pkey, the case/normalisation-folded path that is unique (APFS treats A.txt and a.txt as one name)
 const std::string GENESIS(64, '0');
 
 const char* const FILE_STATES[] = {"LOCAL", "REPLICATING", "REPLICATED", "DROPPING", "OFFLOADED", "HYDRATING", "AT_RISK"};
@@ -99,6 +103,32 @@ const char* to_string(QuarantineState s) {
     return names[static_cast<int>(s)];
 }
 
+// The key under which a path must be unique. APFS (the default Mac volume format) is case-insensitive and
+// normalisation-insensitive: "A.txt", "a.txt" and "A\u0308" / "\u00c4" spellings name one file. We fold exactly that: lower case, then
+// decomposed (NFD). Volumes that are case-sensitive keep paths exactly (meta case_sensitive=1).
+std::string Ledger::fold_path(const std::string& path) const {
+    if (case_sensitive_) return path;
+#ifdef __APPLE__
+    CFStringRef in = CFStringCreateWithBytes(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(path.data()), static_cast<CFIndex>(path.size()),
+                                             kCFStringEncodingUTF8, false);
+    if (in) {
+        CFMutableStringRef m = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, in);
+        CFRelease(in);
+        if (m) {
+            CFStringLowercase(m, nullptr);   // simple lower-casing, like APFS (full case folding would also equate "ss" and the German sharp s)
+            CFStringNormalize(m, kCFStringNormalizationFormD);
+            std::string out(static_cast<size_t>(CFStringGetMaximumSizeForEncoding(CFStringGetLength(m), kCFStringEncodingUTF8)) + 1, '\0');
+            Boolean ok = CFStringGetCString(m, &out[0], static_cast<CFIndex>(out.size()), kCFStringEncodingUTF8);
+            CFRelease(m);
+            if (ok) { out.resize(strlen(out.c_str())); return out; }
+        }
+    }
+#endif
+    std::string out = path;   // not valid UTF-8 (or not macOS): ASCII folding only
+    for (auto& ch : out) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    return out;
+}
+
 int64_t Ledger::now() const { return clock_ ? clock_() : static_cast<int64_t>(time(nullptr)); }
 
 std::string Ledger::new_id() {
@@ -157,7 +187,7 @@ std::unique_ptr<Ledger> Ledger::open(const std::string& dir, std::string* err) {
         if (t.valid() && t.row()) tables = static_cast<long>(t.col_num(0));
         else return fail_open(path + " is not a readable database; refusing to touch it");
     }
-    if (version != 0 && version != SCHEMA_VERSION)
+    if (version != 0 && version != SCHEMA_VERSION && version != 1)
         return fail_open("ledger schema version " + std::to_string(version) + " is not understood by this build (expects " +
                          std::to_string(SCHEMA_VERSION) + "); refusing to touch it");
     if (version == 0 && tables != 0)
@@ -183,6 +213,11 @@ std::unique_ptr<Ledger> Ledger::open(const std::string& dir, std::string* err) {
         std::string e;
         if (!L->init_schema(&e)) return fail_open("cannot create ledger: " + e);
     }
+    L->case_sensitive_ = L->get_meta("case_sensitive").value_or("") == "1";
+    if (version == 1) {
+        std::string e;
+        if (!L->migrate_1_to_2(&e)) return fail_open("cannot upgrade the ledger to schema 2: " + e + "; it was not changed");
+    }
     return L;
 }
 
@@ -201,7 +236,7 @@ bool Ledger::init_schema(std::string* err) {
         " class TEXT NOT NULL CHECK(class IN('A','B','C')),"
         " state TEXT NOT NULL DEFAULT 'active' CHECK(state IN('active','retired','suspect')),"
         " registered_at INTEGER NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, last_seq INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID",
-        "CREATE TABLE files(file_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+        "CREATE TABLE files(file_id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, pkey TEXT NOT NULL UNIQUE,"
         " current_version INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 1,"
         " state TEXT NOT NULL CHECK(state IN('LOCAL','REPLICATING','REPLICATED','DROPPING','OFFLOADED','HYDRATING','AT_RISK')),"
         " prior_state TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, mode INTEGER NOT NULL,"
@@ -372,8 +407,8 @@ std::string Ledger::track_file(const std::string& path, uint64_t size, int64_t m
     Txn t(db_);
     if (!t.began()) return "";
     std::string id = new_id();
-    Stmt s(db_, "INSERT INTO files(file_id,path,state,size,mtime,mode,created_at) VALUES(?1,?2,'LOCAL',?3,?4,?5,?6)");
-    if (!s.text(1, id).text(2, path).num(3, static_cast<int64_t>(size)).num(4, mtime).num(5, mode).num(6, now()).run()) return "";
+    Stmt s(db_, "INSERT INTO files(file_id,path,pkey,state,size,mtime,mode,created_at) VALUES(?1,?2,?7,'LOCAL',?3,?4,?5,?6)");
+    if (!s.text(1, id).text(2, path).num(3, static_cast<int64_t>(size)).num(4, mtime).num(5, mode).num(6, now()).text(7, fold_path(path)).run()) return "";
     append_event("file.tracked", id, 0, "", path);
     return t.commit() ? id : "";
 }
@@ -392,12 +427,12 @@ size_t Ledger::track_files(const std::vector<NewFile>& files) {
         size_t batch = 0;
         for (size_t i = start; i < files.size() && i < start + 500; i++) {
             const NewFile& f = files[i];
-            Stmt q(db_, "SELECT 1 FROM files WHERE path=?1");
-            q.text(1, f.path);
+            Stmt q(db_, "SELECT 1 FROM files WHERE pkey=?1");
+            q.text(1, fold_path(f.path));
             if (q.row()) continue;
             std::string id = new_id();
-            Stmt s(db_, "INSERT INTO files(file_id,path,state,size,mtime,mode,created_at) VALUES(?1,?2,'LOCAL',?3,?4,?5,?6)");
-            if (!s.text(1, id).text(2, f.path).num(3, static_cast<int64_t>(f.size)).num(4, f.mtime).num(5, f.mode).num(6, now()).run()) continue;
+            Stmt s(db_, "INSERT INTO files(file_id,path,pkey,state,size,mtime,mode,created_at) VALUES(?1,?2,?7,'LOCAL',?3,?4,?5,?6)");
+            if (!s.text(1, id).text(2, f.path).num(3, static_cast<int64_t>(f.size)).num(4, f.mtime).num(5, f.mode).num(6, now()).text(7, fold_path(f.path)).run()) continue;
             append_event("file.tracked", id, 0, "", f.path);
             batch++;
         }
@@ -409,8 +444,8 @@ size_t Ledger::track_files(const std::vector<NewFile>& files) {
 
 std::optional<FileRec> Ledger::get_file_by_path(const std::string& path) {
     std::lock_guard<std::recursive_mutex> lock_(mu_);
-    Stmt s(db_, (std::string("SELECT ") + FILE_COLS + " FROM files WHERE path=?1").c_str());
-    s.text(1, path);
+    Stmt s(db_, (std::string("SELECT ") + FILE_COLS + " FROM files WHERE pkey=?1").c_str());
+    s.text(1, fold_path(path));
     if (!s.row()) return std::nullopt;
     return file_from(s);
 }
@@ -431,10 +466,59 @@ std::vector<FileRec> Ledger::list_files_under(const std::string& prefix) {
     std::vector<FileRec> out;
     // Byte range [prefix, prefix + 0xFF): 0xFF never occurs in UTF-8, so this is exactly "starts with prefix"
     // without LIKE's wildcard characters (paths may contain % and _).
-    Stmt s(db_, (std::string("SELECT ") + FILE_COLS + " FROM files WHERE path>=?1 AND path<?2 ORDER BY path").c_str());
-    s.text(1, prefix).text(2, prefix + "\xff");
+    Stmt s(db_, (std::string("SELECT ") + FILE_COLS + " FROM files WHERE pkey>=?1 AND pkey<?2 ORDER BY path").c_str());
+    { std::string fp = fold_path(prefix); s.text(1, fp).text(2, fp + "\xff"); }
     while (s.row()) out.push_back(file_from(s));
     return out;
+}
+
+Res Ledger::set_case_sensitive(bool on) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    if (on == case_sensitive_) return ok();
+    {
+        Stmt q(db_, "SELECT COUNT(*) FROM files");
+        if (q.row() && q.col_num(0) != 0) return fail("files are already tracked: the folding rule cannot change now");
+    }
+    if (!set_meta("case_sensitive", on ? "1" : "0")) return fail("cannot record it");
+    case_sensitive_ = on;
+    return ok();
+}
+
+// Version 1 had no fold key. Add it, fill it, and make it unique; if two existing paths fold to one name the upgrade is refused
+// and the ledger is left exactly as it was (one transaction).
+bool Ledger::migrate_1_to_2(std::string* err) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    bool has_col = false;
+    {
+        Stmt t(db_, "PRAGMA table_info(files)");
+        while (t.row()) if (t.col_text(1) == "pkey") has_col = true;
+    }
+    Txn t(db_);
+    if (!t.began()) { *err = "cannot begin"; return false; }
+    if (!has_col && !exec("ALTER TABLE files ADD COLUMN pkey TEXT NOT NULL DEFAULT ''")) { *err = "cannot add the column"; return false; }
+    std::vector<std::pair<std::string, std::string>> rows;
+    {
+        Stmt q(db_, "SELECT file_id, path FROM files");
+        while (q.row()) rows.emplace_back(q.col_text(0), q.col_text(1));
+    }
+    {
+        std::map<std::string, std::string> seen;
+        for (auto& r : rows) {
+            auto ins = seen.emplace(fold_path(r.second), r.second);
+            if (!ins.second) { *err = "two tracked paths differ only in case or Unicode form (" + ins.first->second + " and " + r.second + "): a volume that does not distinguish them cannot hold both"; return false; }
+        }
+    }
+    for (auto& r : rows) {
+        Stmt u(db_, "UPDATE files SET pkey=?2 WHERE file_id=?1");
+        if (!u.text(1, r.first).text(2, fold_path(r.second)).run()) { *err = "cannot fill the key"; return false; }
+    }
+    if (!exec("CREATE UNIQUE INDEX IF NOT EXISTS files_pkey ON files(pkey)")) {
+        *err = "two tracked paths differ only in case or Unicode form (a volume that does not distinguish them cannot hold both)";
+        return false;
+    }
+    if (!exec("PRAGMA user_version=2")) { *err = "cannot record the version"; return false; }
+    append_event("ledger.upgraded", "", 0, "", "schema 1 -> 2");
+    return t.commit();
 }
 
 Res Ledger::note_local_modified(const std::string& file_id, uint64_t new_size, int64_t new_mtime) {
@@ -479,8 +563,8 @@ Res Ledger::retire_file(const std::string& file_id, const std::string& reason) {
     if (is_retired_path(f->path)) return fail("file is already deleted");
     if (f->state == FileState::DROPPING || f->state == FileState::HYDRATING)
         return fail(std::string("file is ") + to_string(f->state) + "; it cannot be deleted in the middle of that");
-    Stmt u(db_, "UPDATE files SET path=?2 WHERE file_id=?1 AND path=?3 AND state=?4");
-    if (!u.text(1, file_id).text(2, std::string(RETIRED_PREFIX) + file_id + f->path).text(3, f->path).text(4, to_string(f->state)).run() ||
+    Stmt u(db_, "UPDATE files SET path=?2, pkey=?9 WHERE file_id=?1 AND path=?3 AND state=?4");
+    if (!u.text(1, file_id).text(2, std::string(RETIRED_PREFIX) + file_id + f->path).text(9, fold_path(std::string(RETIRED_PREFIX) + file_id + f->path)).text(3, f->path).text(4, to_string(f->state)).run() ||
         sqlite3_changes(db_) != 1)
         return fail("file changed concurrently");
     append_event("file.deleted", file_id, f->current_version, "", reason + " (was " + f->path + ", " + to_string(f->state) + ")");
@@ -497,8 +581,8 @@ Res Ledger::undelete_file(const std::string& file_id) {
     if (f->state != FileState::OFFLOADED) return fail(std::string("only an offloaded file can be undeleted (this one is ") + to_string(f->state) + ")");
     std::string back = former_path(*f);
     if (back.empty() || back[0] != '/') return fail("the former path is unknown");
-    Stmt u(db_, "UPDATE files SET path=?2 WHERE file_id=?1 AND path=?3");
-    if (!u.text(1, file_id).text(2, back).text(3, f->path).run() || sqlite3_changes(db_) != 1) return fail("the former path is taken");
+    Stmt u(db_, "UPDATE files SET path=?2, pkey=?9 WHERE file_id=?1 AND path=?3");
+    if (!u.text(1, file_id).text(2, back).text(9, fold_path(back)).text(3, f->path).run() || sqlite3_changes(db_) != 1) return fail("the former path is taken");
     append_event("file.undeleted", file_id, f->current_version, "", "back at " + back);
     return t.commit() ? ok() : fail("commit failed");
 }
@@ -514,10 +598,10 @@ Res Ledger::rename_file(const std::string& file_id, const std::string& new_path)
     if (f->state == FileState::DROPPING || f->state == FileState::HYDRATING)
         return fail(std::string("file is ") + to_string(f->state) + "; it cannot be renamed in the middle of that");
     if (new_path == f->path) return fail("the new path is the old path");
-    std::string sql = has_local_bytes(f->state) ? "UPDATE files SET path=?2, generation=generation+1, state='LOCAL' WHERE file_id=?1 AND state=?3"
-                                                : "UPDATE files SET path=?2 WHERE file_id=?1 AND state=?3";
+    std::string sql = has_local_bytes(f->state) ? "UPDATE files SET path=?2, pkey=?9, generation=generation+1, state='LOCAL' WHERE file_id=?1 AND state=?3"
+                                                : "UPDATE files SET path=?2, pkey=?9 WHERE file_id=?1 AND state=?3";
     Stmt u(db_, sql.c_str());
-    if (!u.text(1, file_id).text(2, new_path).text(3, to_string(f->state)).run() || sqlite3_changes(db_) != 1) return fail("the new path is taken");
+    if (!u.text(1, file_id).text(2, new_path).text(9, fold_path(new_path)).text(3, to_string(f->state)).run() || sqlite3_changes(db_) != 1) return fail("the new path is taken");
     append_event("file.renamed", file_id, f->current_version, "", f->path + " -> " + new_path);
     return t.commit() ? ok() : fail("commit failed");
 }
@@ -526,7 +610,7 @@ Res Ledger::rename_prefix(const std::string& old_prefix, const std::string& new_
     std::lock_guard<std::recursive_mutex> lock_(mu_);
     auto dir_ok = [](const std::string& p) { return p.size() >= 2 && p[0] == '/' && p.back() == '/' && !Ledger::is_retired_path(p); };
     if (!dir_ok(old_prefix) || !dir_ok(new_prefix)) return fail("not valid directory prefixes");
-    if (new_prefix.compare(0, old_prefix.size(), old_prefix) == 0) return fail("a directory cannot be moved into itself");
+    { std::string fo = fold_path(old_prefix), fn = fold_path(new_prefix); if (fn.size() > fo.size() && fn.compare(0, fo.size(), fo) == 0) return fail("a directory cannot be moved into itself"); }   // (a case-only rename is a rename)
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     std::vector<FileRec> rows = list_files_under(old_prefix);
@@ -534,11 +618,15 @@ Res Ledger::rename_prefix(const std::string& old_prefix, const std::string& new_
         if (f.state == FileState::DROPPING || f.state == FileState::HYDRATING)
             return fail(f.path + " is " + to_string(f.state) + "; the directory cannot be renamed in the middle of that");
     for (const auto& f : rows) {
-        std::string np = new_prefix + f.path.substr(old_prefix.size());
-        std::string sql = has_local_bytes(f.state) ? "UPDATE files SET path=?2, generation=generation+1, state='LOCAL' WHERE file_id=?1 AND state=?3"
-                                                   : "UPDATE files SET path=?2 WHERE file_id=?1 AND state=?3";
+        // the part of the path after the old directory: found by folding, since the stored spelling may differ in case or form (and length)
+        std::string foldp = fold_path(old_prefix), rest;
+        for (size_t k = 1; k <= f.path.size(); k++)
+            if (f.path[k - 1] == '/' && fold_path(f.path.substr(0, k)) == foldp) { rest = f.path.substr(k); break; }
+        std::string np = new_prefix + rest;
+        std::string sql = has_local_bytes(f.state) ? "UPDATE files SET path=?2, pkey=?9, generation=generation+1, state='LOCAL' WHERE file_id=?1 AND state=?3"
+                                                   : "UPDATE files SET path=?2, pkey=?9 WHERE file_id=?1 AND state=?3";
         Stmt u(db_, sql.c_str());
-        if (!u.text(1, f.file_id).text(2, np).text(3, to_string(f.state)).run() || sqlite3_changes(db_) != 1) return fail(np + " is taken");
+        if (!u.text(1, f.file_id).text(2, np).text(9, fold_path(np)).text(3, to_string(f.state)).run() || sqlite3_changes(db_) != 1) return fail(np + " is taken");
     }
     append_event("files.renamed_prefix", "", 0, "", old_prefix + " -> " + new_prefix + " (" + std::to_string(rows.size()) + " files)");
     if (!t.commit()) return fail("commit failed");
@@ -1371,6 +1459,10 @@ std::vector<std::string> Ledger::fsck() {
         Stmt s(db_, sql);
         while (s.row()) report(std::string(what) + ": " + s.col_text(0));
     };
+    {   // every row's fold key must be the fold of its path (the unique name the volume really has)
+        Stmt q(db_, "SELECT path, pkey FROM files");
+        while (q.row()) if (fold_path(q.col_text(0)) != q.col_text(1)) bad.push_back("path key does not match the path: " + q.col_text(0));
+    }
     each("SELECT path FROM files WHERE state='OFFLOADED' AND local_present!=0", "OFFLOADED file claims local bytes");
     each("SELECT path FROM files f WHERE state='OFFLOADED' AND NOT EXISTS (SELECT 1 FROM replicas r JOIN devices d USING(device_id) WHERE r.file_id=f.file_id AND r.version=f.current_version AND r.state='COMMITTED' AND d.state='active')",
          "OFFLOADED file with no committed replica");

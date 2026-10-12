@@ -807,6 +807,32 @@ int main() {
         }
     }
 
+    {
+        printf("== a file renamed behind our back only in case is the same file: respelled, not vanished and re-tracked\n");
+        if (pathconf(tmpdir().c_str(), _PC_CASE_SENSITIVE) == 1) printf("      (this volume is case-sensitive: skipped)\n");
+        else {
+            Lab w;
+            Item& a = w.make("a.bin", MiB + 5, 1);
+            Item& b = w.make("b.bin", MiB + 6, 2);
+            Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w), w.E.get());
+            Scanner sc(*w.L, ov);
+            fs::rename(w.path("a.bin"), w.path("A.BIN"));
+            ScanReport r = sc.scan();
+            bool logged = false;
+            for (auto& x : r.actions) if (x == "respelled: /Users/me/proj/a.bin -> /Users/me/proj/A.BIN") logged = true;
+            CHECK(r.respelled == 1 && r.tracked_new == 0 && r.retired_vanished == 0 && r.problems.empty() && logged);
+            CHECK(w.L->get_file(a.fid)->path == "/Users/me/proj/A.BIN" && w.L->list_retired().empty() && w.L->list_files_under("/Users/me/proj/").size() == 2);
+            ScanReport again = sc.scan();
+            CHECK(again.respelled == 0 && again.marked_modified == 0 && again.retired_vanished == 0 && again.unchanged == 2);
+            // an offloaded file with a local file at its name in another case is a conflict, never a second row
+            CHECK(w.drop("b.bin"));
+            spit(w.path("B.BIN"), pattern(33, 5));
+            ScanReport s = sc.scan();
+            CHECK(s.tracked_new == 0 && s.problems.size() == 1 && has(s.problems[0].c_str(), "only on the devices") && w.L->list_files_under("/Users/me/proj/").size() == 2);
+            (void)b;
+        }
+    }
+
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
     return failures ? 1 : 0;
 }

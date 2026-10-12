@@ -1,3 +1,4 @@
+SQLITE_LIB := -lsqlite3 -framework CoreFoundation
 # FUSE-T installs headers/libs under /usr/local.
 CC       ?= clang
 CXX      ?= clang++
@@ -21,17 +22,17 @@ build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp cor
 
 build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) -lsqlite3
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) $(SQLITE_LIB)
 
 build/ledger.o: core/ledger.cpp core/ledger.hpp core/sqlutil.hpp core/hash.hpp core/crashpoint.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 build/ledger_test: tests/ledger_test.cpp build/ledger.o build/ledger_helper
-	$(CXX) $(CXXFLAGS) tests/ledger_test.cpp build/ledger.o -o $@ -lsqlite3
+	$(CXX) $(CXXFLAGS) tests/ledger_test.cpp build/ledger.o -o $@ $(SQLITE_LIB)
 
 build/ledger_helper: tests/ledger_helper.cpp build/ledger.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(SQLITE_LIB)
 
 # Crypto: OpenSSL, linked statically so nothing but the macOS system libraries is needed at run time.
 OPENSSL_DIR ?= /opt/homebrew/opt/openssl@3
@@ -79,43 +80,43 @@ build/replicator.o: core/replicator.cpp core/replicator.hpp core/ledger.hpp core
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
 build/repl_helper: tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/replicator_test: tests/replicator_test.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/repl_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/replicator_test.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/replicator_test.cpp build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-replicator: build/replicator_test build/tierfs-device
 	./build/replicator_test
 
 build/drop_helper: tests/drop_helper.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/drop_helper.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/drop_helper.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/dropengine_test: tests/dropengine_test.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/dropengine_test.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/dropengine_test.cpp build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/policy_test: tests/policy_test.cpp build/policy.o build/spaceprobe.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/policy_test.cpp build/policy.o build/spaceprobe.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -framework CoreFoundation -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/policy_test.cpp build/policy.o build/spaceprobe.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -o $@
 
 test-policy: build/policy_test build/tierfs-device
 	./build/policy_test
 
 build/recovery_test: tests/recovery_test.cpp build/recovery.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/recovery_test.cpp build/recovery.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/recovery_test.cpp build/recovery.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-recovery: build/recovery_test build/tierfs-device build/tierctl build/drop_helper
 	./build/recovery_test
 
 build/overlay_test: tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-overlay: build/overlay_test build/tierfs-device build/drop_helper
 	./build/overlay_test
 
 build/overlay_helper: tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/overlay_write_test: tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/overlay_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-overlay-write: build/overlay_write_test build/tierfs-device
 	./build/overlay_write_test
@@ -130,14 +131,14 @@ build/tierfsd.o: mount/tierfsd.c core/tfs_c.h
 
 DAEMON_OBJS := build/tfs_c.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
 build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
-	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) -lsqlite3 -framework CoreFoundation
+	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation
 
 build/daemon.o: core/daemon.cpp core/daemon.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
 build/daemon_test: tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -framework CoreFoundation -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -o $@
 
 test-daemon: build/daemon_test build/tierfs-device build/drop_helper
 	./build/daemon_test
@@ -147,7 +148,7 @@ build/scanner.o: core/scanner.cpp core/scanner.hpp core/overlay.hpp core/ledger.
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
 build/scanner_test: tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-init: build/tierctl
 	python3 -I tests/init_test.py
@@ -156,7 +157,7 @@ test-scanner: build/scanner_test build/tierfs-device build/drop_helper
 	./build/scanner_test
 
 build/overlay_ns_test: tests/overlay_ns_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_ns_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_ns_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-overlay-ns: build/overlay_ns_test build/tierfs-device build/drop_helper
 	./build/overlay_ns_test
@@ -165,31 +166,31 @@ test-dropengine: build/dropengine_test build/tierfs-device
 	./build/dropengine_test
 
 build/devicenet_test: tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicenet_test.cpp build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-device: build/devicenet_test build/tierfs-device
 	./build/devicenet_test
 
 build/tierfs-device: backend/device_server.cpp build/devicestore.o build/crypto.o core/wire.hpp
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) backend/device_server.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) backend/device_server.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/devicestore_test: tests/devicestore_test.cpp build/devicestore.o build/crypto.o build/device_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicestore_test.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicestore_test.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/device_helper: tests/device_helper.cpp build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/device_helper.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/device_helper.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/crypto_test: tests/crypto_test.cpp tests/crypto_kat.hpp build/crypto.o build/keychain_mac.o
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/crypto_test.cpp build/crypto.o build/keychain_mac.o $(OPENSSL_LIB) -framework Security -framework CoreFoundation -o $@
 
 build/metastore_test: tests/metastore_test.cpp build/metastore.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(SQLITE_LIB)
 
 build/chunkcache_test: tests/chunkcache_test.cpp build/chunkcache.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(SQLITE_LIB)
 
 build/client_test: tests/client_test.cpp build/tierclient.o build/metastore.o build/chunkcache.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ -lsqlite3
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(SQLITE_LIB)
 
 # Needs the backend binary. Builds the whole client with ThreadSanitizer too.
 test-client: build/client_test build/tierfs-backend build/tierctl
@@ -197,24 +198,24 @@ test-client: build/client_test build/tierfs-backend build/tierctl
 
 test-tsan: build/tierfs-backend
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test -lsqlite3
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test $(SQLITE_LIB)
 	./build/tsan/client_test
 
 test-ledger-tsan:
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/ledger_test.cpp core/ledger.cpp -o build/tsan/ledger_test -lsqlite3
-	@mkdir -p build && $(CXX) $(CXXFLAGS) tests/ledger_helper.cpp build/ledger.o -o build/ledger_helper -lsqlite3 2>/dev/null || true
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/ledger_test.cpp core/ledger.cpp -o build/tsan/ledger_test $(SQLITE_LIB)
+	@mkdir -p build && $(CXX) $(CXXFLAGS) tests/ledger_helper.cpp build/ledger.o -o build/ledger_helper $(SQLITE_LIB) 2>/dev/null || true
 	./build/tsan/ledger_test | tail -3
 
 test-overlay-tsan: build/tierfs-device build/overlay_helper
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) -lsqlite3 -o build/tsan/overlay_write_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_write_test
 	./build/tsan/overlay_write_test > build/tsan/overlay_write.log 2>&1; echo "exit $$?"; grep -c "ThreadSanitizer" build/tsan/overlay_write.log; grep -a "ALL PASSED\|FAILED" build/tsan/overlay_write.log
 
 test-ns-tsan: build/tierfs-device build/drop_helper
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_ns_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) -lsqlite3 -o build/tsan/overlay_ns_test
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/scanner_test.cpp core/scanner.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) -lsqlite3 -o build/tsan/scanner_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_ns_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_ns_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/scanner_test.cpp core/scanner.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/scanner_test
 	@for t in overlay_ns_test scanner_test; do ./build/tsan/$$t > build/tsan/$$t.log 2>&1; echo "$$t exit $$?: $$(grep -ac ThreadSanitizer build/tsan/$$t.log) warnings; $$(grep -a 'ALL PASSED\|FAILED' build/tsan/$$t.log)"; done
 
 test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test build/devicestore_test
@@ -238,7 +239,7 @@ build/tierfs.o: mount/tierfs.c core/tierclient.h
 
 # Linked with the C++ compiler so libc++ comes along for the client library.
 build/tierfs: build/tierfs.o build/tierclient.o build/metastore.o build/chunkcache.o
-	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) -lsqlite3
+	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(SQLITE_LIB)
 
 build/hellofs: mount/hellofs.c
 	@mkdir -p build

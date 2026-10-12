@@ -3,6 +3,7 @@
 // The invariants: a name always leads to the bytes the user put there (locally or from the devices); a directory is never
 // half-renamed; nothing is destroyed that the devices could not give back.
 #include <fcntl.h>
+#include <strings.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
@@ -1032,6 +1033,51 @@ int main() {
             CHECK(stat(w.path("f.bin").c_str(), &st) == 0 && (st.st_mode & 0777) == 0600 && w.L->get_file(f.fid)->mode == 0600 && slurp(w.path("f.bin")) == f.bytes);
         }
         CHECK(w.L->fsck().empty());
+    }
+
+    {
+        printf("== names the way the volume sees them: another case or Unicode form reaches the same file, remote or local\n");
+        if (pathconf(tmpdir().c_str(), _PC_CASE_SENSITIVE) == 1) printf("      (this volume is case-sensitive: skipped)\n");
+        else {
+            Lab w;
+            Item& r = w.make("Report.bin", MiB + 5, 1);
+            Item& l = w.make("Local.bin", MiB + 6, 2);
+            Item& d = w.make("Dir/Inner.bin", MiB + 7, 3);
+            CHECK(w.drop("Report.bin") && w.drop("Dir/Inner.bin"));
+            Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w, 300), w.E.get());
+            OvStat st;
+            CHECK(ov.getattr("/REPORT.BIN", &st) == 0 && st.remote && st.file_id == r.fid && read_path_all(ov, "/report.bin", r.bytes.size()) == r.bytes);
+            std::vector<OvEntry> es;
+            CHECK(ov.readdir("/", &es) == 0 && es.size() == 3 && listed(ov, "/", "Report.bin") && !listed(ov, "/", "REPORT.BIN"));      // listed once, under its own spelling
+            uint64_t fh = 0;
+            CHECK(ov.create("/rEpOrT.bin", 0644, O_WRONLY, &fh) == -EEXIST && ov.mkdir("/REPORT.bin", 0755) == -EEXIST && ov.symlink("x", "/Report.BIN") == -EEXIST);
+            CHECK(read_path_all(ov, "/DIR/inner.BIN", d.bytes.size()) == d.bytes);
+            // a case-only rename of a remote file renames it; it does not delete it
+            CHECK(ov.rename("/Report.bin", "/REPORT.bin") == 0 && w.L->get_file(r.fid)->path == "/Users/me/proj/REPORT.bin" && w.L->get_file(r.fid)->state == FileState::OFFLOADED);
+            CHECK(read_path_all(ov, "/report.bin", r.bytes.size()) == r.bytes && listed(ov, "/", "REPORT.bin") && !listed(ov, "/", "Report.bin") && w.L->fsck().empty());
+            // a case-only rename of a local file
+            CHECK(ov.rename("/Local.bin", "/LOCAL.bin") == 0 && w.L->get_file(l.fid)->path == "/Users/me/proj/LOCAL.bin" && w.L->get_file(l.fid)->state == FileState::LOCAL);
+            CHECK(ov.getattr("/local.BIN", &st) == 0 && st.file_id == l.fid);
+            // a case-only rename of a directory with an offloaded file inside
+            CHECK(ov.rename("/Dir", "/DIR") == 0 && w.L->get_file(d.fid)->path == "/Users/me/proj/DIR/Inner.bin");
+            CHECK(read_path_all(ov, "/dir/INNER.bin", d.bytes.size()) == d.bytes && listed(ov, "/", "DIR") && w.L->fsck().empty());
+            // delete and undelete through other spellings
+            CHECK(ov.unlink("/Report.BIN") == 0 && ov.getattr("/report.bin", &st) == -ENOENT);
+            CHECK(ov.undelete("/REPORT.BIN") == 0 && read_path_all(ov, "/report.bin", r.bytes.size()) == r.bytes);
+            // an offloaded file whose name was taken by a local file behind our back (another case): one entry, the local one
+            Item& sh = w.make("Shadow.bin", MiB + 9, 5);
+            CHECK(w.drop("Shadow.bin"));
+            spit(w.path("SHADOW.BIN"), pattern(40, 6));
+            CHECK(ov.readdir("/", &es) == 0);
+            size_t shadows = 0;
+            for (auto& e : es) if (strcasecmp(e.name.c_str(), "shadow.bin") == 0) { shadows++; CHECK(!e.remote); }
+            CHECK(shadows == 1);
+            (void)sh;
+            // Unicode: a name typed composed reaches a file stored decomposed
+            Item& u = w.make("cafe\xCC\x81.bin", MiB + 8, 4);
+            CHECK(w.drop(std::string("cafe\xCC\x81.bin")));
+            CHECK(ov.getattr("/caf\xC3\xA9.bin", &st) == 0 && st.file_id == u.fid && read_path_all(ov, "/CAF\xC3\x89.bin", u.bytes.size()) == u.bytes);
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);

@@ -65,16 +65,16 @@ ScanReport Scanner::scan(const ScanOptions& opt) {
     if (on_step) on_step("walked");
 
     std::map<std::string, FileRec> rows;   // logical path -> row, live files only
-    for (auto& f : ledger_.list_files_under(prefix)) rows[f.path] = f;
+    for (auto& f : ledger_.list_files_under(prefix)) rows[ledger_.fold_path(f.path)] = f;   // keyed by the name as the volume sees it
     std::map<std::string, bool> seen_rel;
-    for (const auto& f : found) seen_rel[f.rel] = true;
+    for (const auto& f : found) seen_rel[ledger_.fold_path(f.rel)] = true;
     if (on_step) on_step("rows");
 
     // ---- files that are in the origin
     std::vector<Ledger::NewFile> to_track;
     for (const auto& f : found) {
         std::string lp = prefix + f.rel;
-        auto it = rows.find(lp);
+        auto it = rows.find(ledger_.fold_path(lp));
         if (it == rows.end()) {
             if (opt.track_new) to_track.push_back({lp, f.size, f.mtime, f.mode});
             continue;
@@ -83,7 +83,8 @@ ScanReport Scanner::scan(const ScanOptions& opt) {
         if (local_bytes(row.state)) {
             bool size_or_time = row.size != f.size || row.mtime != f.mtime;
             bool mode = row.mode != f.mode;
-            if (!size_or_time && !mode) { rep.unchanged++; continue; }
+            bool respelled = row.path != lp;   // renamed behind our back, only in case or Unicode form
+            if (!size_or_time && !mode && !respelled) { rep.unchanged++; continue; }
             bool done = false;
             overlay_.locked([&] {   // re-check under the namespace lock: a rename or a write may have got there first
                 struct stat st;
@@ -91,6 +92,12 @@ ScanReport Scanner::scan(const ScanOptions& opt) {
                 auto cur = ledger_.get_file_by_path(lp);
                 if (!cur || !local_bytes(cur->state) || lstat(op.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return;
                 if (overlay_.has_writers_locked(cur->file_id)) { rep.skipped_busy++; done = true; return; }
+                if (cur->path != lp && ledger_.rename_file(cur->file_id, lp).ok) {   // the name on disk is the truth
+                    rep.respelled++;
+                    rep.actions.push_back("respelled: " + cur->path + " -> " + lp);
+                    cur = ledger_.get_file(cur->file_id);
+                    if (!cur) return;
+                }
                 uint64_t sz = static_cast<uint64_t>(st.st_size);
                 int64_t mt = st.st_mtimespec.tv_sec;
                 uint32_t md = st.st_mode & 0777u;
@@ -136,7 +143,7 @@ ScanReport Scanner::scan(const ScanOptions& opt) {
         const FileRec& row = kv.second;
         if (!local_bytes(row.state)) continue;
         local_rows++;
-        if (!seen_rel.count(row.path.substr(prefix.size()))) vanished.push_back(row);
+        if (!seen_rel.count(ledger_.fold_path(row.path.substr(prefix.size())))) vanished.push_back(row);
     }
     if (!opt.retire_vanished || vanished.empty()) return rep;
     if (vanished.size() > opt.vanished_floor && static_cast<double>(vanished.size()) > opt.max_vanished_fraction * static_cast<double>(local_rows)) {

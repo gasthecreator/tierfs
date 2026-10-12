@@ -14,13 +14,13 @@ COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/d
           ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine')]
 TARGETS = {
     'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', tests=['tests/recovery_test.cpp'],
-                     extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL')], libs=['-lsqlite3']),
+                     extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
     'ledger': dict(mutants='ledger_mutants', mutated='core/ledger.cpp', tests=['tests/ledger_test.cpp'], extra_objs=[],
-                   tools=[('tests/ledger_helper.cpp', 'TIERFS_HELPER')], libs=['-lsqlite3']),
+                   tools=[('tests/ledger_helper.cpp', 'TIERFS_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
     'scanner': dict(mutants='scanner_mutants', mutated='core/scanner.cpp', tests=['tests/scanner_test.cpp'], extra_objs=[('core/overlay.cpp', 'overlay')],
-                    tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3']),
+                    tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
     'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp', 'tests/overlay_ns_test.cpp'],
-                    extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3']),
+                    extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
 }
 if len(sys.argv) < 2 or sys.argv[1] not in TARGETS: sys.exit(__doc__)
 T = TARGETS[sys.argv[1]]

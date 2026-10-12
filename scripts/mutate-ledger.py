@@ -73,8 +73,8 @@ for name, frm, to in MUTANTS:
     for h in ('ledger.hpp','sqlutil.hpp','hash.hpp','crashpoint.hpp','tierclient.h'):
         shutil.copy('core/'+h, 'build/mut/'+h)
     base = ['c++','-std=c++17','-g','-I','core','-Ibuild/mut']
-    r = subprocess.run(base+['tests/ledger_test.cpp','build/mut/ledger.cpp','-o','build/mut/t','-lsqlite3'],capture_output=True,text=True)
-    r2 = subprocess.run(base+['tests/ledger_helper.cpp','build/mut/ledger.cpp','-o','build/mut/helper','-lsqlite3'],capture_output=True,text=True)
+    r = subprocess.run(base+['tests/ledger_test.cpp','build/mut/ledger.cpp','-o','build/mut/t','-lsqlite3','-framework','CoreFoundation'],capture_output=True,text=True)
+    r2 = subprocess.run(base+['tests/ledger_helper.cpp','build/mut/ledger.cpp','-o','build/mut/helper','-lsqlite3','-framework','CoreFoundation'],capture_output=True,text=True)
     if r.returncode or r2.returncode:
         print(f"{name:<52} (does not compile: {(r.stderr or r2.stderr).splitlines()[0][:60]})"); continue
     env = dict(os.environ, TIERFS_HELPER='./build/mut/helper')

@@ -30,7 +30,7 @@ for name, path, frm, to in M:
     r = run(BASE + ['-c', f'{D}/mut.cpp', '-o', f'{D}/mut.o'])
     if r.returncode: print(f'{name:<66} (does not compile: {r.stderr.strip().splitlines()[-1][:60]})'); continue
     for out, first in [('mut_test', 'dropengine_test.o'), ('mut_helper', 'drop_helper.o')]:
-        sh(['c++', '-o', f'{D}/{out}', f'{D}/{first}', f'{D}/mut.o'] + [f'{D}/{o}' for o in OBJS] + [CRYPTO, '-lsqlite3'])
+        sh(['c++', '-o', f'{D}/{out}', f'{D}/{first}', f'{D}/mut.o'] + [f'{D}/{o}' for o in OBJS] + [CRYPTO, '-lsqlite3', '-framework', 'CoreFoundation'])
     env = dict(os.environ, TIERFS_DROP_HELPER=f'./{D}/mut_helper', TIERFS_TEST_FAILFAST='1')
     def execute():
         subprocess.run(['pkill', '-f', 'tierfs-device'])

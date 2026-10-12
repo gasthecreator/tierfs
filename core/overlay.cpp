@@ -116,7 +116,7 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
         oe.name = name;
         struct stat st;
         oe.kind = (fstatat(dirfd(d), name.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) ? kind_of(st.st_mode) : OvKind::Other;
-        seen.insert(name);
+        seen.insert(ledger_.fold_path(name));
         entries.push_back(std::move(oe));
     }
     closedir(d);
@@ -129,12 +129,12 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
     for (const auto& f : under) {
         std::string name = f.path.substr(dirprefix.size());
         if (name.empty() || name.find('/') != std::string::npos) continue;   // deeper: belongs to a subdirectory's listing
-        if (!is_remote_state(f) || seen.count(name)) continue;
+        if (!is_remote_state(f) || seen.count(ledger_.fold_path(name))) continue;
         OvEntry oe;
         oe.name = name;
         oe.kind = OvKind::File;
         oe.remote = true;
-        seen.insert(name);
+        seen.insert(ledger_.fold_path(name));
         entries.push_back(std::move(oe));
     }
     std::sort(entries.begin(), entries.end(), [](const OvEntry& a, const OvEntry& b) { return a.name < b.name; });
@@ -803,11 +803,15 @@ int Overlay::rename_impl(const std::string& from, const std::string& to, int dep
     if (src_local && S_ISDIR(sst.st_mode)) {
         std::unique_lock<std::mutex> g(gate_mu_);
         const std::string sprefix = flp + "/", dprefix = tlp + "/";
+        // On a case-insensitive volume "Dir" -> "DIR" finds the directory itself at the destination: that is a rename, not a collision.
+        const bool same_dir = dst_local && sst.st_dev == dst.st_dev && sst.st_ino == dst.st_ino;
         if (dst_local && !dst_dir) return -ENOTDIR;
-        auto d = ledger_.get_file_by_path(tlp);
-        if (d && is_remote_state(*d)) return -ENOTDIR;
-        for (const auto& f : ledger_.list_files_under(dprefix))
-            if (is_remote_state(f)) return -ENOTEMPTY;
+        if (!same_dir) {
+            auto d = ledger_.get_file_by_path(tlp);
+            if (d && is_remote_state(*d)) return -ENOTDIR;
+            for (const auto& f : ledger_.list_files_under(dprefix))
+                if (is_remote_state(f)) return -ENOTEMPTY;
+        }
         auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.write_wait_ms);
         for (;;) {
             bool busy = false;
@@ -819,7 +823,7 @@ int Overlay::rename_impl(const std::string& from, const std::string& to, int dep
         if (::rename(fop.c_str(), top.c_str()) != 0) return -errno;
         if (!ledger_.rename_prefix(sprefix, dprefix).ok) {
             ::rename(top.c_str(), fop.c_str());   // never leave the namespace half-renamed
-            if (dst_dir) ::mkdir(top.c_str(), dst.st_mode & 07777);   // (the empty directory it replaced comes back too)
+            if (dst_dir && !same_dir) ::mkdir(top.c_str(), dst.st_mode & 07777);   // (the empty directory it replaced comes back too)
             return -EIO;
         }
         return 0;
@@ -859,7 +863,7 @@ int Overlay::rename_impl(const std::string& from, const std::string& to, int dep
         std::string parent = top.substr(0, top.rfind('/'));
         if (stat(parent.c_str(), &ps) != 0) return -errno;
         if (!S_ISDIR(ps.st_mode)) return -ENOTDIR;
-        if (df && !ledger_.retire_file(df->file_id, "replaced by a rename").ok) return -EBUSY;
+        if (df && df->file_id != rf->file_id && !ledger_.retire_file(df->file_id, "replaced by a rename").ok) return -EBUSY;   // (a case-only rename finds itself)
         if (dst_local && ::unlink(top.c_str()) != 0) return -errno;
         return ledger_.rename_file(rf->file_id, tlp).ok ? 0 : -EIO;
     }
@@ -1057,7 +1061,7 @@ int Overlay::undelete(const std::string& path) {
     if (lstat(op.c_str(), &st) == 0) return -EEXIST;
     if (ledger_.get_file_by_path(lp)) return -EEXIST;
     for (const auto& f : ledger_.list_retired()) {
-        if (Ledger::former_path(f) != lp) continue;
+        if (ledger_.fold_path(Ledger::former_path(f)) != ledger_.fold_path(lp)) continue;
         if (!ledger_.undelete_file(f.file_id).ok) return -EINVAL;
         // The name is back without anything in the origin changing, so the directory's modification time did not move, and the
         // kernel (which caches names the way an NFS client does) would keep answering "no such file". Moving it makes it look again.

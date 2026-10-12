@@ -480,6 +480,28 @@ int main() {
         CHECK(has(sc, "ERR scan aborted") && d->ledger().list_retired().empty());
     }
 
+    {
+        printf("== the daemon matches the ledger's name rule to the volume\n");
+        Env e;
+        spit(e.path("a.bin"), pattern(100, 1));
+        {   // a ledger that was told "case-sensitive" but already tracks a file, on a volume that is not
+            std::string err;
+            auto L = Ledger::open(e.ledger, &err);
+            CHECK(L && L->set_case_sensitive(true).ok);
+            L->track_file("/Users/me/proj/a.bin", 100, 1, 0644);
+        }
+        auto d = make(e);
+        CHECK(d && d->start(nullptr));
+        bool volume_is_sensitive = pathconf(e.origin.c_str(), _PC_CASE_SENSITIVE) == 1;
+        bool noted = false;
+        for (auto& n : d->startup_notes()) if (has(n, "NEEDS ATTENTION") && has(n, "case")) noted = true;
+        CHECK(volume_is_sensitive ? !noted : noted);
+        // a fresh ledger simply follows the volume
+        Env e2;
+        auto d2 = make(e2);
+        CHECK(d2 && d2->start(nullptr) && d2->ledger().case_sensitive() == (pathconf(e2.origin.c_str(), _PC_CASE_SENSITIVE) == 1));
+    }
+
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
     return failures ? 1 : 0;
 }
