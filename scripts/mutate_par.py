@@ -15,13 +15,23 @@ COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/d
 TARGETS = {
     'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', tests=['tests/recovery_test.cpp'],
                      extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL')], libs=['-lsqlite3']),
-    'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp'],
+    'ledger': dict(mutants='ledger_mutants', mutated='core/ledger.cpp', tests=['tests/ledger_test.cpp'], extra_objs=[],
+                   tools=[('tests/ledger_helper.cpp', 'TIERFS_HELPER')], libs=['-lsqlite3']),
+    'scanner': dict(mutants='scanner_mutants', mutated='core/scanner.cpp', tests=['tests/scanner_test.cpp'], extra_objs=[('core/overlay.cpp', 'overlay')],
+                    tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3']),
+    'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp', 'tests/overlay_ns_test.cpp'],
                     extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3']),
 }
 if len(sys.argv) < 2 or sys.argv[1] not in TARGETS: sys.exit(__doc__)
 T = TARGETS[sys.argv[1]]
 args = sys.argv[2:]
 jobs = 4
+only_tests = None   # --tests 2,0 : run only these test binaries (indexes into the target's list), in this order
+if '--tests' in args:
+    i = args.index('--tests'); only_tests = [int(x) for x in args[i + 1].split(',')]; del args[i:i + 2]
+first_mutant = 0    # --from N : skip the first N mutants (they were checked in an earlier run)
+if '--from' in args:
+    i = args.index('--from'); first_mutant = int(args[i + 1]); del args[i:i + 2]
 if '-j' in args:
     i = args.index('-j'); jobs = int(args[i + 1]); del args[i:i + 2]
 filters = args
@@ -73,6 +83,7 @@ def test_mutant(job):
         subprocess.run(['pkill', '-f', f'tierfs-device {tmp}/'])
         out, rc = '', 0
         for i, _ in enumerate(T['tests']):
+            if only_tests is not None and i not in only_tests: continue
             try:
                 p = subprocess.run([f'{wd}/mut_test{i}'], capture_output=True, text=True, timeout=600, env=env)
                 out, rc = p.stdout, p.returncode
@@ -88,7 +99,7 @@ def test_mutant(job):
     if fails or rc != 0: return name, 'killed', fails[0][:80] if fails else f'exit code {rc}'
     return name, 'survived', ''
 
-jobs_list = [(i, m) for i, m in enumerate(M) if not filters or any(f in m[0] for f in filters)]
+jobs_list = [(i, m) for i, m in enumerate(M) if i >= first_mutant and (not filters or any(f in m[0] for f in filters))]
 survivors, expected, nocompile, stale = [], [], [], []
 with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix='mw') as ex:
     for name, status, detail in ex.map(test_mutant, jobs_list):

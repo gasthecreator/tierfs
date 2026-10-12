@@ -149,6 +149,10 @@ public:
     // --- files ---
     // Starts tracking `path` (returns the existing id if already tracked).
     std::string track_file(const std::string& path, uint64_t size, int64_t mtime, uint32_t mode);
+    // Starts tracking many files in ONE transaction (a scan of a big folder would otherwise pay a full fsync per file). Paths that
+    // are already tracked are left as they are. Returns how many were new.
+    struct NewFile { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32_t mode = 0; };
+    size_t track_files(const std::vector<NewFile>& files);
     std::optional<FileRec> get_file(const std::string& file_id);
     std::optional<FileRec> get_file_by_path(const std::string& path);
     std::vector<FileRec> list_files(std::optional<FileState> state = std::nullopt);
@@ -158,6 +162,28 @@ public:
     // drop prepared against the old bytes. False if the file is DROPPING/HYDRATING
     // (writers must be frozen) or OFFLOADED (hydrate first).
     Res note_local_modified(const std::string& file_id, uint64_t new_size, int64_t new_mtime);
+
+    // --- the namespace (3h-3): a file the user deleted, renamed, or whose attributes changed ---
+    // The user deleted the file. It is not forgotten (the devices keep every version, and history is append-only): its row is
+    // parked under a reserved "graveyard" path that also records the former path, which frees the name and keeps every
+    // consumer that looks files up by path (the overlay, the policy) from ever seeing it. Not allowed while the file is
+    // DROPPING or HYDRATING.
+    Res retire_file(const std::string& file_id, const std::string& reason);
+    // Brings a deleted OFFLOADED file back to its former path (if that name is free). Only offloaded files can be undeleted:
+    // a deleted file with local bytes has no local bytes any more (recover it from the devices with `tierctl restore`).
+    Res undelete_file(const std::string& file_id);
+    std::vector<FileRec> list_retired();
+    static bool is_retired_path(const std::string& path);
+    static std::string former_path(const FileRec& f);   // the path before deletion (the path itself for a live file)
+    // Moves one tracked file to a free path. A file with local bytes becomes LOCAL again with a new generation (its manifest
+    // names the old path, so it must be replicated again); an offloaded file only changes its path.
+    Res rename_file(const std::string& file_id, const std::string& new_path);
+    // The same for a whole directory: every file under `old_prefix` ("/a/b/") moves to `new_prefix`, in one transaction.
+    // Res::id is the number of files moved. Refused if any is DROPPING/HYDRATING or any destination name is taken.
+    Res rename_prefix(const std::string& old_prefix, const std::string& new_prefix);
+    // chmod / utimens. A file with local bytes becomes LOCAL again (its manifest has the old attributes); an offloaded file
+    // only has its recorded attributes changed (they are what stat shows and what hydration restores).
+    Res note_attrs_changed(const std::string& file_id, std::optional<uint32_t> mode, std::optional<int64_t> mtime);
 
     // --- replication (never deletes anything) ---
     // Records version N+1 of the file as it is NOW (snapshots the generation) and

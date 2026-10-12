@@ -378,7 +378,34 @@ std::string Ledger::track_file(const std::string& path, uint64_t size, int64_t m
     return t.commit() ? id : "";
 }
 
-std::optional<FileRec> Ledger::get_file(const std::string& file_id) { return load_file(db_, file_id); }
+std::optional<FileRec> Ledger::get_file(const std::string& file_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    return load_file(db_, file_id);
+}
+
+size_t Ledger::track_files(const std::vector<NewFile>& files) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    size_t added = 0;
+    for (size_t start = 0; start < files.size(); start += 500) {   // bounded transactions: a huge scan never holds the database for long
+        Txn t(db_);
+        if (!t.began()) return added;
+        size_t batch = 0;
+        for (size_t i = start; i < files.size() && i < start + 500; i++) {
+            const NewFile& f = files[i];
+            Stmt q(db_, "SELECT 1 FROM files WHERE path=?1");
+            q.text(1, f.path);
+            if (q.row()) continue;
+            std::string id = new_id();
+            Stmt s(db_, "INSERT INTO files(file_id,path,state,size,mtime,mode,created_at) VALUES(?1,?2,'LOCAL',?3,?4,?5,?6)");
+            if (!s.text(1, id).text(2, f.path).num(3, static_cast<int64_t>(f.size)).num(4, f.mtime).num(5, f.mode).num(6, now()).run()) continue;
+            append_event("file.tracked", id, 0, "", f.path);
+            batch++;
+        }
+        if (!t.commit()) return added;
+        added += batch;
+    }
+    return added;
+}
 
 std::optional<FileRec> Ledger::get_file_by_path(const std::string& path) {
     std::lock_guard<std::recursive_mutex> lock_(mu_);
@@ -424,6 +451,118 @@ Res Ledger::note_local_modified(const std::string& file_id, uint64_t new_size, i
         sqlite3_changes(db_) != 1)
         return fail("file changed concurrently");
     append_event("file.modified", file_id, f->current_version, "", std::string("was ") + to_string(f->state));
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+namespace {
+const char RETIRED_PREFIX[] = "/\x01" "deleted/";
+const size_t RETIRED_PREFIX_LEN = sizeof(RETIRED_PREFIX) - 1;
+bool has_local_bytes(FileState s) { return s == FileState::LOCAL || s == FileState::REPLICATING || s == FileState::REPLICATED; }
+}  // namespace
+
+bool Ledger::is_retired_path(const std::string& path) { return path.compare(0, RETIRED_PREFIX_LEN, RETIRED_PREFIX) == 0; }
+
+std::string Ledger::former_path(const FileRec& f) {
+    if (!is_retired_path(f.path)) return f.path;
+    size_t skip = RETIRED_PREFIX_LEN + f.file_id.size();
+    return skip <= f.path.size() ? f.path.substr(skip) : std::string();
+}
+
+std::vector<FileRec> Ledger::list_retired() { return list_files_under(RETIRED_PREFIX); }
+
+Res Ledger::retire_file(const std::string& file_id, const std::string& reason) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto f = load_file(db_, file_id);
+    if (!f) return fail("unknown file");
+    if (is_retired_path(f->path)) return fail("file is already deleted");
+    if (f->state == FileState::DROPPING || f->state == FileState::HYDRATING)
+        return fail(std::string("file is ") + to_string(f->state) + "; it cannot be deleted in the middle of that");
+    Stmt u(db_, "UPDATE files SET path=?2 WHERE file_id=?1 AND path=?3 AND state=?4");
+    if (!u.text(1, file_id).text(2, std::string(RETIRED_PREFIX) + file_id + f->path).text(3, f->path).text(4, to_string(f->state)).run() ||
+        sqlite3_changes(db_) != 1)
+        return fail("file changed concurrently");
+    append_event("file.deleted", file_id, f->current_version, "", reason + " (was " + f->path + ", " + to_string(f->state) + ")");
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+Res Ledger::undelete_file(const std::string& file_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto f = load_file(db_, file_id);
+    if (!f) return fail("unknown file");
+    if (!is_retired_path(f->path)) return fail("file is not deleted");
+    if (f->state != FileState::OFFLOADED) return fail(std::string("only an offloaded file can be undeleted (this one is ") + to_string(f->state) + ")");
+    std::string back = former_path(*f);
+    if (back.empty() || back[0] != '/') return fail("the former path is unknown");
+    Stmt u(db_, "UPDATE files SET path=?2 WHERE file_id=?1 AND path=?3");
+    if (!u.text(1, file_id).text(2, back).text(3, f->path).run() || sqlite3_changes(db_) != 1) return fail("the former path is taken");
+    append_event("file.undeleted", file_id, f->current_version, "", "back at " + back);
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+Res Ledger::rename_file(const std::string& file_id, const std::string& new_path) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    if (new_path.empty() || new_path[0] != '/' || is_retired_path(new_path)) return fail("not a valid path");
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto f = load_file(db_, file_id);
+    if (!f) return fail("unknown file");
+    if (is_retired_path(f->path)) return fail("file is deleted");
+    if (f->state == FileState::DROPPING || f->state == FileState::HYDRATING)
+        return fail(std::string("file is ") + to_string(f->state) + "; it cannot be renamed in the middle of that");
+    if (new_path == f->path) return fail("the new path is the old path");
+    std::string sql = has_local_bytes(f->state) ? "UPDATE files SET path=?2, generation=generation+1, state='LOCAL' WHERE file_id=?1 AND state=?3"
+                                                : "UPDATE files SET path=?2 WHERE file_id=?1 AND state=?3";
+    Stmt u(db_, sql.c_str());
+    if (!u.text(1, file_id).text(2, new_path).text(3, to_string(f->state)).run() || sqlite3_changes(db_) != 1) return fail("the new path is taken");
+    append_event("file.renamed", file_id, f->current_version, "", f->path + " -> " + new_path);
+    return t.commit() ? ok() : fail("commit failed");
+}
+
+Res Ledger::rename_prefix(const std::string& old_prefix, const std::string& new_prefix) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    auto dir_ok = [](const std::string& p) { return p.size() >= 2 && p[0] == '/' && p.back() == '/' && !Ledger::is_retired_path(p); };
+    if (!dir_ok(old_prefix) || !dir_ok(new_prefix)) return fail("not valid directory prefixes");
+    if (new_prefix.compare(0, old_prefix.size(), old_prefix) == 0) return fail("a directory cannot be moved into itself");
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    std::vector<FileRec> rows = list_files_under(old_prefix);
+    for (const auto& f : rows)
+        if (f.state == FileState::DROPPING || f.state == FileState::HYDRATING)
+            return fail(f.path + " is " + to_string(f.state) + "; the directory cannot be renamed in the middle of that");
+    for (const auto& f : rows) {
+        std::string np = new_prefix + f.path.substr(old_prefix.size());
+        std::string sql = has_local_bytes(f.state) ? "UPDATE files SET path=?2, generation=generation+1, state='LOCAL' WHERE file_id=?1 AND state=?3"
+                                                   : "UPDATE files SET path=?2 WHERE file_id=?1 AND state=?3";
+        Stmt u(db_, sql.c_str());
+        if (!u.text(1, f.file_id).text(2, np).text(3, to_string(f.state)).run() || sqlite3_changes(db_) != 1) return fail(np + " is taken");
+    }
+    append_event("files.renamed_prefix", "", 0, "", old_prefix + " -> " + new_prefix + " (" + std::to_string(rows.size()) + " files)");
+    if (!t.commit()) return fail("commit failed");
+    return ok(std::to_string(rows.size()));
+}
+
+Res Ledger::note_attrs_changed(const std::string& file_id, std::optional<uint32_t> mode, std::optional<int64_t> mtime) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
+    Txn t(db_);
+    if (!t.began()) return fail("cannot begin transaction");
+    auto f = load_file(db_, file_id);
+    if (!f) return fail("unknown file");
+    if (is_retired_path(f->path)) return fail("file is deleted");
+    if (f->state == FileState::DROPPING || f->state == FileState::HYDRATING)
+        return fail(std::string("file is ") + to_string(f->state) + "; its attributes cannot change in the middle of that");
+    std::string sql = std::string("UPDATE files SET mode=COALESCE(?2,mode), mtime=COALESCE(?3,mtime)") +
+                      (has_local_bytes(f->state) ? ", generation=generation+1, state='LOCAL'" : "") + " WHERE file_id=?1 AND state=?4";
+    Stmt u(db_, sql.c_str());
+    u.text(1, file_id);
+    if (mode) u.num(2, static_cast<int64_t>(*mode & 07777)); else u.null(2);
+    if (mtime) u.num(3, *mtime); else u.null(3);
+    u.text(4, to_string(f->state));
+    if (!u.run() || sqlite3_changes(db_) != 1) return fail("file changed concurrently");
+    append_event("file.attrs", file_id, f->current_version, "", std::string(mode ? "mode " : "") + (mtime ? "mtime" : ""));
     return t.commit() ? ok() : fail("commit failed");
 }
 

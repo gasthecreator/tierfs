@@ -984,6 +984,135 @@ int main() {
         for (int t = 0; t < threads; t++) CHECK(fx.L->get_meta("k" + std::to_string(t)).value_or("") == std::to_string(per - 1));
     }
 
+    {
+        printf("== the namespace: deleting, undeleting, renaming files and directories, changing attributes\n");
+        Fixture fx;
+        auto offload = [&](const std::string& path) {
+            std::string id = fx.replicated(path, {"devA", "devB1"});
+            Res d = fx.drop(id);
+            CHECK(d.ok && fx.L->complete_drop(d.id).ok);
+            return id;
+        };
+        // ---- deleting
+        std::string a = fx.L->track_file("/testdata/dir/a", 100, 50, 0644);
+        CHECK(fx.L->retire_file(a, "user deleted it").ok);
+        CHECK(!fx.L->get_file_by_path("/testdata/dir/a") && fx.L->get_file(a)->state == FileState::LOCAL);
+        CHECK(Ledger::is_retired_path(fx.L->get_file(a)->path) && Ledger::former_path(*fx.L->get_file(a)) == "/testdata/dir/a");
+        CHECK(!Ledger::is_retired_path("/testdata/dir/a") && Ledger::former_path(*fx.L->get_file(fx.L->track_file("/testdata/live", 1, 1, 0644))) == "/testdata/live");
+        CHECK(fx.L->list_retired().size() == 1 && fx.L->list_retired()[0].file_id == a);
+        CHECK(!fx.L->retire_file(a, "again").ok && !fx.L->retire_file("nope", "x").ok);      // once; and only known files
+        CHECK(fx.L->list_files_under("/testdata/dir/").empty());                              // invisible to every lookup by path
+        std::string a2 = fx.L->track_file("/testdata/dir/a", 200, 60, 0600);                  // the name is free again: a NEW file
+        CHECK(a2 != a && fx.L->get_file(a2)->size == 200);
+        CHECK(!fx.L->undelete_file(a).ok);                                                    // a deleted LOCAL file cannot come back
+        CHECK(!fx.L->rename_file(a, "/testdata/x").ok && !fx.L->note_attrs_changed(a, 0600, std::nullopt).ok);   // a deleted file is not renamed or touched
+        // an offloaded file: deleted, then undeleted; a name taken meanwhile blocks it
+        std::string off = offload("/testdata/off");
+        CHECK(fx.L->retire_file(off, "user deleted it").ok && !fx.L->get_file_by_path("/testdata/off"));
+        CHECK(fx.L->get_file(off)->state == FileState::OFFLOADED && fx.L->fsck().empty());
+        std::string squatter = fx.L->track_file("/testdata/off", 5, 5, 0644);
+        CHECK(!fx.L->undelete_file(off).ok && Ledger::is_retired_path(fx.L->get_file(off)->path));
+        CHECK(fx.L->retire_file(squatter, "gone").ok && fx.L->undelete_file(off).ok);
+        CHECK(fx.L->get_file_by_path("/testdata/off")->file_id == off && !fx.L->undelete_file(off).ok);
+        // never in the middle of a drop or a hydration
+        std::string mid = fx.replicated("/testdata/mid", {"devA", "devB1"});
+        Res d = fx.drop(mid);
+        CHECK(d.ok && !fx.L->retire_file(mid, "x").ok && !fx.L->rename_file(mid, "/testdata/mid2").ok && !fx.L->note_attrs_changed(mid, 0600, std::nullopt).ok);
+        CHECK(fx.L->complete_drop(d.id).ok && fx.L->begin_hydrate(mid).ok);
+        CHECK(!fx.L->retire_file(mid, "x").ok && !fx.L->rename_file(mid, "/testdata/mid2").ok && !fx.L->note_attrs_changed(mid, 0600, std::nullopt).ok);
+        CHECK(fx.L->abort_hydrate(mid).ok);
+        // a deleted LOCAL file whose old name is still free cannot be undeleted either (nothing of it exists locally any more)
+        std::string lonely = fx.L->track_file("/testdata/lonely", 10, 10, 0644);
+        CHECK(fx.L->retire_file(lonely, "gone").ok && !fx.L->undelete_file(lonely).ok && !fx.L->get_file_by_path("/testdata/lonely"));
+        // every change is written to the history
+        uint64_t e0 = fx.L->event_count();
+        std::string evf = fx.L->track_file("/testdata/ev", 10, 10, 0644);
+        uint64_t e1 = fx.L->event_count();
+        CHECK(fx.L->note_attrs_changed(evf, 0600, std::nullopt).ok && fx.L->event_count() == e1 + 1);
+        CHECK(fx.L->rename_file(evf, "/testdata/ev2").ok && fx.L->event_count() == e1 + 2);
+        CHECK(fx.L->retire_file(evf, "x").ok && fx.L->event_count() == e1 + 3);
+        std::string evo = offload("/testdata/evo");
+        uint64_t e2 = fx.L->event_count();
+        CHECK(fx.L->retire_file(evo, "x").ok && fx.L->undelete_file(evo).ok && fx.L->event_count() == e2 + 2);
+        std::string evd = fx.L->track_file("/testdata/evdir/f", 10, 10, 0644);
+        uint64_t e3 = fx.L->event_count();
+        CHECK(fx.L->rename_prefix("/testdata/evdir/", "/testdata/evdir2/").ok && fx.L->event_count() == e3 + 1 && e0 < e1);
+        (void)evd;
+        // ---- renaming one file
+        std::string r = fx.replicated("/testdata/r", {"devA", "devB1"});
+        auto before = fx.L->get_file(r);
+        CHECK(fx.L->rename_file(r, "/testdata/r2").ok);
+        auto after = fx.L->get_file(r);
+        CHECK(after->path == "/testdata/r2" && after->state == FileState::LOCAL && after->generation > before->generation && after->current_version == before->current_version);
+        CHECK(!fx.L->get_file_by_path("/testdata/r") && fx.L->get_file_by_path("/testdata/r2")->file_id == r);
+        CHECK(!fx.L->rename_file(r, "/testdata/r2").ok && !fx.L->rename_file(r, "/testdata/off").ok);      // same path; a taken path
+        CHECK(!fx.L->rename_file(r, "").ok && !fx.L->rename_file(r, "relative").ok && !fx.L->rename_file(r, std::string("/\x01") + "deleted/x").ok);
+        CHECK(!fx.drop(r).ok);                                                                               // renamed since it was replicated: not droppable
+        std::string o2 = offload("/testdata/o2");
+        CHECK(fx.L->rename_file(o2, "/testdata/o3").ok && fx.L->get_file(o2)->state == FileState::OFFLOADED && fx.L->get_file(o2)->path == "/testdata/o3" && !fx.L->get_file(o2)->local_present);
+        // ---- renaming a directory
+        std::string d1 = fx.replicated("/testdata/old/x", {"devA", "devB1"});
+        std::string d2 = offload("/testdata/old/sub/y");
+        std::string d3 = fx.L->track_file("/testdata/old/z", 10, 10, 0644);
+        std::string other = fx.L->track_file("/testdata/older/q", 10, 10, 0644);                              // a different directory with the same leading text
+        CHECK(fx.L->rename_prefix("/testdata/old/", "/testdata/new/").ok);
+        CHECK(fx.L->get_file(d1)->path == "/testdata/new/x" && fx.L->get_file(d2)->path == "/testdata/new/sub/y" && fx.L->get_file(d3)->path == "/testdata/new/z");
+        CHECK(fx.L->get_file(other)->path == "/testdata/older/q");
+        CHECK(fx.L->get_file(d1)->state == FileState::LOCAL && fx.L->get_file(d2)->state == FileState::OFFLOADED);
+        CHECK(fx.L->list_files_under("/testdata/old/").empty() && fx.L->list_files_under("/testdata/new/").size() == 3 && fx.L->fsck().empty());
+        auto moved = fx.L->rename_prefix("/testdata/new/", "/testdata/newer/");
+        CHECK(moved.ok && moved.id == "3");
+        std::string t1 = fx.L->track_file("/testdata/src/f", 1, 1, 0644), t2 = fx.L->track_file("/testdata/dst/f", 1, 1, 0644);
+        uint64_t ev = fx.L->event_count();
+        CHECK(!fx.L->rename_prefix("/testdata/src/", "/testdata/dst/").ok && fx.L->get_file(t1)->path == "/testdata/src/f" && fx.L->get_file(t2)->path == "/testdata/dst/f");   // a taken name refuses ALL of it
+        CHECK(fx.L->event_count() == ev);
+        CHECK(!fx.L->rename_prefix("/testdata/src/", "/testdata/src/inner/").ok && !fx.L->rename_prefix("/testdata/src", "/testdata/s2/").ok && !fx.L->rename_prefix("/testdata/src/", "/testdata/s2").ok);
+        CHECK(fx.L->rename_prefix("/testdata/nothing/", "/testdata/else/").ok && fx.L->rename_prefix("/testdata/nothing/", "/testdata/else/").id == "0");
+        CHECK(!fx.L->rename_prefix(std::string("/\x01") + "deleted/", "/testdata/grave/").ok && !fx.L->rename_prefix("/testdata/src/", std::string("/\x01") + "deleted/x/").ok);
+        std::string hyd = offload("/testdata/hyd/h");
+        CHECK(fx.L->begin_hydrate(hyd).ok && !fx.L->rename_prefix("/testdata/hyd/", "/testdata/hyd2/").ok && fx.L->get_file(hyd)->path == "/testdata/hyd/h");
+        CHECK(fx.L->abort_hydrate(hyd).ok);
+        std::string mid3 = fx.replicated("/testdata/busy/m", {"devA", "devB1"});
+        std::string calm = fx.L->track_file("/testdata/busy/calm", 1, 1, 0644);
+        Res dd = fx.drop(mid3);
+        CHECK(dd.ok && !fx.L->rename_prefix("/testdata/busy/", "/testdata/free/").ok && fx.L->get_file(calm)->path == "/testdata/busy/calm");   // one busy file stops the whole move
+        CHECK(fx.L->complete_drop(dd.id).ok);
+        // ---- attributes
+        std::string at = fx.replicated("/testdata/at", {"devA", "devB1"});
+        auto b4 = fx.L->get_file(at);
+        CHECK(fx.L->note_attrs_changed(at, 0600, 777).ok);
+        auto af = fx.L->get_file(at);
+        CHECK(af->mode == 0600 && af->mtime == 777 && af->state == FileState::LOCAL && af->generation > b4->generation && af->size == b4->size);
+        CHECK(fx.L->note_attrs_changed(at, 0640, std::nullopt).ok && fx.L->get_file(at)->mode == 0640 && fx.L->get_file(at)->mtime == 777);
+        CHECK(fx.L->note_attrs_changed(at, std::nullopt, 888).ok && fx.L->get_file(at)->mode == 0640 && fx.L->get_file(at)->mtime == 888);
+        std::string of = offload("/testdata/of");
+        auto ob = fx.L->get_file(of);
+        CHECK(fx.L->note_attrs_changed(of, 0600, 999).ok);
+        auto oa = fx.L->get_file(of);
+        CHECK(oa->mode == 0600 && oa->mtime == 999 && oa->state == FileState::OFFLOADED && oa->generation == ob->generation && !oa->local_present);
+        CHECK(fx.L->note_attrs_changed(of, 04755, std::nullopt).ok && fx.L->get_file(of)->mode == 04755);
+        CHECK(!fx.L->note_attrs_changed("nope", 0600, std::nullopt).ok);
+        CHECK(fx.L->fsck().empty());
+    }
+
+    {
+        printf("== tracking many files in one transaction\n");
+        Fixture fx;
+        std::string pre = fx.L->track_file("/testdata/pre", 7, 7, 0644);
+        std::vector<Ledger::NewFile> files;
+        for (int i = 0; i < 1203; i++) files.push_back({"/testdata/bulk/f" + std::to_string(i), static_cast<uint64_t>(100 + i), 1000 + i, 0640});
+        files.push_back({"/testdata/pre", 999, 999, 0600});          // already tracked: left exactly as it is
+        files.push_back({"/testdata/bulk/f5", 1, 1, 0600});          // a duplicate inside the batch
+        uint64_t ev = fx.L->event_count();
+        CHECK(fx.L->track_files(files) == 1203);
+        CHECK(fx.L->event_count() == ev + 1203 && fx.L->fsck().empty());
+        auto f = fx.L->get_file_by_path("/testdata/bulk/f1202");
+        CHECK(f && f->size == 1302 && f->mtime == 2202 && f->mode == 0640 && f->state == FileState::LOCAL && f->generation == 1);
+        CHECK(fx.L->get_file_by_path("/testdata/bulk/f5")->size == 105 && fx.L->get_file(pre)->size == 7 && fx.L->get_file(pre)->mtime == 7);
+        CHECK(fx.L->list_files_under("/testdata/bulk/").size() == 1203 && fx.L->track_files(files) == 0 && fx.L->track_files({}) == 0);
+        CHECK(fx.L->event_count() == ev + 1203);
+    }
+
     printf("---- %d failure(s)\n", failures);
     return failures != 0;
 }

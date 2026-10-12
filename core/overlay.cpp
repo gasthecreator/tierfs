@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -440,10 +442,10 @@ int Overlay::create(const std::string& path, uint32_t mode, int flags, uint64_t*
         if (fstat(fd, &st) != 0) { int e = errno; close(fd); return -e; }
         if (f) {   // a stale entry (the file vanished behind our back): the new file takes over its identity
             id = f->file_id;
-            if (!ledger_.note_local_modified(id, 0, st.st_mtimespec.tv_sec).ok) { close(fd); unlink(op.c_str()); return -EIO; }
+            if (!ledger_.note_local_modified(id, 0, st.st_mtimespec.tv_sec).ok) { close(fd); ::unlink(op.c_str()); return -EIO; }
         } else {
             id = ledger_.track_file(lp, 0, st.st_mtimespec.tv_sec, mode & 0777);
-            if (id.empty()) { close(fd); unlink(op.c_str()); return -EIO; }
+            if (id.empty()) { close(fd); ::unlink(op.c_str()); return -EIO; }
         }
         writers_[id]++;
         auto h = std::make_shared<Handle>();
@@ -538,6 +540,7 @@ int Overlay::hydrate(const std::string& path) {
 }
 
 int Overlay::hydrate_logical(const std::string& lp, const std::string& op) {
+    struct WakeWaiters { std::condition_variable& cv; ~WakeWaiters() { cv.notify_all(); } } wake{gate_cv_};   // writers may be waiting for HYDRATING to end
     auto f0 = ledger_.get_file_by_path(lp);
     if (!f0) { struct stat st; return lstat(op.c_str(), &st) == 0 ? 0 : -ENOENT; }
     std::shared_ptr<std::mutex> lock;
@@ -572,6 +575,11 @@ int Overlay::hydrate_logical(const std::string& lp, const std::string& op) {
             engine_mu_.unlock();
             struct stat st;
             if (ro.ok && lstat(op.c_str(), &st) == 0) {
+                // The quarantined bytes carry the attributes the file had when it was dropped; the user may have changed them
+                // since (chmod/touch on a remote file only changes the ledger): the ledger's are the current ones.
+                fchmodat(AT_FDCWD, op.c_str(), static_cast<mode_t>(f->mode & 07777), AT_SYMLINK_NOFOLLOW);
+                struct timespec ts[2] = {{0, UTIME_OMIT}, {static_cast<time_t>(f->mtime), 0}};
+                utimensat(AT_FDCWD, op.c_str(), ts, AT_SYMLINK_NOFOLLOW);
                 std::lock_guard<std::mutex> g(cache_mu_);
                 stats_.hydrations_quarantine++;
                 return 0;
@@ -586,7 +594,7 @@ int Overlay::hydrate_from_network(const FileRec& f, const std::string& op) {
     if (f.state != FileState::OFFLOADED) return -EIO;   // AT_RISK and the like: readable, but not something to build a writable file from
     if (!ledger_.begin_hydrate(f.file_id).ok) return -EBUSY;
     auto fail = [&](int err, const std::string& tmp) {
-        if (!tmp.empty()) unlink(tmp.c_str());
+        if (!tmp.empty()) ::unlink(tmp.c_str());
         ledger_.abort_hydrate(f.file_id);
         return err;
     };
@@ -602,10 +610,10 @@ int Overlay::hydrate_from_network(const FileRec& f, const std::string& op) {
         std::string cur = cfg_.origin_dir;
         for (const char* part : {BOOKKEEPING, "hydrate"}) {
             cur += std::string("/") + part;
-            if (mkdir(cur.c_str(), 0700) != 0 && errno != EEXIST) return fail(-errno, "");
+            if (::mkdir(cur.c_str(), 0700) != 0 && errno != EEXIST) return fail(-errno, "");
         }
     }
-    unlink(tmp.c_str());
+    ::unlink(tmp.c_str());
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
     if (fd < 0) return fail(-errno, "");
     for (const auto& c : chunks) {
@@ -632,7 +640,7 @@ int Overlay::hydrate_from_network(const FileRec& f, const std::string& op) {
             size_t slash = rel.find('/', pos);
             if (slash == std::string::npos) break;
             cur += "/" + rel.substr(pos, slash - pos);
-            if (mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) return fail(-errno, tmp);
+            if (::mkdir(cur.c_str(), 0755) != 0 && errno != EEXIST) return fail(-errno, tmp);
             pos = slash + 1;
         }
     }
@@ -652,7 +660,7 @@ OverlayRecovery Overlay::recover() {
         if (f.path.compare(0, cfg_.logical_prefix.size(), cfg_.logical_prefix) != 0) continue;
         std::string op = cfg_.origin_dir + "/" + f.path.substr(cfg_.logical_prefix.size());
         std::string tmp = cfg_.origin_dir + "/" + BOOKKEEPING + "/hydrate/" + f.file_id + ".part";
-        unlink(tmp.c_str());
+        ::unlink(tmp.c_str());
         struct stat st;
         bool present = lstat(op.c_str(), &st) == 0 && S_ISREG(st.st_mode);
         bool same = false;
@@ -695,9 +703,359 @@ OverlayRecovery Overlay::recover() {
             if (n.size() > 5 && n.compare(n.size() - 5, 5, ".part") == 0) stray.push_back(n);
         }
         closedir(d);
-        for (const auto& n : stray) { unlink((dir + "/" + n).c_str()); rep.actions.push_back("removed the leftover temp file " + n); }
+        for (const auto& n : stray) { ::unlink((dir + "/" + n).c_str()); rep.actions.push_back("removed the leftover temp file " + n); }
     }
     return rep;
+}
+
+
+// ---------------------------------------------------------------- the namespace
+
+// Waits (bounded) until the file at `logical` is not frozen by a drop and not mid-drop/mid-hydration; returns its record (or none).
+int Overlay::wait_idle(std::unique_lock<std::mutex>& g, const std::string& logical, std::optional<FileRec>* out) {
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.write_wait_ms);
+    for (;;) {
+        auto f = ledger_.get_file_by_path(logical);
+        if (!f) { *out = std::nullopt; return 0; }
+        if (!(frozen_.count(f->file_id) || f->state == FileState::DROPPING || f->state == FileState::HYDRATING)) { *out = f; return 0; }
+        if (gate_cv_.wait_until(g, deadline) == std::cv_status::timeout) return -EBUSY;
+    }
+}
+
+int Overlay::mkdir(const std::string& path, uint32_t mode) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    if (rel.empty()) return -EEXIST;
+    auto f = ledger_.get_file_by_path(lp);
+    if (f && is_remote_state(*f)) return -EEXIST;   // the name is taken by a file whose bytes are on the devices
+    return ::mkdir(op.c_str(), mode & 0777) == 0 ? 0 : -errno;
+}
+
+int Overlay::rmdir(const std::string& path) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    if (rel.empty()) return -EBUSY;
+    std::lock_guard<std::mutex> g(gate_mu_);   // no drop can start freezing a file in the directory while we look
+    for (const auto& f : ledger_.list_files_under(lp + "/")) {
+        if (frozen_.count(f.file_id) || f.state == FileState::DROPPING) return -EBUSY;
+        if (is_remote_state(f)) return -ENOTEMPTY;   // the directory is not empty: files are in it, their bytes are just elsewhere
+    }
+    return ::rmdir(op.c_str()) == 0 ? 0 : -errno;
+}
+
+int Overlay::unlink(const std::string& path) { return unlink_impl(path, 0); }
+
+int Overlay::unlink_impl(const std::string& path, int depth) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    if (rel.empty()) return -EISDIR;
+    struct stat st;
+    if (lstat(op.c_str(), &st) == 0) {
+        if (S_ISDIR(st.st_mode)) return -EISDIR;
+        auto f = ledger_.get_file_by_path(lp);
+        if (!S_ISREG(st.st_mode) || !f) return ::unlink(op.c_str()) == 0 ? 0 : -errno;
+        std::string id;
+        bool need = false;
+        int r = begin_write(lp, op, &id, &need);   // waits for a drop in progress and keeps new ones away while we work
+        if (r < 0) return r;
+        if (need) return depth < 4 ? unlink_impl(path, depth + 1) : -EBUSY;   // it was dropped meanwhile: it is a remote file now
+        int rc = ::unlink(op.c_str()) == 0 ? 0 : -errno;
+        if (rc == 0) ledger_.retire_file(id, "unlinked");   // (if this fails the scanner finds the vanished file)
+        end_write(id);
+        return rc;
+    }
+    if (errno != ENOENT && errno != ENOTDIR) return -errno;
+    std::unique_lock<std::mutex> g(gate_mu_);
+    std::optional<FileRec> f;
+    int wr = wait_idle(g, lp, &f);
+    if (wr < 0) return wr;
+    if (f && !is_remote_state(*f)) {   // it may have been hydrated while we waited: is it a local file now?
+        struct stat again;
+        g.unlock();
+        if (lstat(op.c_str(), &again) == 0) return depth < 4 ? unlink_impl(path, depth + 1) : -EBUSY;
+        return -ENOENT;                 // (a tracked file that is simply not there: nothing to delete)
+    }
+    if (!f) return -ENOENT;
+    // a remote file: its bytes stay on the devices (append-only) and in quarantine until the policy purges them
+    return ledger_.retire_file(f->file_id, "unlinked").ok ? 0 : -EBUSY;
+}
+
+int Overlay::rename(const std::string& from, const std::string& to) { return rename_impl(from, to, 0); }
+
+int Overlay::rename_impl(const std::string& from, const std::string& to, int depth) {
+    std::string fop, flp, frel, top, tlp, trel;
+    if (!resolve(from, &fop, &flp, &frel) || !resolve(to, &top, &tlp, &trel)) return -ENOENT;
+    if (frel.empty() || trel.empty()) return -EBUSY;
+    OvStat probe;
+    if (frel == trel) return getattr(from, &probe);
+    if (trel.compare(0, frel.size() + 1, frel + "/") == 0) return -EINVAL;   // a directory into itself
+    struct stat sst, dst;
+    bool src_local = lstat(fop.c_str(), &sst) == 0;
+    if (!src_local && errno != ENOENT && errno != ENOTDIR) return -errno;
+    bool dst_local = lstat(top.c_str(), &dst) == 0;
+    const bool dst_dir = dst_local && S_ISDIR(dst.st_mode);
+
+    // ---- a directory: every tracked file under it moves with it, or none does
+    if (src_local && S_ISDIR(sst.st_mode)) {
+        std::unique_lock<std::mutex> g(gate_mu_);
+        const std::string sprefix = flp + "/", dprefix = tlp + "/";
+        if (dst_local && !dst_dir) return -ENOTDIR;
+        auto d = ledger_.get_file_by_path(tlp);
+        if (d && is_remote_state(*d)) return -ENOTDIR;
+        for (const auto& f : ledger_.list_files_under(dprefix))
+            if (is_remote_state(f)) return -ENOTEMPTY;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.write_wait_ms);
+        for (;;) {
+            bool busy = false;
+            for (const auto& f : ledger_.list_files_under(sprefix))
+                if (frozen_.count(f.file_id) || f.state == FileState::DROPPING || f.state == FileState::HYDRATING) busy = true;
+            if (!busy) break;
+            if (gate_cv_.wait_until(g, deadline) == std::cv_status::timeout) return -EBUSY;
+        }
+        if (::rename(fop.c_str(), top.c_str()) != 0) return -errno;
+        if (!ledger_.rename_prefix(sprefix, dprefix).ok) {
+            ::rename(top.c_str(), fop.c_str());   // never leave the namespace half-renamed
+            if (dst_dir) ::mkdir(top.c_str(), dst.st_mode & 07777);   // (the empty directory it replaced comes back too)
+            return -EIO;
+        }
+        return 0;
+    }
+
+    // ---- a file (or a link), local or remote
+    std::string src_id;
+    bool registered = false;
+    if (src_local) {
+        if (dst_dir) return -EISDIR;
+        if (S_ISREG(sst.st_mode) && ledger_.get_file_by_path(flp)) {
+            bool need = false;
+            int r = begin_write(flp, fop, &src_id, &need);   // waits for a drop in progress and keeps new ones away
+            if (r < 0) return r;
+            if (need) return depth < 4 ? rename_impl(from, to, depth + 1) : -EBUSY;   // it was dropped meanwhile: it is a remote file now
+            registered = true;
+        }
+    }
+    auto finish = [&](int rc) { if (registered) end_write(src_id); return rc; };
+    std::unique_lock<std::mutex> g(gate_mu_);
+    std::optional<FileRec> df;
+    int wr = wait_idle(g, tlp, &df);
+    if (wr < 0) { g.unlock(); return finish(wr); }
+
+    if (!src_local) {   // a remote file: only the ledger changes (and a destination it replaces)
+        std::optional<FileRec> rf;
+        wr = wait_idle(g, flp, &rf);
+        if (wr < 0) return wr;
+        if (rf && !is_remote_state(*rf)) {   // it may have been hydrated while we waited: is it a local file now?
+            struct stat again;
+            if (lstat(fop.c_str(), &again) == 0 && depth < 4) { g.unlock(); return rename_impl(from, to, depth + 1); }
+            return -ENOENT;
+        }
+        if (!rf || !is_remote_state(*rf)) return -ENOENT;
+        if (dst_dir) return -EISDIR;
+        struct stat ps;
+        std::string parent = top.substr(0, top.rfind('/'));
+        if (stat(parent.c_str(), &ps) != 0) return -errno;
+        if (!S_ISDIR(ps.st_mode)) return -ENOTDIR;
+        if (df && !ledger_.retire_file(df->file_id, "replaced by a rename").ok) return -EBUSY;
+        if (dst_local && ::unlink(top.c_str()) != 0) return -errno;
+        return ledger_.rename_file(rf->file_id, tlp).ok ? 0 : -EIO;
+    }
+    if (::rename(fop.c_str(), top.c_str()) != 0) { int e = errno; g.unlock(); return finish(-e); }
+    if (df && df->file_id != src_id) ledger_.retire_file(df->file_id, "replaced by a rename");
+    if (!src_id.empty()) ledger_.rename_file(src_id, tlp);   // (a failure leaves it to the scanner: the bytes are where the user put them)
+    g.unlock();
+    return finish(0);
+}
+
+int Overlay::symlink(const std::string& target, const std::string& linkpath) {
+    std::string op, lp, rel;
+    if (!resolve(linkpath, &op, &lp, &rel)) return -ENOENT;
+    if (rel.empty()) return -EEXIST;
+    auto f = ledger_.get_file_by_path(lp);
+    if (f && is_remote_state(*f)) return -EEXIST;
+    return ::symlink(target.c_str(), op.c_str()) == 0 ? 0 : -errno;
+}
+
+// An attribute change on the file at `path`: applied to the origin (when there is a file there) and recorded in the ledger,
+// with the writer registered so no drop can move the file meanwhile; a remote file changes only in the ledger.
+int Overlay::attr_change(const std::string& path, const std::function<int(const std::string&, bool)>& apply,
+                         std::optional<uint32_t> mode, std::optional<int64_t> mtime, int depth) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    struct stat st;
+    if (lstat(op.c_str(), &st) == 0) {
+        if (!S_ISREG(st.st_mode)) return apply(op, S_ISDIR(st.st_mode));
+        auto f = ledger_.get_file_by_path(lp);
+        if (!f) return apply(op, false);
+        std::string id;
+        bool need = false;
+        int r = begin_write(lp, op, &id, &need);
+        if (r < 0) return r;
+        if (need) return depth < 4 ? attr_change(path, apply, mode, mtime, depth + 1) : -EBUSY;
+        int rc = apply(op, false);
+        if (rc == 0) ledger_.note_attrs_changed(id, mode, mtime);
+        end_write(id);
+        return rc;
+    }
+    if (errno != ENOENT && errno != ENOTDIR) return -errno;
+    if (rel.empty()) return -ENOENT;
+    std::unique_lock<std::mutex> g(gate_mu_);
+    std::optional<FileRec> f;
+    int wr = wait_idle(g, lp, &f);
+    if (wr < 0) return wr;
+    if (f && !is_remote_state(*f)) {   // it may have been hydrated while we waited: is it a local file now?
+        struct stat again;
+        if (lstat(op.c_str(), &again) == 0 && depth < 4) { g.unlock(); return attr_change(path, apply, mode, mtime, depth + 1); }
+        return -ENOENT;
+    }
+    if (!f || !is_remote_state(*f)) return -ENOENT;
+    return ledger_.note_attrs_changed(f->file_id, mode, mtime).ok ? 0 : -EBUSY;
+}
+
+int Overlay::chmod(const std::string& path, uint32_t mode) {
+    return attr_change(path, [&](const std::string& op, bool) { return fchmodat(AT_FDCWD, op.c_str(), static_cast<mode_t>(mode & 07777), AT_SYMLINK_NOFOLLOW) == 0 ? 0 : -errno; },
+                       mode, std::nullopt);
+}
+
+int Overlay::utimens(const std::string& path, std::optional<int64_t> mtime) {
+    if (!mtime) { OvStat st; return getattr(path, &st); }
+    return attr_change(path, [&](const std::string& op, bool) {
+        struct timespec ts[2] = {{0, UTIME_OMIT}, {static_cast<time_t>(*mtime), 0}};
+        return utimensat(AT_FDCWD, op.c_str(), ts, AT_SYMLINK_NOFOLLOW) == 0 ? 0 : -errno;
+    }, std::nullopt, mtime);
+}
+
+int Overlay::chown(const std::string& path, int64_t uid, int64_t gid) {
+    OvStat st;
+    int r = getattr(path, &st);
+    if (r < 0) return r;
+    if ((uid != -1 && uid != static_cast<int64_t>(getuid())) || (gid != -1 && gid != static_cast<int64_t>(getgid()))) return -EPERM;
+    return 0;   // everything here belongs to you already
+}
+
+int Overlay::statfs(FsStats* out) {
+    struct statvfs sv;
+    if (::statvfs(cfg_.origin_dir.c_str(), &sv) != 0) return -errno;
+    if (out) {
+        out->block_size = sv.f_frsize ? sv.f_frsize : sv.f_bsize;
+        out->blocks = sv.f_blocks;
+        out->blocks_free = sv.f_bfree;
+        out->blocks_avail = sv.f_bavail;
+        out->files = sv.f_files;
+        out->files_free = sv.f_ffree;
+    }
+    return 0;
+}
+
+// ---- extended attributes
+
+int Overlay::remote_xattrs(const FileRec& f, std::vector<std::pair<std::string, crypto::Bytes>>* out) {
+    std::string key = f.file_id + ":" + std::to_string(f.current_version);
+    {
+        std::lock_guard<std::mutex> g(xattr_mu_);
+        auto it = xattr_cache_.find(key);
+        if (it != xattr_cache_.end()) { *out = it->second; return 0; }
+    }
+    for (const auto& id : device_order(f)) {
+        crypto::Bytes blob;
+        if (!devices_[id]->get_manifest(f.file_id, f.current_version, blob).ok()) continue;
+        crypto::Manifest m;
+        if (crypto::open_manifest(keys_, volume_, f.file_id, f.current_version, blob.data(), blob.size(), m) != crypto::OpenError::Ok) continue;
+        std::lock_guard<std::mutex> g(xattr_mu_);
+        xattr_cache_[key] = m.xattrs;
+        *out = m.xattrs;
+        return 0;
+    }
+    return -EIO;
+}
+
+int64_t Overlay::getxattr(const std::string& path, const std::string& name, uint8_t* buf, size_t size) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    struct stat st;
+    if (lstat(op.c_str(), &st) == 0) {
+        ssize_t n = ::getxattr(op.c_str(), name.c_str(), buf, size, 0, XATTR_NOFOLLOW);
+        return n < 0 ? -errno : n;
+    }
+    if (errno != ENOENT && errno != ENOTDIR) return -errno;
+    auto f = ledger_.get_file_by_path(lp);
+    if (rel.empty() || !f || !is_remote_state(*f)) return -ENOENT;
+    std::vector<std::pair<std::string, crypto::Bytes>> xs;
+    int r = remote_xattrs(*f, &xs);
+    if (r < 0) return r;
+    for (const auto& x : xs) {
+        if (x.first != name) continue;
+        if (size == 0) return static_cast<int64_t>(x.second.size());
+        if (size < x.second.size()) return -ERANGE;
+        memcpy(buf, x.second.data(), x.second.size());
+        return static_cast<int64_t>(x.second.size());
+    }
+    return -ENOATTR;
+}
+
+int64_t Overlay::listxattr(const std::string& path, char* buf, size_t size) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    struct stat st;
+    if (lstat(op.c_str(), &st) == 0) {
+        ssize_t n = ::listxattr(op.c_str(), buf, size, XATTR_NOFOLLOW);
+        return n < 0 ? -errno : n;
+    }
+    if (errno != ENOENT && errno != ENOTDIR) return -errno;
+    auto f = ledger_.get_file_by_path(lp);
+    if (rel.empty() || !f || !is_remote_state(*f)) return -ENOENT;
+    std::vector<std::pair<std::string, crypto::Bytes>> xs;
+    int r = remote_xattrs(*f, &xs);
+    if (r < 0) return r;
+    size_t need = 0;
+    for (const auto& x : xs) need += x.first.size() + 1;
+    if (size == 0) return static_cast<int64_t>(need);
+    if (size < need) return -ERANGE;
+    size_t off = 0;
+    for (const auto& x : xs) { memcpy(buf + off, x.first.c_str(), x.first.size() + 1); off += x.first.size() + 1; }
+    return static_cast<int64_t>(need);
+}
+
+namespace {
+// Changing an attribute of a remote file needs the file: hydrate it, then it is an ordinary local change.
+}
+
+int Overlay::setxattr(const std::string& path, const std::string& name, const uint8_t* value, size_t size, int flags) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    struct stat st;
+    if (lstat(op.c_str(), &st) != 0) {
+        if (errno != ENOENT && errno != ENOTDIR) return -errno;
+        int hr = hydrate_logical(lp, op);
+        if (hr < 0) return hr;
+    }
+    return attr_change(path, [&](const std::string& p, bool) { return ::setxattr(p.c_str(), name.c_str(), value, size, 0, flags | XATTR_NOFOLLOW) == 0 ? 0 : -errno; },
+                       std::nullopt, std::nullopt);
+}
+
+int Overlay::removexattr(const std::string& path, const std::string& name) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
+    struct stat st;
+    if (lstat(op.c_str(), &st) != 0) {
+        if (errno != ENOENT && errno != ENOTDIR) return -errno;
+        int hr = hydrate_logical(lp, op);
+        if (hr < 0) return hr;
+    }
+    return attr_change(path, [&](const std::string& p, bool) { return ::removexattr(p.c_str(), name.c_str(), XATTR_NOFOLLOW) == 0 ? 0 : -errno; },
+                       std::nullopt, std::nullopt);
+}
+
+int Overlay::undelete(const std::string& path) {
+    std::string op, lp, rel;
+    if (!resolve(path, &op, &lp, &rel) || rel.empty()) return -ENOENT;
+    struct stat st;
+    if (lstat(op.c_str(), &st) == 0) return -EEXIST;
+    if (ledger_.get_file_by_path(lp)) return -EEXIST;
+    for (const auto& f : ledger_.list_retired()) {
+        if (Ledger::former_path(f) != lp) continue;
+        return ledger_.undelete_file(f.file_id).ok ? 0 : -EINVAL;
+    }
+    return -ENOENT;
 }
 
 }  // namespace tierfs

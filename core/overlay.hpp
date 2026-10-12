@@ -9,11 +9,17 @@
 //   engine uses to keep writers away while it moves a file); hydration (bringing a remote file back before it is
 //   written) and the recovery of an interrupted hydration.
 //
+// Slice 3h-3: the NAMESPACE.
+//   mkdir / rmdir / unlink / rename / symlink / chmod / chown / utimens / statfs / extended attributes / undelete, for local
+//   files and for remote ones, with the ledger kept in step (see docs/DURABLE_STORE.md section 24).
+//
 // Thread-safe (the ledger is too). Reads of local bytes and device fetches run without any lock held.
 #pragma once
 
-#include <cstdint>
 #include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <optional>
 #include <list>
 #include <map>
 #include <memory>
@@ -88,8 +94,33 @@ public:
     // After a crash: finish or undo every interrupted hydration. Run before serving requests.
     OverlayRecovery recover();
 
+    // ---- namespace (3h-3) ----
+    int mkdir(const std::string& path, uint32_t mode);
+    int rmdir(const std::string& path);        // ENOTEMPTY while files whose bytes are only on the devices are in it
+    int unlink(const std::string& path);       // a remote file is deleted too (its bytes stay on the devices and in quarantine)
+    int rename(const std::string& from, const std::string& to);   // files and directories, local and remote; replaces an existing file
+    int symlink(const std::string& target, const std::string& linkpath);
+    int chmod(const std::string& path, uint32_t mode);
+    int chown(const std::string& path, int64_t uid, int64_t gid);   // only to yourself (-1 leaves it)
+    // mtime in seconds (nullopt: unchanged); atime is not kept.
+    int utimens(const std::string& path, std::optional<int64_t> mtime);
+    struct FsStats { uint64_t block_size = 0, blocks = 0, blocks_free = 0, blocks_avail = 0, files = 0, files_free = 0; };
+    int statfs(FsStats* out);
+    // Extended attributes. Remote files answer get/list from their manifest; set/remove hydrate the file first.
+    // getxattr/listxattr: with size 0 return the size needed; a too small buffer is -ERANGE; a missing attribute -ENOATTR.
+    int64_t getxattr(const std::string& path, const std::string& name, uint8_t* buf, size_t size);
+    int64_t listxattr(const std::string& path, char* buf, size_t size);
+    int setxattr(const std::string& path, const std::string& name, const uint8_t* value, size_t size, int flags);
+    int removexattr(const std::string& path, const std::string& name);
+    // Brings a deleted OFFLOADED file back at its former path (`path`), if nothing is there now.
+    int undelete(const std::string& path);
+
     // What the drop engine needs: while a file has writers it cannot be frozen; once frozen, new writers wait.
     FileGate* gate() { return &gate_; }
+    // For the scanner: run `f` under the namespace lock (no rename, create, write registration or freeze can interleave), and ask,
+    // from inside such a call, whether anybody has the file open for writing.
+    void locked(const std::function<void()>& f) { std::lock_guard<std::mutex> g(gate_mu_); f(); }
+    bool has_writers_locked(const std::string& file_id) const { auto it = writers_.find(file_id); return it != writers_.end() && it->second > 0; }
     // Hold this while calling the (not thread-safe) drop engine from elsewhere; hydration takes it only briefly and
     // falls back to the network when the engine is busy.
     std::mutex& engine_mutex() { return engine_mu_; }
@@ -119,6 +150,12 @@ private:
     private:
         Overlay& o_;
     };
+    int wait_idle(std::unique_lock<std::mutex>& g, const std::string& logical, std::optional<FileRec>* out);
+    int remote_xattrs(const FileRec& f, std::vector<std::pair<std::string, crypto::Bytes>>* out);
+    int attr_change(const std::string& path, const std::function<int(const std::string& origin_path, bool is_dir)>& apply,
+                    std::optional<uint32_t> mode, std::optional<int64_t> mtime, int depth = 0);
+    int unlink_impl(const std::string& path, int depth);
+    int rename_impl(const std::string& from, const std::string& to, int depth);
     int begin_write(const std::string& logical, const std::string& origin_path, std::string* file_id, bool* need_hydrate);
     void end_write(const std::string& file_id);
     int hydrate_logical(const std::string& logical, const std::string& origin_path);
@@ -147,6 +184,9 @@ private:
     std::mutex handles_mu_;
     std::map<uint64_t, std::shared_ptr<Handle>> handles_;
     uint64_t next_fh_ = 1;
+
+    std::mutex xattr_mu_;                    // manifest attributes of remote files, cached per (file, version)
+    std::map<std::string, std::vector<std::pair<std::string, crypto::Bytes>>> xattr_cache_;
 
     std::mutex hyd_mu_;                      // one hydration per file at a time
     std::map<std::string, std::shared_ptr<std::mutex>> hyd_locks_;

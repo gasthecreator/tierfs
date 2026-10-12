@@ -822,3 +822,38 @@ Status of 3h-2 (the write side, implemented): `core/overlay.*` (handles, gate, h
 - Found on the way: `end_write` had a `notify_all` nobody could ever need (writers are refused, not waited for); removed.
 Next: 3h-3 namespace operations (unlink, rename, mkdir, rmdir, chmod, utimens, xattrs, symlinks) and the scanner; then 3h-4.
 
+Status of 3h-3 (the namespace and the scanner, implemented): `core/overlay.*` (namespace operations), `core/scanner.*`, new ledger
+operations, `tests/overlay_ns_test.cpp`, `tests/scanner_test.cpp`.
+- Operations: mkdir, rmdir, unlink, rename (files and whole directories, local and remote, replacing an existing file), symlink,
+  chmod, chown (only to yourself), utimens, statfs (the origin volume's real free space), extended attributes (local ones pass
+  through; a remote file answers get/list from its manifest, cached per version, and set/remove hydrate it first) and undelete.
+- Deleting: the ledger row is parked under a reserved "graveyard" path that also records the former path (`Ledger::retire_file`;
+  no schema change). That frees the name, hides the file from every lookup by path (the overlay, the policy) and keeps history intact.
+  The devices keep every version, so `tierctl restore` still finds a deleted file; an offloaded file can be undeleted.
+- Renaming: a file with local bytes becomes LOCAL again (its manifest names the old path, so it is replicated again; chunks are
+  already on the devices); a remote file only changes its ledger path. A directory moves with every tracked file under it in one
+  ledger transaction; if the ledger cannot follow, the origin rename is undone, including the empty destination directory it replaced.
+- Everything that touches a file with local bytes registers as a writer first (so a drop cannot freeze it meanwhile) and waits,
+  bounded, for a drop or hydration of that file; operations on a remote file wait the same way and retry when the file comes back
+  while they waited. rmdir refuses (ENOTEMPTY) while files whose bytes live only on the devices are in the directory.
+- The scanner reconciles the ledger with an origin that changed behind the mount: tracks new files (batched, one transaction per
+  100), marks edited ones modified (so their replication stops counting at once), records chmods, retires files that vanished, and
+  reports (never resolves) a file that shadows an offloaded one. Every decision is re-made under the overlay's namespace lock; files
+  with open writers are skipped. Safety: if more than half (and more than 10) of the tracked files seem missing, or the folder is
+  not there, or cannot be read completely, it forgets nothing and says so.
+- Real bugs found by the tests on the way:
+  1. adding methods named `mkdir`, `unlink`, ... to the class silently turned the unqualified system calls inside it into calls of
+     those methods (hydration temp files were no longer removed); every system call is now qualified;
+  2. hydration from the quarantine copy restored the attributes the file had when it was dropped, ignoring a chmod/touch the user
+     made while it was remote;
+  3. `Ledger::get_file` was the one method that read the shared connection without the ledger's lock (a one-line definition my
+     locking pass missed);
+  4. the scanner tracked "new" files from stale snapshots, so a file the overlay had just renamed got a second row and the
+     overlay's rename could not claim its own (found by a ThreadSanitizer run, then pinned down with an operation log and step
+     hooks that now test it deterministically).
+- Mutation testing: overlay 357 mutants in all (69 documented expected survivors), scanner 72 (6), the new ledger operations 73 (6).
+  The namespace pass found about 60 test gaps; they became tests such as: errors that must be EACCES not ENOENT, nothing tracked by
+  mistake, a failed attribute call leaving no writer behind, the manifest cache keyed by version, exact buffer sizes, the
+  thresholds of the unavailable-folder guard, rename/chmod/delete racing a hydration.
+Next: 3h-4, the FUSE wrapper, the daemon and end-to-end mount tests.
+
