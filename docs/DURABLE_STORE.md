@@ -878,3 +878,11 @@ Status of 3h-4 (the daemon and the FUSE driver, written; real-mount testing paus
   succession) make it likelier is unknown. Consequence: never mount-test on the development machine; if mount tests are wanted, run them in a
   throwaway macOS VM (the Virtualization framework is available), and do not put real data behind a FUSE-T mount until that is understood.
 
+
+Status of the dated backup gate (implemented; ADR-0007): the old gate was a yes/no flag (`backup_acked`). `Ledger::ack_backup()` now also stores
+`backup_acked_at`, and `Ledger::backup_check(file)` decides per file: the test area passes; no statement, no date, an expired statement (older than
+`backup_max_age_days`, default 30, clamped to at least one day) or a file whose last `file.tracked`/`file.modified` event is at or after the
+statement all refuse, with a reason that says what to do. Both `begin_drop` and `begin_purge` use it. The policy skips files the statement does not
+cover when planning a move (they are still copied to the devices) and warns. `tierctl ack-backup` records and explains the time, `ledger-status`
+shows its age, and `tierctl check-backup [folder]` is a read-only report of destination, latest backup and exclusion (tested with fake `tmutil`
+programs; the real one needs Full Disk Access and no Time Machine destination exists on the development Mac).
