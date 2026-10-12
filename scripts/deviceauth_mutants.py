@@ -1,0 +1,27 @@
+# Mutants of the client side of device authentication (core/deviceclient.cpp), tested by tests/deviceauth_test.cpp
+P = 'core/deviceclient.cpp'
+M = [
+ ('client: secret ignored', P, 'if (!psk_.empty()) {   // a paired device', 'if (false) {   // a paired device'),
+ ('client: always authenticates', P, 'if (!psk_.empty()) {   // a paired device', 'if (true) {   // a paired device'),
+ ('client: empty secret counts as set', P, 'if (!psk_.empty()) {   // a paired device', 'if (psk_.size() >= 0) {   // a paired device'),
+ ('client: authentication failure ignored', P, 'if (!ch_) {\n            close(fd);', 'if (false) {\n            close(fd);'),
+ ('client: authentication failure keeps the socket', P, 'if (!ch_) {\n            close(fd);\n', 'if (!ch_) {\n'),
+ ('client: authentication failure reported as io error', P, 'why->err = EACCES;', 'why->err = EIO;'),
+ ('client: authentication failure reported as no route', P, 'why->err = EACCES;', 'why->err = EHOSTUNREACH;'),
+ ('client: authentication reason lost', P, '"authentication with the device failed: " + cwhy', '"authentication with the device failed"'),
+ ('client: authentication message lost', P, '"authentication with the device failed: " + cwhy', 'cwhy'),
+ ('client: sends in the clear', P, 'return ch_ ? ch_->send(type, id, payload, deadline) :', 'return false ? ch_->send(type, id, payload, deadline) :'),
+ ('client: receives in the clear', P, 'return ch_ ? ch_->recv(f, deadline) :', 'return false ? ch_->recv(f, deadline) :'),
+ ('client: sends through a channel that is not there', P, 'return ch_ ? ch_->send(type, id, payload, deadline) :', 'return true ? ch_->send(type, id, payload, deadline) :'),
+ ('client: receives through a channel that is not there', P, 'return ch_ ? ch_->recv(f, deadline) :', 'return true ? ch_->recv(f, deadline) :'),
+ ('client: handshake deadline not used', P, 'ch_ = chan::connect_secure(fd, psk_, deadline, &cwhy);', 'ch_ = chan::connect_secure(fd, psk_, now_ms() + 3600000, &cwhy);'),
+ ('client: handshake deadline already past', P, 'ch_ = chan::connect_secure(fd, psk_, deadline, &cwhy);', 'ch_ = chan::connect_secure(fd, psk_, now_ms() - 1, &cwhy);'),
+ ('client: handshake with the wrong secret', P, 'chan::connect_secure(fd, psk_, deadline, &cwhy)', 'chan::connect_secure(fd, crypto::Bytes(psk_.size(), 0), deadline, &cwhy)'),
+ ('[equivalent: a plain client never holds a channel, and a paired one replaces it on connect] drop: channel kept', P, 'void DeviceClient::drop_connection() {\n    ch_.reset();', 'void DeviceClient::drop_connection() {\n    '),
+ ('drop: socket kept', P, '    if (fd_ >= 0) close(fd_);\n    fd_ = -1;\n}', '    fd_ = -1;\n}'),
+ ('drop: socket number kept', P, '    if (fd_ >= 0) close(fd_);\n    fd_ = -1;\n}', '    if (fd_ >= 0) close(fd_);\n}'),
+ ('client: paired handshake failure keeps the channel', P, '    if (!tx(MSG_HELLO, id, w.b, deadline) || rx(resp, deadline) != 1) {\n        drop_connection();', '    if (!tx(MSG_HELLO, id, w.b, deadline) || rx(resp, deadline) != 1) {\n        fd_ = -1;'),
+ ('client: the device error is not passed on', P, 'why->err = r.i32();\n            why->msg = r.str();\n        } catch (...) { why->err = EPROTO; }', 'why->err = EPROTO;\n            why->msg = r.str();\n        } catch (...) { why->err = EPROTO; }'),
+ ('client: request through the wrong path', P, 'bool ok = tx(type, id, payload, deadline) && rx(resp, deadline) == 1 && resp.id == id;', 'bool ok = send_frame(fd_, type, id, payload, deadline) && rx(resp, deadline) == 1 && resp.id == id;'),
+ ('client: reply read from the wrong path', P, 'bool ok = tx(type, id, payload, deadline) && rx(resp, deadline) == 1 && resp.id == id;', 'bool ok = tx(type, id, payload, deadline) && recv_frame(fd_, resp, deadline) == 1 && resp.id == id;'),
+]

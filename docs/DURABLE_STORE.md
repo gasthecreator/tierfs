@@ -892,10 +892,15 @@ Status of the Keychain key store (implemented; ADR-0008): `core/keysource.*` res
 is known). The Keychain implementation (`core/keychain_mac.cpp`) had existed since Phase 3b; its opt-in test was run for the first time on 2026-10-12 with
 one throwaway item (created, read, refused a second store, deleted; no leftovers) and the real `tierctl init --store keychain` path was run the same way.
 
-Status of the secure channel (library implemented; ADR-0009, proto/PROTOCOL.md "Secure channel (version 4)"): `core/securechannel.*` holds the handshake state
+Status of the secure channel (implemented and wired in; ADR-0009, proto/PROTOCOL.md "Secure channel (version 4)"): `core/securechannel.*` holds the handshake state
 machines (`ClientHandshake`, `ServerHandshake`), the sealed `Session`, and the socket wrappers `connect_secure` / `accept_secure` / `Channel`. 180-plus checks:
 known answers from `scripts/gen_channel_kat.py` (an independent X25519, validated against RFC 7748, plus the reference AES-GCM, HMAC and HKDF), every-bit
 tampering, replay, reordering, dropping, reflection, truncation, wrong secrets on either side, low-order points, role swaps, recorded replies, and socket abuse
 (plaintext HELLO, garbage, absurd lengths, silence, hang-ups). 80 mutants of the implementation: all killed or documented as pairs/equivalent.
-Not done yet: using it in `tierfs-device`, `DeviceClient`, pairing (`tierfs-device --show-pairing-code`, `tierctl pair`), and the daemon's device configuration.
+Wired in: `tierfs-device` (`pairing.key`, `--show-pairing-code`, `--new-pairing-code`; a paired device speaks only the channel), `DeviceClient` (optional pairing secret; EACCES on a
+failed authentication), the daemon (`host:port@keyid`, secret from the key store), `tierctl pair`, and `tierctl restore --store/--pairing-file`. Tests: `tests/deviceauth_test.cpp`
+(codes, bad pairing files, bind rules, every operation through the channel, reconnect after restart, concurrency, wrong/missing/old secrets, raw attackers, handshake deadline,
+socket leaks), `tests/pairing_test.py` (the CLI end to end), `tests/daemon_test.cpp` (paired devices), `tests/recovery_test.cpp` drill 15 (restore from phrase + codes only).
+Mutation testing of the client side, the server side and the pairing-secret helpers of `core/keysource.cpp` (scripts `deviceauth_mutants.py`, `deviceserver_mutants.py`, `keysource_mutants.py`).
+Not done: revocation of a single Mac, per-Mac secrets, rate limiting of failed handshakes beyond the deadline.
 

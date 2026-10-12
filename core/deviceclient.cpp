@@ -24,18 +24,27 @@ std::string get_hash(Reader& r) {
 
 }  // namespace
 
-DeviceClient::DeviceClient(std::string host, uint16_t port, int timeout_ms)
-    : host_(std::move(host)), port_(std::to_string(port)), timeout_ms_(timeout_ms > 0 ? timeout_ms : 3000) {}
+DeviceClient::DeviceClient(std::string host, uint16_t port, int timeout_ms, crypto::Bytes pairing_secret)
+    : host_(std::move(host)), port_(std::to_string(port)), timeout_ms_(timeout_ms > 0 ? timeout_ms : 3000), psk_(std::move(pairing_secret)) {}
 
-DeviceClient::~DeviceClient() {
+DeviceClient::~DeviceClient() { drop_connection(); }
+
+void DeviceClient::drop_connection() {
+    ch_.reset();
     if (fd_ >= 0) close(fd_);
+    fd_ = -1;
 }
 
 void DeviceClient::disconnect() {
     std::lock_guard<std::mutex> lk(mu_);
-    if (fd_ >= 0) close(fd_);
-    fd_ = -1;
+    drop_connection();
 }
+
+bool DeviceClient::tx(uint8_t type, uint32_t id, const std::vector<uint8_t>& payload, int64_t deadline) {
+    return ch_ ? ch_->send(type, id, payload, deadline) : send_frame(fd_, type, id, payload, deadline);
+}
+
+int DeviceClient::rx(Frame& f, int64_t deadline) { return ch_ ? ch_->recv(f, deadline) : recv_frame(fd_, f, deadline); }
 
 bool DeviceClient::ensure_connected(DevRes* why) {
     if (fd_ >= 0) return true;
@@ -46,14 +55,25 @@ bool DeviceClient::ensure_connected(DevRes* why) {
     Frame resp;
     uint32_t id = next_id_++;
     int64_t deadline = now_ms() + timeout_ms_;
-    if (!send_frame(fd, MSG_HELLO, id, w.b, deadline) || recv_frame(fd, resp, deadline) != 1) {
-        close(fd);
+    if (!psk_.empty()) {  // a paired device: authenticate and encrypt first; the v3 messages then run inside the channel
+        std::string cwhy;
+        ch_ = chan::connect_secure(fd, psk_, deadline, &cwhy);
+        if (!ch_) {
+            close(fd);
+            why->err = EACCES;
+            why->msg = "authentication with the device failed: " + cwhy;
+            return false;
+        }
+    }
+    fd_ = fd;
+    if (!tx(MSG_HELLO, id, w.b, deadline) || rx(resp, deadline) != 1) {
+        drop_connection();
         why->err = EIO;
         why->msg = "handshake with the device failed";
         return false;
     }
     if (resp.type == MSG_ERROR) {
-        close(fd);
+        drop_connection();
         try {
             Reader r(resp.payload);
             why->err = r.i32();
@@ -63,12 +83,11 @@ bool DeviceClient::ensure_connected(DevRes* why) {
         return false;
     }
     if (resp.type != (MSG_HELLO | MSG_REPLY_FLAG) || resp.id != id) {
-        close(fd);
+        drop_connection();
         why->err = EPROTO;
         why->msg = "unexpected handshake reply";
         return false;
     }
-    fd_ = fd;
     return true;
 }
 
@@ -85,7 +104,7 @@ DevRes DeviceClient::call(uint8_t type, const std::vector<uint8_t>& payload, std
         uint32_t id = next_id_++;
         int64_t deadline = now_ms() + timeout_ms_ + static_cast<int64_t>((expect_bytes + payload.size()) * 1000 / MIN_RATE_BYTES_PER_SEC);
         Frame resp;
-        bool ok = send_frame(fd_, type, id, payload, deadline) && recv_frame(fd_, resp, deadline) == 1 && resp.id == id;
+        bool ok = tx(type, id, payload, deadline) && rx(resp, deadline) == 1 && resp.id == id;
         if (ok) {
             if (resp.type == MSG_ERROR) {
                 try {
@@ -97,8 +116,7 @@ DevRes DeviceClient::call(uint8_t type, const std::vector<uint8_t>& payload, std
                 return res;
             }
             if (resp.type != (type | MSG_REPLY_FLAG)) {
-                close(fd_);
-                fd_ = -1;
+                drop_connection();
                 res.err = EPROTO;
                 res.msg = "unexpected reply type";
                 return res;
@@ -107,8 +125,7 @@ DevRes DeviceClient::call(uint8_t type, const std::vector<uint8_t>& payload, std
             return res;
         }
         int e = errno;
-        close(fd_);
-        fd_ = -1;
+        drop_connection();
         res.err = (e == EAGAIN || e == EWOULDBLOCK) ? ETIMEDOUT : EIO;
         res.msg = res.err == ETIMEDOUT ? "the device did not answer in time" : "connection to the device failed";
         if (!had_conn) return res;

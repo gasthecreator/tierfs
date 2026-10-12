@@ -46,12 +46,12 @@ M = [
  # --- server ---
  ('server', 'hello version unchecked', V, 'if (r.u16() != DEVICE_PROTO_VERSION) {', 'if (r.u16() == 9999) {', 0),
  ('server', 'requests before hello allowed', V, '} else if (!greeted) {', '} else if (false) {', 0),
- ('server', 'has_chunks count unbounded', V, 'if (n > 1024) return reply_err(fd, f.id, EMSGSIZE, "too many ids in one request");', '', 0),
- ('server', 'audit count unbounded', V, 'if (n > MAX_AUDIT_ITEMS) return reply_err(fd, f.id, EMSGSIZE, "too many audit items");', '', 0),
- ('server', 'audit kind unchecked', V, 'if (a.kind > 1) return reply_err(fd, f.id, EINVAL, "bad audit kind");', '', 0),
- ('server', 'manifest chunk count unbounded', V, 'if (n > MAX_MANIFEST_CHUNKS) return reply_err(fd, f.id, EMSGSIZE, "too many chunks");', '', 0),
+ ('server', 'has_chunks count unbounded', V, 'if (n > 1024) return reply_err(c, f.id, EMSGSIZE, "too many ids in one request");', '', 0),
+ ('server', 'audit count unbounded', V, 'if (n > MAX_AUDIT_ITEMS) return reply_err(c, f.id, EMSGSIZE, "too many audit items");', '', 0),
+ ('server', 'audit kind unchecked', V, 'if (a.kind > 1) return reply_err(c, f.id, EINVAL, "bad audit kind");', '', 0),
+ ('server', 'manifest chunk count unbounded', V, 'if (n > MAX_MANIFEST_CHUNKS) return reply_err(c, f.id, EMSGSIZE, "too many chunks");', '', 0),
  ('server', 'no connection cap', V, 'if (g_conns.load() >= MAX_CONNECTIONS) { close(c); continue; }', '', 0),
- ('server', 'listens on any address', V, 'if (!insecure && bind_addr != "127.0.0.1") {', 'if (false) {', 0),
+ ('server', 'listens on any address', V, 'if (!g_psk && !insecure && bind_addr != "127.0.0.1") {', 'if (false) {', 0),
  ('server', 'bad fault names ignored', V, 'if (!DeviceFaults::parse(faults_csv, &faults, &ferr)) {', 'if (false) {', 0),
  ('server', '"existed" never reported', V, 'w.u8(o.existed ? 1 : 0);', 'w.u8(0);', 0),
  ('server', 'no idle timeout', V, 'timeval tv{g_idle_s, 0};', 'timeval tv{0, 0};', 0),
@@ -75,6 +75,7 @@ def build_plain():
     steps = [
       BASE + ['-c', 'core/crypto.cpp', '-o', f'{D}/crypto.o'],
       BASE + ['-c', S, '-o', f'{D}/devicestore.o'],
+      BASE + ['-c', 'core/securechannel.cpp', '-o', f'{D}/securechannel.o'],
       BASE + ['-c', C, '-o', f'{D}/deviceclient.o'],
       BASE + ['-c', 'tests/devicestore_test.cpp', '-o', f'{D}/devicestore_test.o'],
       BASE + ['-c', 'tests/device_helper.cpp', '-o', f'{D}/device_helper.o'],
@@ -86,10 +87,10 @@ def build_plain():
     link = lambda out, objs: run(['c++', '-o', out] + objs + [CRYPTO, '-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation'])
     for out, objs in [(f'{D}/devicestore_test', ['devicestore_test.o', 'devicestore.o', 'crypto.o']),
                       (f'{D}/device_helper', ['device_helper.o', 'devicestore.o', 'crypto.o']),
-                      (f'{D}/devicenet_test', ['devicenet_test.o', 'deviceclient.o', 'devicestore.o', 'crypto.o'])]:
+                      (f'{D}/devicenet_test', ['devicenet_test.o', 'deviceclient.o', 'securechannel.o', 'devicestore.o', 'crypto.o'])]:
         r = link(out, [f'{D}/{o}' for o in objs])
         if r.returncode: sys.exit('link failed ' + out + r.stderr[-400:])
-    r = run(BASE + [V, f'{D}/devicestore.o', f'{D}/crypto.o', CRYPTO, '-lsqlite3', '-o', f'{D}/server'])
+    r = run(BASE + [V, f'{D}/devicestore.o', f'{D}/crypto.o', f'{D}/securechannel.o', CRYPTO, '-lsqlite3', '-o', f'{D}/server'])
     if r.returncode: sys.exit('server build failed' + r.stderr[-400:])
 
 def replace_nth(src, frm, to, n):

@@ -9,6 +9,7 @@
 #include <fstream>
 
 #include "../core/keysource.hpp"
+#include "../core/securechannel.hpp"
 
 using namespace tierfs;
 namespace fs = std::filesystem;
@@ -99,6 +100,62 @@ int main() {
     CHECK(!ks->store("volume-one", other));   // a stored key is never silently replaced
     k = load_master_key("dir:" + ks_dir, "volume-one", &err);
     CHECK(k && *k == key);
+
+    printf("== pairing secrets\n");
+    {
+        std::string pdir = "dir:" + root + "/pairs";
+        crypto::Bytes psk = crypto::random_bytes(chan::PSK_LEN);
+        std::string id = chan::key_id_hex(psk);
+        CHECK(pairing_account(id) == "pair-" + id);
+        err.clear();
+        CHECK(!load_pairing_secret(pdir, id, &err) && has(err, "no pairing secret for key id " + id) && has(err, "tierctl pair"));
+        CHECK(store_pairing_secret(pdir, psk, &err));
+        auto got = load_pairing_secret(pdir, id, &err);
+        CHECK(got && *got == psk);
+        CHECK(store_pairing_secret(pdir, psk, &err));  // pairing again with the same secret is fine
+        crypto::Bytes other_psk = crypto::random_bytes(chan::PSK_LEN);
+        CHECK(!load_pairing_secret(pdir, chan::key_id_hex(other_psk), &err));  // another device's id finds nothing
+        CHECK(store_pairing_secret(pdir, other_psk, &err));
+        got = load_pairing_secret(pdir, chan::key_id_hex(other_psk), &err);
+        CHECK(got && *got == other_psk && !(*got == psk));  // each device keeps its own secret
+        // an item swapped for another secret is detected, never used
+        auto ps = keystore_for(pdir, &err);
+        crypto::Bytes third = crypto::random_bytes(chan::PSK_LEN);
+        std::string third_id = chan::key_id_hex(third);
+        CHECK(ps && ps->store(pairing_account(third_id), crypto::SecretKey(psk.data())));
+        err.clear();
+        CHECK(!load_pairing_secret(pdir, third_id, &err) && has(err, "does not match its key id"));
+        // and an existing different secret is never replaced
+        err.clear();
+        CHECK(!store_pairing_secret(pdir, third, &err) && has(err, "a different secret is already stored for key id " + third_id));
+        // refusals
+        err.clear();
+        CHECK(!load_pairing_secret(pdir, "zz", &err) && has(err, "16 hex characters") && has(err, "\"zz\""));
+        err.clear();
+        CHECK(!load_pairing_secret(pdir, "0123456789abcdeF", &err) && has(err, "16 hex characters"));  // upper case is not a key id
+        for (const char* bad : {"0123456789abcdef0", "0123456789abcde", "0123456789abcdeg", "0123456789abcde/", "/123456789abcdef",
+                                "0123456789abcde:", "`123456789abcdef", "0123456789abcde@", "0123456789abcde G", ""}) {
+            err.clear();
+            CHECK(!load_pairing_secret(pdir, bad, &err) && has(err, "16 hex characters"));
+        }
+        for (const char* good : {"0123456789abcdef", "fedcba9876543210"}) {  // well-formed ids that name nothing
+            err.clear();
+            CHECK(!load_pairing_secret(pdir, good, &err) && has(err, "no pairing secret"));
+        }
+        err.clear();
+        CHECK(!load_pairing_secret(root + "/k1", id, &err) && has(err, "need a key store"));  // a key file cannot hold them
+        err.clear();
+        CHECK(!store_pairing_secret(root + "/k1", psk, &err) && has(err, "need a key store"));
+        err.clear();
+        CHECK(!store_pairing_secret(pdir, crypto::Bytes(31, 1), &err) && has(err, "32 bytes"));
+        err.clear();
+        CHECK(!store_pairing_secret(pdir, crypto::Bytes(33, 1), &err) && has(err, "32 bytes"));
+        err.clear();
+        CHECK(!load_pairing_secret("dir:", id, &err) && has(err, "needs a path"));
+        // a store that cannot be written says so
+        err.clear();
+        CHECK(!store_pairing_secret("dir:" + root + "/k1/under-a-file", psk, &err) && has(err, "could not store the pairing secret"));
+    }
 
     printf("== the Keychain\n");
     if (getenv("TIERFS_TEST_KEYCHAIN")) {

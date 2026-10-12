@@ -39,10 +39,20 @@ may need Full Disk Access for your terminal; it cannot prove the backup contains
 Once files are offloaded they disappear from later backups of the folder: the older backups and the devices hold them.
 
 ## Devices
-Start a device server on each storage device (another Mac, a NAS, a disk):
-`./build/tierfs-device <store-dir> <port> <bind-address>`. It listens on loopback only unless you pass `--insecure-allow-network`
-(there is no encryption on the wire; the data itself is encrypted and authenticated, but the protocol has no login). Do not expose it to a network
-you do not control.
+Start a device server on each storage device (another Mac, a NAS, a disk): `./build/tierfs-device <store-dir> <port> <bind-address>`.
+
+**Unpaired** (the default): plaintext, no login, loopback only (`--insecure-allow-network` overrides that on a network you fully control; do not use it elsewhere).
+
+**Paired** (use this for any device reached over a network):
+```bash
+./build/tierfs-device <store-dir> --show-pairing-code        # on the device: prints the pairing code and key id (creates the secret the first time)
+./build/tierctl pair <host:port> --store keychain            # on the Mac: type the code (hidden); the Mac proves it works, then stores it in the Keychain
+./build/tierfs-device <store-dir> <port> 0.0.0.0             # the device now speaks only the authenticated, encrypted channel
+```
+`tierctl pair` prints the name to use from then on: `host:port@keyid` (in the daemon's `devices=` list and in `tierctl restore --store keychain ...`).
+Write the pairing codes on paper with the recovery phrase: after losing the Mac, `tierctl restore --pairing-file FILE` (lines `host:port code`) reads them,
+so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
+use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
 ## Running the daemon (only after the mount-safety note is resolved)
 ```bash
