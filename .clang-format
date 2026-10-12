@@ -1,0 +1,10 @@
+# Applied to changed lines only (see the format job in .github/workflows/ci.yml); the existing code is not reformatted wholesale.
+BasedOnStyle: Google
+IndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 150
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLambdasOnASingleLine: All
+SortIncludes: false

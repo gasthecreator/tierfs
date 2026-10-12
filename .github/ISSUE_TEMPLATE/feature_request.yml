@@ -1,0 +1,14 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: The problem, description: "What are you trying to do that you cannot?" }
+    validations: { required: true }
+  - type: textarea
+    id: idea
+    attributes: { label: Your idea, description: "And alternatives you considered." }
+  - type: textarea
+    id: safety
+    attributes: { label: Data-safety implications, description: "Could this move, delete, or expose user data? How should it fail?" }
