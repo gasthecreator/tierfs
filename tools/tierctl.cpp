@@ -275,8 +275,11 @@ static int cmd_restore(int argc, char** argv) {
         std::string a = argv[i];
         auto val = [&](std::string& dst) { if (i + 1 >= argc) { fprintf(stderr, "tierctl: %s needs a value\n", a.c_str()); return false; } dst = argv[++i]; return true; };
         std::string tmp;
-        if (a == "--out") { if (!val(out)) return 2; }
-        else if (a == "--device") { if (!val(tmp)) return 2; devs.push_back(tmp);
+        if (a == "--out") {
+            if (!val(out)) return 2;
+        } else if (a == "--device") {
+            if (!val(tmp)) return 2;
+            devs.push_back(tmp);
         } else if (a == "--phrase-file") {
             if (!val(phrase_file)) return 2;
         } else if (a == "--store") {
@@ -288,9 +291,12 @@ static int cmd_restore(int argc, char** argv) {
         } else if (a == "--reserve-mb") {
             if (!val(tmp)) return 2;
             opt.reserve_bytes = strtoull(tmp.c_str(), nullptr, 10) << 20;
-        } else if (a == "--dry-run")
+        } else if (a == "--dry-run") {
             opt.dry_run = true;
-        else { fprintf(stderr, "tierctl: unknown option %s\n", a.c_str()); return 2; }
+        } else {
+            fprintf(stderr, "tierctl: unknown option %s\n", a.c_str());
+            return 2;
+        }
     }
     if (out.empty() || devs.empty()) {
         fprintf(stderr,
