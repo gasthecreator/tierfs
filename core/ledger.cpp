@@ -531,8 +531,15 @@ Ledger::BackupCheck Ledger::backup_check(const FileRec& f) {
     std::lock_guard<std::recursive_mutex> lock_(mu_);
     BackupCheck r;
     std::string pre = get_meta("test_prefix").value_or("");
-    if (!pre.empty() && f.path.compare(0, pre.size(), pre) == 0) { r.ok = true; r.kind = BackupKind::TestArea; return r; }
-    if (get_meta("backup_acked").value_or("") != "1") { r.why = "backup not acknowledged and path is outside the test prefix"; return r; }
+    if (!pre.empty() && f.path.compare(0, pre.size(), pre) == 0) {
+        r.ok = true;
+        r.kind = BackupKind::TestArea;
+        return r;
+    }
+    if (get_meta("backup_acked").value_or("") != "1") {
+        r.why = "backup not acknowledged and path is outside the test prefix";
+        return r;
+    }
     int64_t at = 0;
     {
         std::string v = get_meta("backup_acked_at").value_or("");
@@ -555,7 +562,7 @@ Ledger::BackupCheck Ledger::backup_check(const FileRec& f) {
         r.why = "the recorded backup is older than " + std::to_string(max_days) + " days: make a new backup and run tierctl ack-backup again";
         return r;
     }
-    {   // when was this file's content last created or changed? (the history is append-only, so this cannot be rewritten)
+    {  // when was this file's content last created or changed? (the history is append-only, so this cannot be rewritten)
         Stmt q(db_, "SELECT COALESCE(MAX(ts),0) FROM events WHERE file_id=?1 AND kind IN ('file.tracked','file.modified')");
         q.text(1, f.file_id);
         if (q.row()) r.last_change = q.col_num(0);

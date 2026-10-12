@@ -13,7 +13,8 @@
 //   tierctl check-phrase <key-file>
 //                                       type or pipe your paper recovery phrase: says whether it matches the key file (nothing is changed)
 //   tierctl ack-backup <ledger-dir> I-HAVE-A-BACKUP
-//                                       record that a backup exists, WITH THE TIME: only files unchanged since then can be moved, and it expires (30 days).
+//                                       record that a backup exists, WITH THE TIME: only files unchanged since then can be moved, and it expires (30
+//                                       days).
 //   tierctl check-backup [folder]
 //                                       read-only: what macOS says about Time Machine (destination, latest backup, whether the folder is excluded).
 //                                       It changes nothing; you still make the statement with ack-backup.
@@ -235,7 +236,10 @@ static int run_tmutil(const std::string& args, std::string* out) {
     const char* bin = getenv("TIERFS_TMUTIL");
     std::string cmd = std::string(bin ? bin : "/usr/bin/tmutil") + " " + args + " 2>&1";
     FILE* f = popen(cmd.c_str(), "r");
-    if (!f) { *out = "cannot run tmutil"; return -1; }
+    if (!f) {
+        *out = "cannot run tmutil";
+        return -1;
+    }
     char buf[2048];
     out->clear();
     while (size_t n = fread(buf, 1, sizeof buf, f)) out->append(buf, n);
@@ -249,21 +253,33 @@ static int cmd_check_backup(int argc, char** argv) {
     std::string out;
     run_tmutil("destinationinfo", &out);
     if (out.find("No destinations configured") != std::string::npos) {
-        printf("NO BACKUP: Time Machine has no destination configured. Set one up (System Settings > General > Time Machine) before moving any file.\n");
+        printf(
+            "NO BACKUP: Time Machine has no destination configured. Set one up (System Settings > General > Time Machine) before moving any file.\n");
         return 3;
     }
     if (out.find("Operation not permitted") != std::string::npos || out.find("not permitted") != std::string::npos) {
-        printf("CANNOT TELL: macOS will not let this terminal read Time Machine. Give your terminal app Full Disk Access (System Settings > Privacy & Security), or check by hand.\n");
+        printf(
+            "CANNOT TELL: macOS will not let this terminal read Time Machine. Give your terminal app Full Disk Access (System Settings > Privacy & "
+            "Security), or check by hand.\n");
         return 3;
     }
     std::string name;
-    { size_t p = out.find("Name"); if (p != std::string::npos) { size_t e = out.find('\n', p); size_t c = out.find(':', p); if (c != std::string::npos && c < e) name = out.substr(c + 1, e - c - 1); } }
+    {
+        size_t p = out.find("Name");
+        if (p != std::string::npos) {
+            size_t e = out.find('\n', p);
+            size_t c = out.find(':', p);
+            if (c != std::string::npos && c < e) name = out.substr(c + 1, e - c - 1);
+        }
+    }
     while (!name.empty() && name[0] == ' ') name.erase(0, 1);
     printf("destination: %s\n", name.empty() ? "(configured)" : name.c_str());
     int rc = run_tmutil("latestbackup", &out);
-    if (rc != 0 || out.find("not permitted") != std::string::npos || out.find("No machine directory") != std::string::npos || out.find("Failed") != std::string::npos) {
+    if (rc != 0 || out.find("not permitted") != std::string::npos || out.find("No machine directory") != std::string::npos ||
+        out.find("Failed") != std::string::npos) {
         std::string first = out.substr(0, out.find('\n'));
-        printf("CANNOT TELL: no readable latest backup (%s). The destination may be disconnected, or this terminal needs Full Disk Access.\n", first.c_str());
+        printf("CANNOT TELL: no readable latest backup (%s). The destination may be disconnected, or this terminal needs Full Disk Access.\n",
+               first.c_str());
         return 3;
     }
     // .../2026-10-11-120000
@@ -271,14 +287,20 @@ static int cmd_check_backup(int argc, char** argv) {
     size_t slash = path.rfind('/');
     std::string stamp = slash == std::string::npos ? path : path.substr(slash + 1);
     struct tm tm_ = {};
-    if (strptime(stamp.c_str(), "%Y-%m-%d-%H%M%S", &tm_) == nullptr) { printf("CANNOT TELL: unexpected latest-backup name \"%s\"\n", stamp.c_str()); return 3; }
+    if (strptime(stamp.c_str(), "%Y-%m-%d-%H%M%S", &tm_) == nullptr) {
+        printf("CANNOT TELL: unexpected latest-backup name \"%s\"\n", stamp.c_str());
+        return 3;
+    }
     tm_.tm_isdst = -1;
     time_t at = mktime(&tm_);
     long long hours = (static_cast<long long>(time(nullptr)) - at) / 3600;
     printf("latest backup: %s (%lld hour(s) ago)\n", stamp.c_str(), hours);
     if (!folder.empty()) {
         run_tmutil("isexcluded '" + folder + "'", &out);
-        if (out.find("[Excluded]") != std::string::npos) { printf("NOT COVERED: %s is excluded from Time Machine.\n", folder.c_str()); return 3; }
+        if (out.find("[Excluded]") != std::string::npos) {
+            printf("NOT COVERED: %s is excluded from Time Machine.\n", folder.c_str());
+            return 3;
+        }
         printf("%s is included in Time Machine.\n", folder.c_str());
     }
     printf("OK: a backup exists. If it is new enough, record it with: tierctl ack-backup <ledger-dir> I-HAVE-A-BACKUP\n");
@@ -291,12 +313,18 @@ static int cmd_ack_backup(int argc, char** argv) {
     std::string err;
     auto L = tierfs::Ledger::open(argv[2], &err);
     if (!L) { fprintf(stderr, "tierctl: cannot open the ledger: %s\n", err.c_str()); return 1; }
-    if (!L->ack_backup().ok) { fprintf(stderr, "tierctl: cannot record it\n"); return 1; }
+    if (!L->ack_backup().ok) {
+        fprintf(stderr, "tierctl: cannot record it\n");
+        return 1;
+    }
     time_t at = static_cast<time_t>(std::stoll(L->get_meta("backup_acked_at").value_or("0")));
     char when[64];
     strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", localtime(&at));
-    printf("recorded at %s: a backup exists.\nOnly files created or changed BEFORE this moment can be moved off the Mac, and the statement expires after %s days.\n"
-           "After you change files, make a new backup and run this again.\n", when, L->get_meta("backup_max_age_days").value_or("30").c_str());
+    printf(
+        "recorded at %s: a backup exists.\nOnly files created or changed BEFORE this moment can be moved off the Mac, and the statement expires "
+        "after %s days.\n"
+        "After you change files, make a new backup and run this again.\n",
+        when, L->get_meta("backup_max_age_days").value_or("30").c_str());
     return 0;
 }
 
@@ -346,16 +374,19 @@ static int cmd_ledger_status(int argc, char** argv) {
     std::string backup_text = "NO";
     if (L->get_meta("backup_acked").value_or("") == "1") {
         long long at = atoll(L->get_meta("backup_acked_at").value_or("0").c_str());
-        if (at <= 0) backup_text = "yes (NO DATE: run ack-backup again)";
+        if (at <= 0)
+            backup_text = "yes (NO DATE: run ack-backup again)";
         else {
             time_t tt = static_cast<time_t>(at);
             char when[64];
             strftime(when, sizeof when, "%Y-%m-%d %H:%M", localtime(&tt));
             long long days = (static_cast<long long>(time(nullptr)) - at) / 86400;
-            backup_text = std::string("yes (recorded ") + when + ", " + std::to_string(days) + " day(s) ago" + (days > atoll(L->get_meta("backup_max_age_days").value_or("30").c_str()) ? ", EXPIRED" : "") + ")";
+            backup_text = std::string("yes (recorded ") + when + ", " + std::to_string(days) + " day(s) ago" +
+                          (days > atoll(L->get_meta("backup_max_age_days").value_or("30").c_str()) ? ", EXPIRED" : "") + ")";
         }
     }
-    printf("recovery phrase acknowledged: %s;  backup acknowledged: %s\n", L->get_meta("recovery_acked").value_or("") == "1" ? "yes" : "NO", backup_text.c_str());
+    printf("recovery phrase acknowledged: %s;  backup acknowledged: %s\n", L->get_meta("recovery_acked").value_or("") == "1" ? "yes" : "NO",
+           backup_text.c_str());
     for (auto& d : L->list_devices())
         printf("device:      %s  %-16s class %s  %s\n", d.device_id.substr(0, 8).c_str(), d.name.c_str(), d.cls.c_str(), d.state.c_str());
     std::map<std::string, int> by_state;
@@ -375,7 +406,8 @@ static int cmd_ledger_status(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-    if (argc >= 2 && std::string(argv[1]) == "check-backup") return cmd_check_backup(argc, argv);   // takes an optional folder, not a directory to inspect
+    if (argc >= 2 && std::string(argv[1]) == "check-backup")
+        return cmd_check_backup(argc, argv);  // takes an optional folder, not a directory to inspect
     if (argc < 3) {
         fprintf(stderr, "usage: %s cache-info|cache-verify|cache-clear <cache-dir> [--yes] | restore --out <dir> --device host:port ... | ledger-status <ledger-dir>\n", argv[0]);
         return 2;

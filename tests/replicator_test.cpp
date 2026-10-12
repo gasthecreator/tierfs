@@ -823,7 +823,7 @@ int main() {
         // OFFLOADED files have no local bytes to read
         env.L->set_meta("recovery_acked", "1");
         env.L->set_meta("backup_acked", "1");
-        env.L->set_meta("backup_acked_at", "4000000000");   // a dated statement (year 2096: newer than everything here); an undated one is refused
+        env.L->set_meta("backup_acked_at", "4000000000");  // a dated statement (year 2096: newer than everything here); an undated one is refused
         env.L->ensure_reserve(1 << 20);
         std::string consent = env.L->create_consent("/testdata/", 3600, "test");
         auto f = env.L->get_file(fid);

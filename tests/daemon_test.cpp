@@ -508,7 +508,7 @@ int main() {
         Bytes a = pattern(MiB + 5, 1), b = pattern(MiB + 6, 2);
         spit(e.path("a.bin"), a);
         auto d = make(e);
-        CHECK(d && d->start(nullptr));                                     // a.bin is tracked now
+        CHECK(d && d->start(nullptr));  // a.bin is tracked now
         // real gates (no test area): the phrase acknowledged, a reserve, and a backup recorded AFTER a.bin was tracked
         d->ledger().set_meta("recovery_acked", "1");
         d->ledger().ensure_reserve(1 << 20);
@@ -516,14 +516,14 @@ int main() {
         sleep(2);
         CHECK(d->ledger().ack_backup().ok);
         sleep(2);
-        spit(e.path("b.bin"), b);                                          // created after the backup
+        spit(e.path("b.bin"), b);  // created after the backup
         CHECK(has(d->control("scan"), "new 1"));
         std::string r = d->control("offload /a.bin");
         CHECK(has(r, "offloaded /Users/me/proj/a.bin") && !exists(e.path("a.bin")) && read_through(d->overlay(), "/a.bin", a.size()) == a);
         std::string rb = d->control("offload /b.bin");
         CHECK(has(rb, "refused /Users/me/proj/b.bin") && has(rb, "created or changed after the backup") && has(rb, "ERR") && exists(e.path("b.bin")));
         sleep(2);
-        CHECK(d->ledger().ack_backup().ok);                                // the owner backs up again and says so
+        CHECK(d->ledger().ack_backup().ok);  // the owner backs up again and says so
         CHECK(has(d->control("offload /b.bin"), "offloaded /Users/me/proj/b.bin") && !exists(e.path("b.bin")));
     }
 

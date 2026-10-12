@@ -151,10 +151,16 @@ TierPlan PolicyEngine::plan(uint64_t need_bytes, bool free_now) {
         for (const auto& f : ledger_.list_files()) {
             Verdict v = classify(f, now, policy_.min_idle_seconds, true);
             if (!v.eligible) { p.skipped[v.skip_reason]++; continue; }
-            {   // a file the recorded backup does not hold cannot be moved off the Mac (it may still be COPIED to the devices)
+            {  // a file the recorded backup does not hold cannot be moved off the Mac (it may still be COPIED to the devices)
                 auto bc = ledger_.backup_check(f);
-                if (!bc.ok && bc.kind == Ledger::BackupKind::ChangedAfter) { p.skipped["changed after the last recorded backup"]++; continue; }
-                if (!bc.ok && (bc.kind == Ledger::BackupKind::TooOld || bc.kind == Ledger::BackupKind::NoDate)) { p.skipped["the recorded backup is too old or undated"]++; continue; }
+                if (!bc.ok && bc.kind == Ledger::BackupKind::ChangedAfter) {
+                    p.skipped["changed after the last recorded backup"]++;
+                    continue;
+                }
+                if (!bc.ok && (bc.kind == Ledger::BackupKind::TooOld || bc.kind == Ledger::BackupKind::NoDate)) {
+                    p.skipped["the recorded backup is too old or undated"]++;
+                    continue;
+                }
             }
             Cand c;
             c.e.file_id = f.file_id;
@@ -193,7 +199,8 @@ TierPlan PolicyEngine::plan(uint64_t need_bytes, bool free_now) {
         p.warnings.push_back("the recovery phrase has not been acknowledged: moving files will be refused");
     if (ledger_.get_meta("backup_acked").value_or("") != "1")
         p.warnings.push_back("no backup has been acknowledged: moving real files will be refused");
-    else if (!p.skipped.empty() && (p.skipped.count("changed after the last recorded backup") || p.skipped.count("the recorded backup is too old or undated")))
+    else if (!p.skipped.empty() &&
+             (p.skipped.count("changed after the last recorded backup") || p.skipped.count("the recorded backup is too old or undated")))
         p.warnings.push_back("some files are not covered by the recorded backup: back up again and run tierctl ack-backup to make them movable");
     if (attainable_weight() < policy_.drop.min_weight)
         p.warnings.push_back("fewer trusted devices than the copies required: files cannot be moved safely");

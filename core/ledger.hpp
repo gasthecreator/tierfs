@@ -235,7 +235,12 @@ public:
     // before that moment (so the backup holds this version), and the statement expires (meta backup_max_age_days, default 30).
     Res ack_backup();
     enum class BackupKind { Ok, TestArea, NotAcknowledged, NoDate, TooOld, ChangedAfter };
-    struct BackupCheck { bool ok = false; BackupKind kind = BackupKind::NotAcknowledged; std::string why; int64_t acked_at = 0, last_change = 0; };
+    struct BackupCheck {
+        bool ok = false;
+        BackupKind kind = BackupKind::NotAcknowledged;
+        std::string why;
+        int64_t acked_at = 0, last_change = 0;
+    };
     BackupCheck backup_check(const FileRec& f);
 
     // --- consent ---
