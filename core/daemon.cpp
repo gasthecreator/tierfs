@@ -65,14 +65,23 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     d->policy_ = std::make_unique<PolicyEngine>(*d->ledger_, *d->replicator_, *d->engine_, *d->probe_, tp,
                                                 [origin, pfx = d->cfg_.logical_prefix](const FileRec& f) { return origin + "/" + f.path.substr(pfx.size()); },
                                                 d->notifier_.get());
-    for (const auto& spec : cfg.devices) {
-        size_t colon = spec.rfind(':');
-        if (colon == std::string::npos || colon == 0 || colon + 1 >= spec.size()) return fail("a device must be host:port, got " + spec);
-        int port = atoi(spec.c_str() + colon + 1);
+    for (const auto& spec : cfg.devices) {   // "host:port" (open device) or "host:port@keyid" (paired: the secret is in the key store)
+        std::string addr = spec, kid;
+        if (size_t at = spec.find('@'); at != std::string::npos) { addr = spec.substr(0, at); kid = spec.substr(at + 1); }
+        size_t colon = addr.rfind(':');
+        if (colon == std::string::npos || colon == 0 || colon + 1 >= addr.size()) return fail("a device must be host:port or host:port@keyid, got " + spec);
+        int port = atoi(addr.c_str() + colon + 1);
         if (port <= 0 || port > 65535) return fail("bad port in " + spec);
+        crypto::Bytes secret;
+        if (!kid.empty()) {
+            std::string perr;
+            auto sec = load_pairing_secret(cfg.key_file, kid, &perr);
+            if (!sec) return fail("device " + spec + ": " + perr);
+            secret = *sec;
+        }
         Dev dev;
         dev.spec = spec;
-        dev.client = std::make_unique<DeviceClient>(spec.substr(0, colon), static_cast<uint16_t>(port), cfg.device_timeout_ms);
+        dev.client = std::make_unique<DeviceClient>(addr.substr(0, colon), static_cast<uint16_t>(port), cfg.device_timeout_ms, std::move(secret));
         d->devs_.push_back(std::move(dev));
     }
     d->socket_path_ = cfg.control_socket == "none" ? "" : (cfg.control_socket.empty() ? cfg.ledger_dir + "/control.sock" : cfg.control_socket);

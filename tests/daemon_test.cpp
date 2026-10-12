@@ -25,6 +25,7 @@
 
 #include "../core/dropengine.hpp"
 #include "../core/daemon.hpp"
+#include "../core/keysource.hpp"
 
 extern char** environ;
 using namespace tierfs;
@@ -107,7 +108,8 @@ struct Server {
         for (int i = 0; i < 100; i++) {
             DeviceClient c("127.0.0.1", port, 300);
             DevInfo info;
-            if (c.info(info).ok()) return true;
+            DevRes r = c.info(info);
+            if (r.ok() || r.err == EPERM) return true;   // (a paired device answers a plaintext client with a refusal: it is up)
             usleep(50000);
         }
         return false;
@@ -562,6 +564,66 @@ int main() {
         CHECK(!Daemon::create(c, &err) && has(err, "needs a path"));
         c.key_file = e.root + "/does-not-exist";
         CHECK(!Daemon::create(c, &err) && has(err, "cannot read the key file"));
+    }
+
+    {
+        printf("== paired devices: the daemon authenticates with secrets from the key store, and offloading works through the channel\n");
+        Env e(false, false);
+        Bytes a = pattern(MiB + 5, 1);
+        spit(e.path("a.bin"), a);
+        auto run = [&](const std::string& store) {   // `tierfs-device <store> --show-pairing-code`: the secret and its key id
+            std::string cmd = std::string("./build/tierfs-device '") + store + "' --show-pairing-code 2>&1";
+            FILE* f = popen(cmd.c_str(), "r");
+            std::string out;
+            char buf[512];
+            while (size_t n = fread(buf, 1, sizeof buf, f)) out.append(buf, n);
+            pclose(f);
+            size_t s0 = out.find("\n\n    ") + 6;
+            std::string err;
+            auto k = crypto::decode_recovery(out.substr(s0, out.find('\n', s0) - s0), &err);
+            size_t k0 = out.find("key id: ") + 8;
+            return std::make_pair(k ? Bytes(k->data(), k->data() + 32) : Bytes{}, out.substr(k0, 16));
+        };
+        auto pa = run(e.root + "/devA"), pb = run(e.root + "/devB");
+        CHECK(pa.first.size() == 32 && pb.first.size() == 32 && pa.second != pb.second);
+        CHECK(e.sa.start(e.root + "/devA") && e.sb.start(e.root + "/devB"));          // paired devices: they now require the channel
+        std::string ks_dir = e.root + "/keystore", volume, err;
+        {
+            auto L = Ledger::open(e.ledger, &err);
+            CHECK(L);
+            volume = L->volume_id();
+        }
+        crypto::SecretKey master = crypto::SecretKey::random();
+        CHECK(crypto::make_file_keystore(ks_dir)->store(volume, master));
+        CHECK(store_pairing_secret("dir:" + ks_dir, pa.first, &err) && store_pairing_secret("dir:" + ks_dir, pb.first, &err));
+        e.open_gates(true);
+        DaemonConfig c = e.config();
+        c.key_file = "dir:" + ks_dir;
+        c.devices = {"127.0.0.1:" + std::to_string(PA) + "@" + pa.second, "127.0.0.1:" + std::to_string(PB) + "@" + pb.second};
+        {
+            auto d = Daemon::create(c, &err);
+            CHECK(d && d->start(nullptr));
+            std::string st = d->control("status");
+            CHECK(has(st, "attached") && !has(st, "not attached") && d->ledger().list_devices().size() == 2);
+            std::string r = d->control("offload /a.bin");
+            CHECK(has(r, "offloaded /Users/me/proj/a.bin") && !exists(e.path("a.bin")) && read_through(d->overlay(), "/a.bin", a.size()) == a);
+            CHECK(ends_ok(d->control("hydrate /a.bin")) && slurp(e.path("a.bin")) == a);
+        }
+        // the same devices without their secrets stay unattached, and the daemon says so instead of failing
+        c.devices = {"127.0.0.1:" + std::to_string(PA), "127.0.0.1:" + std::to_string(PB)};
+        {
+            auto d = Daemon::create(c, &err);
+            CHECK(d && d->start(nullptr) && has(d->control("status"), "not attached") && has(d->control("offload /a.bin"), "refused"));
+        }
+        // a configuration with a key id that is not in the store, or a malformed one, is refused up front
+        c.devices = {"127.0.0.1:" + std::to_string(PA) + "@0123456789abcdef"};
+        CHECK(!Daemon::create(c, &err) && has(err, "no pairing secret"));
+        c.devices = {"127.0.0.1:" + std::to_string(PA) + "@nothex"};
+        CHECK(!Daemon::create(c, &err) && has(err, "16 hex"));
+        c.devices = {"127.0.0.1:" + std::to_string(PA) + "@" + pa.second};
+        c.key_file = e.root + "/plain-key-file";
+        std::ofstream(c.key_file) << crypto::to_hex(master.data(), 32) << "\n";
+        CHECK(!Daemon::create(c, &err) && has(err, "key store"));                       // a plain key file cannot hold pairing secrets
     }
 
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);

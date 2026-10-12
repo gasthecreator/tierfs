@@ -10,7 +10,7 @@ sys.path.insert(0, 'scripts')
 OS = os.environ.get('OPENSSL_DIR', '/opt/homebrew/opt/openssl@3')
 CRYPTO = f'{OS}/lib/libcrypto.a'
 BASE = ['c++', '-std=c++17', '-g', '-w', f'-I{OS}/include', '-Icore', '-Itests']
-COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/deviceclient.cpp', 'deviceclient'),
+COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/securechannel.cpp', 'securechannel'), ('core/deviceclient.cpp', 'deviceclient'),
           ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine')]
 TARGETS = {
     'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', tests=['tests/recovery_test.cpp'],
@@ -25,6 +25,10 @@ TARGETS = {
                       extra_objs=[('core/keychain_mac.cpp', 'keychain_mac')], tools=[], libs=['-lsqlite3', '-framework', 'CoreFoundation', '-framework', 'Security']),
     'securechannel': dict(mutants='securechannel_mutants', mutated='core/securechannel.cpp', tests=['tests/securechannel_test.cpp'],
                           extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'deviceauth': dict(mutants='deviceauth_mutants', mutated='core/deviceclient.cpp', tests=['tests/deviceauth_test.cpp'], extra_objs=[],
+                       tools=[('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'deviceserver': dict(mutants='deviceserver_mutants', mutated='backend/device_server.cpp', tests=['tests/deviceauth_test.cpp'], extra_objs=[], mutated_tool=0,
+                         tools=[('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp', 'tests/overlay_ns_test.cpp'],
                     extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
 }
@@ -74,15 +78,18 @@ def test_mutant(job):
     open(f'{wd}/mut.cpp', 'w').write(src.replace(frm, to, 1))
     r = run(BASE + ['-c', f'{wd}/mut.cpp', '-o', f'{wd}/mut.o'])
     if r.returncode: return name, 'nocompile', (r.stderr.strip().splitlines() or ['?'])[-1][:70]
-    # the mutated file replaces the object of the same name
+    # the mutated file replaces the object of the same name (or, for a mutated PROGRAM, is built as the tool the tests launch)
+    mt = T.get('mutated_tool')
     objs = [f'{D}/{o}.o' for o in OBJS]
-    mutated_obj = os.path.basename(T['mutated'])[:-4]
-    objs = [f'{wd}/mut.o' if o.endswith(f'/{mutated_obj}.o') else o for o in objs]
-    if not any(o == f'{wd}/mut.o' for o in objs): objs.append(f'{wd}/mut.o')
+    if mt is None:
+        mutated_obj = os.path.basename(T['mutated'])[:-4]
+        objs = [f'{wd}/mut.o' if o.endswith(f'/{mutated_obj}.o') else o for o in objs]
+        if not any(o == f'{wd}/mut.o' for o in objs): objs.append(f'{wd}/mut.o')
     for i, _ in enumerate(T['tests']):
         sh(['c++', '-o', f'{wd}/mut_test{i}', f'{D}/test{i}_o.o'] + objs + [CRYPTO] + T['libs'])
     for i, (_, envname) in enumerate(T['tools']):
-        sh(['c++', '-o', f'{wd}/mut_tool{i}', f'{D}/tool{i}_o.o'] + objs + [CRYPTO] + T['libs'])
+        src_obj = f'{wd}/mut.o' if i == mt else f'{D}/tool{i}_o.o'
+        sh(['c++', '-o', f'{wd}/mut_tool{i}', src_obj] + objs + [CRYPTO] + T['libs'])
         env[envname] = f'./{wd}/mut_tool{i}'
     def execute():
         wipe(tmp); os.makedirs(tmp, exist_ok=True)

@@ -6,7 +6,8 @@ once 1.0 is reached. Until then, anything may change.
 ## [Unreleased]
 
 ### Added
-- Secure channel library for the device protocol (v4, not yet wired in): pairing secret, ephemeral X25519, AES-256-GCM frames with counters (ADR-0009); known-answer vectors from an independent reference.
+- Secure channel for the device protocol (v4): pairing secret, ephemeral X25519, AES-256-GCM frames with counters (ADR-0009); known-answer vectors from an independent reference.
+- Device authentication, wired in: `tierfs-device <store> --show-pairing-code` / `--new-pairing-code`; a paired device speaks only the authenticated channel and may listen on any address, an unpaired one stays plaintext and loopback-only; `tierctl pair <host:port> --store keychain|dir:PATH` keeps the secret in the Keychain; devices are named `host:port@keyid` in the daemon and in `tierctl restore --store SPEC`, and `restore --pairing-file FILE` lets a disaster recovery start from the recovery phrase plus the codes written on paper.
 - The master key can live in the login Keychain: `tierctl init <ledger> --store keychain`, `tierctl check-phrase --store keychain <ledger>`, daemon option `keyfile=keychain` (key sources: `keychain`, `dir:PATH`, or a key file). The real-Keychain tests are opt-in (`TIERFS_TEST_KEYCHAIN=1`).
 - Dated backup statements: a file may leave the Mac only if it was created or changed before the recorded backup, and the statement expires after 30 days; `tierctl check-backup` (read-only Time Machine report); the policy skips files the backup does not cover.
 - Case- and Unicode-insensitive name handling (unique folded key, schema version 2 with migration), matching APFS.

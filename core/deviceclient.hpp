@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "securechannel.hpp"
 #include "devicestore.hpp"  // DevInfo, ManifestEntry, AuditItem, AuditOut (shared vocabulary)
 
 namespace tierfs {
@@ -35,7 +36,9 @@ struct ListReply {
 
 class DeviceClient {
 public:
-    DeviceClient(std::string host, uint16_t port, int timeout_ms = 3000);
+    // `pairing_secret` (32 bytes) makes every connection use the authenticated, encrypted channel (protocol v4); empty means the open
+    // plaintext protocol (v3), which only a device that has not been paired will speak.
+    DeviceClient(std::string host, uint16_t port, int timeout_ms = 3000, crypto::Bytes pairing_secret = {});
     ~DeviceClient();
     DeviceClient(const DeviceClient&) = delete;
     DeviceClient& operator=(const DeviceClient&) = delete;
@@ -59,9 +62,14 @@ private:
     struct Frame_;
     DevRes call(uint8_t type, const std::vector<uint8_t>& payload, std::vector<uint8_t>& reply, uint64_t expect_bytes);
     bool ensure_connected(DevRes* why);
+    void drop_connection();
+    bool tx(uint8_t type, uint32_t id, const std::vector<uint8_t>& payload, int64_t deadline);
+    int rx(Frame& f, int64_t deadline);
 
     std::string host_, port_;
     int timeout_ms_;
+    crypto::Bytes psk_;
+    std::unique_ptr<chan::Channel> ch_;   // set when psk_ is
     int fd_ = -1;
     uint32_t next_id_ = 1;
     std::mutex mu_;

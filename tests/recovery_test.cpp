@@ -47,7 +47,7 @@ static void release_ramdisks() {
     } while (0)
 
 template <class T> static const T& at(const std::vector<T>& v, size_t i) { static const T dummy{}; return i < v.size() ? v[i] : dummy; }
-static bool has(const std::string& s, const char* n) { return s.find(n) != std::string::npos; }
+static bool has(const std::string& s, const std::string& n) { return s.find(n) != std::string::npos; }
 // TIERFS_TEST_TMP / TIERFS_TEST_PORT let several copies of this test run side by side (the parallel mutation runner).
 static std::string tmpdir() {
     std::string t = std::string(getenv("TIERFS_TEST_TMP") ? getenv("TIERFS_TEST_TMP") : "/tmp") + "/tierfs-recotest-XXXXXX";
@@ -102,7 +102,8 @@ struct Server {
         for (int i = 0; i < 100; i++) {
             DeviceClient c("127.0.0.1", port, 300);
             DevInfo info;
-            if (c.info(info).ok()) return true;
+            DevRes r = c.info(info);
+            if (r.ok() || r.err == EPERM) return true;   // (a paired device refuses a plaintext client: it is up)
             usleep(50000);
         }
         return false;
@@ -193,13 +194,33 @@ struct Lab {
     std::map<std::string, Item> items;
     int n_;
 
-    Lab() {
+    std::string code_a, code_b;   // the pairing codes, when the devices are paired
+    // Pairs a device store (creating its secret) and returns the secret and the code the device prints.
+    static Bytes pair_store(const std::string& store, std::string* code) {
+        std::string cmd = std::string("./build/tierfs-device '") + store + "' --show-pairing-code 2>&1";
+        FILE* f = popen(cmd.c_str(), "r");
+        std::string out;
+        char buf[512];
+        while (size_t n = fread(buf, 1, sizeof buf, f)) out.append(buf, n);
+        pclose(f);
+        size_t s0 = out.find("\n\n    ") + 6;
+        *code = out.substr(s0, out.find('\n', s0) - s0);
+        std::string err;
+        auto k = crypto::decode_recovery(*code, &err);
+        return k ? Bytes(k->data(), k->data() + 32) : Bytes{};
+    }
+    explicit Lab(bool paired = false) {
         n_ = ++g_lab;
         fs::create_directories(root + "/files");
+        Bytes psk_a, psk_b;
+        if (paired) {
+            psk_a = pair_store(root + "/devA" + std::to_string(n_), &code_a);
+            psk_b = pair_store(root + "/devB" + std::to_string(n_), &code_b);
+        }
         sa.start(root + "/devA" + std::to_string(n_));
         sb.start(root + "/devB" + std::to_string(n_));
-        da = std::make_unique<DeviceClient>("127.0.0.1", PA, 5000);
-        db = std::make_unique<DeviceClient>("127.0.0.1", PB, 5000);
+        da = std::make_unique<DeviceClient>("127.0.0.1", PA, 5000, psk_a);
+        db = std::make_unique<DeviceClient>("127.0.0.1", PB, 5000, psk_b);
         open_ledger();
         L->set_meta("recovery_acked", "1");
         L->set_meta("test_prefix", "/Users/me/");
@@ -708,6 +729,50 @@ int main() {
         w2.destroy_mac();
         RestoreReport none = recover_from_devices(w2.master, w2.both(), w2.root + "/out");
         CHECK(has(none.fatal, "no manifests") && !exists(w2.root + "/out"));
+    }
+
+    {
+        printf("== drill 15: the devices are paired; the Mac is gone; only the phrase and the devices' codes are left\n");
+        Lab w(/*paired=*/true);
+        CHECK(w.code_a.size() > 50 && w.code_b.size() > 50 && w.code_a != w.code_b);
+        w.make("a.bin", 2 * MiB + 5, 1, 0640, 1500000000);
+        w.make("b.txt", 100, 2);
+        CHECK(w.drop("a.bin"));
+        std::string phrase = w.phrase();
+        w.destroy_mac();
+        // the library, with clients that hold the secrets
+        std::string out = w.root + "/out";
+        RestoreReport r = recover_from_devices(w.master, w.both(), out);
+        CHECK(r.complete() && r.restored.size() == 2 && matches(out, w.items["a.bin"]) && matches(out, w.items["b.txt"]));
+        // clients without secrets cannot read anything
+        DeviceClient naked_a("127.0.0.1", PA, 3000), naked_b("127.0.0.1", PB, 3000);
+        RestoreReport denied = recover_from_devices(w.master, {{"A", &naked_a}, {"B", &naked_b}}, w.root + "/out2");
+        CHECK(!denied.fatal.empty() && has(denied.fatal, "no usable device") && !exists(w.root + "/out2"));
+        // the real tool, on a new Mac: it knows the phrase and the two codes, nothing else
+        std::string pf = w.root + "/phrase.txt", codes = w.root + "/codes.txt";
+        spit(pf, Bytes(phrase.begin(), phrase.end()));
+        std::string cl = "127.0.0.1:" + std::to_string(PA) + " " + w.code_a + "\n127.0.0.1:" + std::to_string(PB) + " " + w.code_b + "\n";
+        spit(codes, Bytes(cl.begin(), cl.end()));
+        std::string text;
+        int rc = sh(cli_restore(w, w.root + "/cli1", pf, "--pairing-file " + codes), &text);
+        CHECK(rc == 0 && has(text, "Everything was recovered") && matches(w.root + "/cli1", w.items["a.bin"]) && matches(w.root + "/cli1", w.items["b.txt"]));
+        // without the codes it stops, and says what to do; nothing is written
+        rc = sh(cli_restore(w, w.root + "/cli2", pf), &text);
+        CHECK(rc == 2 && has(text, "device is paired") && !exists(w.root + "/cli2"));
+        // one wrong code: that device cannot be read, the restore continues with the other and says so
+        std::string bad = "127.0.0.1:" + std::to_string(PA) + " " + w.code_b + "\n127.0.0.1:" + std::to_string(PB) + " " + w.code_b + "\n";
+        spit(w.root + "/bad.txt", Bytes(bad.begin(), bad.end()));
+        rc = sh(cli_restore(w, w.root + "/cli3", pf, "--pairing-file " + w.root + "/bad.txt"), &text);
+        CHECK(rc == 0 && has(text, "note: 127.0.0.1:" + std::to_string(PA) + " is not reachable") && has(text, "authentication with the device failed") && has(text, "1 device(s) reachable") && matches(w.root + "/cli3", w.items["a.bin"]));
+        // every code wrong: nothing is recovered, nothing is written
+        std::string worse = "127.0.0.1:" + std::to_string(PA) + " " + w.code_b + "\n127.0.0.1:" + std::to_string(PB) + " " + w.code_a + "\n";
+        spit(w.root + "/worse.txt", Bytes(worse.begin(), worse.end()));
+        rc = sh(cli_restore(w, w.root + "/cli3b", pf, "--pairing-file " + w.root + "/worse.txt"), &text);
+        CHECK(rc == 1 && has(text, "NOTHING WAS RECOVERED") && has(text, "no usable device") && !exists(w.root + "/cli3b"));
+        // one device down, the other paired and good: the files still come back
+        w.sb.stop();
+        rc = sh(cli_restore(w, w.root + "/cli4", pf, "--pairing-file " + codes), &text);
+        CHECK(rc == 0 && matches(w.root + "/cli4", w.items["a.bin"]));
     }
 
     {

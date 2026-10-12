@@ -8,8 +8,8 @@ LIBS=($OS/lib/libcrypto.a -lsqlite3)
 build() { out=$1; shift; c++ "${FLAGS[@]}" "$@" "${LIBS[@]}" -o $D/$out 2>$D/$out.log || { echo "BUILD FAILED: $out"; tail -3 $D/$out.log; exit 1; }; }
 build store_test tests/devicestore_test.cpp core/devicestore.cpp core/crypto.cpp
 build helper tests/device_helper.cpp core/devicestore.cpp core/crypto.cpp
-build net_test tests/devicenet_test.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp
-build server backend/device_server.cpp core/devicestore.cpp core/crypto.cpp
+build net_test tests/devicenet_test.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp
+build server backend/device_server.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp
 for b in store_test helper net_test server; do [ -x $D/$b ] || { echo "missing $b"; exit 1; }; done
 echo "built 4 instrumented binaries"
 pkill -f tierfs-device

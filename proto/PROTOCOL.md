@@ -1,9 +1,7 @@
 # tierfs wire protocol, version 2 (DRAFT)
 
-Status: **plaintext TCP, read-only, no authentication.** The backend binds to
-127.0.0.1 by default for that reason. TLS with pinned keys (mutual auth) and
-pairing are the next protocol step and must land before binding to a LAN
-address.
+Status: version 3 is **plaintext TCP with no authentication**, so an unpaired device binds to 127.0.0.1 only. A paired device speaks version 4
+(authenticated, encrypted; below) and may bind to a network address.
 
 All integers are big-endian ("network byte order"). Strings are `u16 length`
 followed by that many UTF-8 bytes (no NUL).
@@ -108,9 +106,10 @@ file at 1 MiB per chunk) does not fit in one request; larger files need manifest
 The server drops idle connections after 120 s and refuses connections beyond 64.
 
 **Security status:** version 3 has no authentication and no encryption of the transport, so `tierfs-device` listens only on
-127.0.0.1 unless started with `--insecure-allow-network`. Version 4 (below) adds the authenticated, encrypted channel; the library
-(`core/securechannel.*`) is implemented and tested, and wiring it into `tierfs-device`, the client, pairing and the daemon is the next change.
-Until then nothing uses it.
+127.0.0.1 unless started with `--insecure-allow-network`. Version 4 (below) adds the authenticated, encrypted channel and is in use: a device whose store holds `pairing.key` (64 hex characters, mode 0600; created
+by `tierfs-device <store> --show-pairing-code`) speaks only the channel and answers a plaintext HELLO with a plain ERROR (EPERM, "this device is paired")
+before hanging up; it drops a peer that has not finished the handshake within 10 s. Inside the channel the version 3 messages (HELLO first) are unchanged.
+A client holding the secret (`DeviceClient`'s fourth argument) runs the handshake on every new connection; authentication failures surface as EACCES.
 
 ## Secure channel (version 4)
 Specified in docs/adr/0009; implemented in `core/securechannel.*`. All integers big-endian.

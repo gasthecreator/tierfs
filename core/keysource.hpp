@@ -19,4 +19,12 @@ std::unique_ptr<crypto::KeyStore> keystore_for(const std::string& source, std::s
 // Loads the master key for `volume_id` from `source`. Never prints or logs the key.
 std::optional<crypto::SecretKey> load_master_key(const std::string& source, const std::string& volume_id, std::string* err);
 
+// ---- pairing secrets (one per paired device), kept in the same store as the master key ----
+// The account name is "pair-" + the secret's public key id, so a secret is found by the id a device configuration carries.
+std::string pairing_account(const std::string& key_id_hex);
+// Loads the secret whose key id is `key_id_hex` from the store behind `source` (not a key file). Verifies it really has that id.
+std::optional<crypto::Bytes> load_pairing_secret(const std::string& source, const std::string& key_id_hex, std::string* err);
+// Stores a secret under its own key id. Idempotent for the same secret; never replaces a different one.
+bool store_pairing_secret(const std::string& source, const crypto::Bytes& secret, std::string* err);
+
 }  // namespace tierfs

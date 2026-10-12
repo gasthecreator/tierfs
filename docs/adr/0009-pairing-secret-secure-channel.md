@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (implemented and wired in)
 date: 2026-10-12
 decision-makers: Gideon Sanni
 ---
@@ -36,4 +36,12 @@ The frame's type and id are inside the seal. A server holding a pairing secret r
 `tests/securechannel_test.cpp` (known answers computed by `scripts/gen_channel_kat.py`, which implements X25519 from RFC 7748 and checks itself against the RFC's vectors; bit-flip, replay, reorder, drop, reflection, truncation, wrong-secret, low-order-point and socket-abuse tests) and mutation testing of `core/securechannel.cpp` (80 mutants).
 
 ## More Information
-Specification: proto/PROTOCOL.md (version 4). Not specified: pairing UX beyond the code, secret rotation, per-device authorization of operations.
+Specification: proto/PROTOCOL.md (version 4). Not specified: secret rotation beyond replacing the secret, per-device authorization of operations.
+
+### Pairing as built
+- The device owns the secret: `tierfs-device <store> --show-pairing-code` creates `<store>/pairing.key` on first use (random, mode 0600) and prints it in the same
+  word-group form as the recovery phrase plus its 8-byte key id; `--new-pairing-code` replaces it (every Mac must pair again).
+- The Mac stores it in a key store (Keychain item `pair-<keyid>` under the service `tierfs-master-key`, or `dir:PATH`) with `tierctl pair <host:port> --store ...`,
+  which authenticates against the device first and stores only what worked. Devices are then named `host:port@keyid` in the daemon and in `tierctl restore`.
+- Disaster recovery on a new Mac needs the recovery phrase and the device codes (written down with the phrase): `tierctl restore --pairing-file FILE` takes lines of `host:port code`.
+- A paired device may listen on any address; an unpaired one still refuses anything but loopback unless `--insecure-allow-network`.

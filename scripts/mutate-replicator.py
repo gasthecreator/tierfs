@@ -60,10 +60,10 @@ def sh(cmd):
     r = run(cmd)
     if r.returncode: sys.exit('build failed: ' + ' '.join(cmd) + '\n' + r.stderr[-500:])
 os.makedirs(D, exist_ok=True)
-for src, out in [('core/crypto.cpp', 'crypto.o'), ('core/ledger.cpp', 'ledger.o'), ('core/deviceclient.cpp', 'deviceclient.o'), ('core/devicestore.cpp', 'devicestore.o'),
+for src, out in [('core/crypto.cpp', 'crypto.o'), ('core/ledger.cpp', 'ledger.o'), ('core/securechannel.cpp', 'securechannel.o'), ('core/deviceclient.cpp', 'deviceclient.o'), ('core/devicestore.cpp', 'devicestore.o'),
                  ('tests/replicator_test.cpp', 'replicator_test.o'), ('tests/repl_helper.cpp', 'repl_helper.o')]:
     sh(BASE + ['-c', src, '-o', f'{D}/{out}'])
-OBJS = ['ledger.o', 'deviceclient.o', 'devicestore.o', 'crypto.o']
+OBJS = ['ledger.o', 'securechannel.o', 'deviceclient.o', 'devicestore.o', 'crypto.o']
 filters = sys.argv[1:]
 survivors, expected = [], []
 for name, path, frm, to, nth in M:
