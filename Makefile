@@ -247,4 +247,9 @@ build/hellofs: mount/hellofs.c
 clean:
 	rm -rf build
 
-.PHONY: all clean test-unit test-client test-tsan
+# Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
+NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init
+test: $(NO_MOUNT_TESTS)
+
+.PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan

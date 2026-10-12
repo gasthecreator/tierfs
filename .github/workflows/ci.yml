@@ -1,17 +1,51 @@
 name: ci
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
+    name: tests (no mounts)
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Dependencies
         run: brew install openssl@3 || true
-      - name: Tests (nothing here mounts a filesystem)
+      - name: Build and run every test that does not mount a filesystem
+        run: make test
+
+  format:
+    name: format (changed lines only)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install clang-format
+        run: brew install clang-format
+      - name: Check the lines this PR changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          make test-unit test-client test-device test-replicator test-dropengine test-policy \
-               test-recovery test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init
+          out=$(git clang-format --diff --extensions c,cc,cpp,h,hpp "$BASE_SHA" -- || true)
+          if echo "$out" | grep -qE "no modified files to format|did not modify any files"; then
+            echo "formatting OK"
+          else
+            echo "$out"
+            echo "::error::clang-format would change lines touched by this PR. Run: git clang-format $BASE_SHA"
+            exit 1
+          fi
