@@ -871,4 +871,10 @@ Status of 3h-4 (the daemon and the FUSE driver, written; real-mount testing paus
   "Boot faults: wdog", i.e. a kernel hang with no panic log). The script kills the driver with `kill -9` while mounted and force-unmounts; a
   FUSE-T/NFS mount whose server vanishes can wedge the kernel. Do not run it unattended. Before it is used again: no `kill -9` of a mounted
   driver, a hard timeout on every step, clean shutdown before unmount, and run it only with the user's work saved.
+- Confirmed cause of the resets (kernel panic report, macOS 26.6.2 / xnu-12377, process `cp` writing into the mount):
+  `panic: "nfs_vinvalbuf2: ubc_msync failed!, error 22" @nfs_bio.c:4260` in `com.apple.filesystems.nfs`. FUSE-T serves the mount through
+  macOS's own NFS client, which panics the kernel when it drops its cached pages for a file and the page sync returns EINVAL. This is an Apple
+  kernel bug reachable from any FUSE-T filesystem; whether tierfsd's attribute patterns (copy in, overwrite, truncate, rename in quick
+  succession) make it likelier is unknown. Consequence: never mount-test on the development machine; if mount tests are wanted, run them in a
+  throwaway macOS VM (the Virtualization framework is available), and do not put real data behind a FUSE-T mount until that is understood.
 
