@@ -35,7 +35,7 @@ This is a living document; each row names the control and where it is tested.
 
 ## Known gaps (tracked, not hidden)
 - The device server has no authentication or TLS; a device on another host must sit on a trusted link until this is added.
-- The key lives in a mode-0600 file; Keychain storage is implemented but its test has not been run.
+- The key lives in the login Keychain (this device only) when set up with `--store keychain`; the older key-file and `dir:` forms are development-only and leave the key readable by anything running as you. Any process running as you can ask the Keychain for the item once macOS allows it.
 - Chunk ids and sizes leak the file-size distribution and which files share content (deduplication is visible to a device).
 - Deleted files and old versions remain on the devices (append-only) until a tombstone and garbage-collection design exists.
 - The backup gate trusts the owner's dated statement: `tierctl check-backup` shows what macOS reports, but nothing proves a given file is inside the backup. Offloaded files drop out of later backups of the folder (older backups and the devices keep them).

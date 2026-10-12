@@ -44,10 +44,12 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "../core/chunkcache.hpp"
+#include "../core/keysource.hpp"
 #include "../core/ledger.hpp"
 #include "../core/recovery.hpp"
 
@@ -176,10 +178,36 @@ static int cmd_restore(int argc, char** argv) {
 }
 
 static int cmd_init(int argc, char** argv) {
-    if (argc < 4) { fprintf(stderr, "usage: tierctl init <ledger-dir> <key-file>\n"); return 2; }
-    std::string ldir = argv[2], kfile = argv[3];
+    const char* usage = "usage: tierctl init <ledger-dir> <key-file>\n       tierctl init <ledger-dir> --store keychain|dir:PATH\n";
+    if (argc < 4) {
+        fputs(usage, stderr);
+        return 2;
+    }
+    std::string ldir = argv[2], kfile, source;
+    bool use_store = std::string(argv[3]) == "--store";
+    if (use_store) {
+        if (argc < 5) {
+            fputs(usage, stderr);
+            return 2;
+        }
+        source = argv[4];
+    } else {
+        kfile = argv[3];
+    }
+    std::unique_ptr<tierfs::crypto::KeyStore> store;
+    if (use_store) {
+        std::string why;
+        store = tierfs::keystore_for(source, &why);
+        if (!store) {
+            fprintf(stderr, "tierctl: %s\n", why.empty() ? "--store must be 'keychain' or 'dir:PATH'" : why.c_str());
+            return 2;
+        }
+    }
     if (fs::exists(ldir + "/ledger.db")) { fprintf(stderr, "tierctl: %s already holds a ledger; nothing was changed\n", ldir.c_str()); return 1; }
-    if (fs::exists(kfile)) { fprintf(stderr, "tierctl: %s already exists; nothing was changed\n", kfile.c_str()); return 1; }
+    if (!use_store && fs::exists(kfile)) {
+        fprintf(stderr, "tierctl: %s already exists; nothing was changed\n", kfile.c_str());
+        return 1;
+    }
     tierfs::crypto::SecretKey master = tierfs::crypto::SecretKey::random();
     if (!master.valid()) { fprintf(stderr, "tierctl: the system random generator failed\n"); return 1; }
     std::string phrase = tierfs::crypto::encode_recovery(master);
@@ -195,39 +223,97 @@ static int cmd_init(int argc, char** argv) {
         while (!typed.empty() && (typed.back() == '\n' || typed.back() == '\r')) typed.pop_back();
         if (!tierfs::crypto::check_confirm_group(phrase, g, typed)) { fprintf(stderr, "tierctl: that is not group %d; nothing was saved. Start again.\n", g); return 1; }
     }
-    std::error_code ec;
-    fs::create_directories(fs::path(kfile).parent_path().empty() ? fs::path(".") : fs::path(kfile).parent_path(), ec);
-    int fd = ::open(kfile.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) { fprintf(stderr, "tierctl: cannot create %s: %s\n", kfile.c_str(), strerror(errno)); return 1; }
-    std::string hex = tierfs::crypto::to_hex(master.data(), 32) + "\n";
-    bool wrote = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fsync(fd) == 0;
-    close(fd);
-    if (!wrote) { unlink(kfile.c_str()); fprintf(stderr, "tierctl: cannot write the key file\n"); return 1; }
+    if (!use_store) {
+        std::error_code ec;
+        fs::create_directories(fs::path(kfile).parent_path().empty() ? fs::path(".") : fs::path(kfile).parent_path(), ec);
+        int fd = ::open(kfile.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd < 0) {
+            fprintf(stderr, "tierctl: cannot create %s: %s\n", kfile.c_str(), strerror(errno));
+            return 1;
+        }
+        std::string hex = tierfs::crypto::to_hex(master.data(), 32) + "\n";
+        bool wrote = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fsync(fd) == 0;
+        close(fd);
+        if (!wrote) {
+            unlink(kfile.c_str());
+            fprintf(stderr, "tierctl: cannot write the key file\n");
+            return 1;
+        }
+    }
     std::string err;
     auto L = tierfs::Ledger::open(ldir, &err);
-    if (!L) { fprintf(stderr, "tierctl: cannot create the ledger: %s (the key file %s was written; delete it before retrying)\n", err.c_str(), kfile.c_str()); return 1; }
+    if (!L) {
+        fprintf(stderr, "tierctl: cannot create the ledger: %s%s\n", err.c_str(),
+                use_store ? "" : (" (the key file " + kfile + " was written; delete it before retrying)").c_str());
+        return 1;
+    }
+    std::string volume = L->volume_id();
+    if (use_store && !store->store(volume, master)) {
+        L.reset();  // the ledger was just created and holds nothing: remove it so a retry starts clean
+        for (const char* f : {"ledger.db", "ledger.db-wal", "ledger.db-shm", "ledger.lock", "ledger.reserve"}) unlink((ldir + "/" + f).c_str());
+        fprintf(stderr, "tierctl: could not store the key in %s (macOS may have refused access); nothing was saved. Start again.\n", source.c_str());
+        return 1;
+    }
     L->set_meta("recovery_acked", "1");
     L->ensure_reserve(64u << 20);
-    printf("\nCreated volume %s\n  ledger:   %s\n  key file: %s (mode 0600; development form, the Keychain comes later)\n", L->volume_id().c_str(), ldir.c_str(), kfile.c_str());
+    printf("\nCreated volume %s\n  ledger:   %s\n", volume.c_str(), ldir.c_str());
+    if (use_store)
+        printf("  key:      stored in %s (account %s); give the daemon  keyfile=%s\n", source.c_str(), volume.c_str(), source.c_str());
+    else
+        printf("  key file: %s (mode 0600; development form: prefer --store keychain)\n", kfile.c_str());
     printf("Offloading stays refused until you also record a backup: tierctl ack-backup %s I-HAVE-A-BACKUP\n", ldir.c_str());
     return 0;
 }
 
 static int cmd_check_phrase(int argc, char** argv) {
-    if (argc < 3) { fprintf(stderr, "usage: tierctl check-phrase <key-file>   (the phrase is read from stdin, hidden on a terminal)\n"); return 2; }
-    std::ifstream kf(argv[2]);
-    std::string hex;
-    if (!kf || !std::getline(kf, hex)) { fprintf(stderr, "tierctl: cannot read %s\n", argv[2]); return 1; }
-    auto raw = tierfs::crypto::from_hex(hex);
-    if (!raw || raw->size() != 32) { fprintf(stderr, "tierctl: %s is not a key file\n", argv[2]); return 1; }
+    const char* usage =
+        "usage: tierctl check-phrase <key-file>\n       tierctl check-phrase --store keychain|dir:PATH <ledger-dir>\n(the phrase is read from stdin, "
+        "hidden on a terminal)\n";
+    if (argc < 3) {
+        fputs(usage, stderr);
+        return 2;
+    }
+    std::string where, source, volume;
+    std::optional<tierfs::crypto::SecretKey> stored;
+    if (std::string(argv[2]) == "--store") {
+        if (argc < 5) {
+            fputs(usage, stderr);
+            return 2;
+        }
+        source = argv[3];
+        std::string err;
+        auto L = tierfs::Ledger::open(argv[4], &err);
+        if (!L) {
+            fprintf(stderr, "tierctl: cannot open the ledger: %s\n", err.c_str());
+            return 1;
+        }
+        volume = L->volume_id();
+        stored = tierfs::load_master_key(source, volume, &err);
+        if (!stored) {
+            fprintf(stderr, "tierctl: %s\n", err.c_str());
+            return 1;
+        }
+        where = source + " (volume " + volume + ")";
+    } else {
+        std::string err;
+        stored = tierfs::load_master_key(argv[2], "", &err);
+        if (!stored) {
+            fprintf(stderr, "tierctl: %s\n", err.c_str());
+            return 1;
+        }
+        where = argv[2];
+    }
     std::string phrase;
     if (!read_phrase("", phrase)) return 1;
     std::string err;
     auto key = tierfs::crypto::decode_recovery(phrase, &err);
     for (auto& ch : phrase) ch = 0;
     if (!key) { printf("NOT VALID: %s\n", err.c_str()); return 1; }
-    if (!(*key == tierfs::crypto::SecretKey(raw->data()))) { printf("This is a valid phrase, but for a DIFFERENT key than %s.\n", argv[2]); return 1; }
-    printf("MATCHES: this phrase restores the key in %s\n", argv[2]);
+    if (!(*key == *stored)) {
+        printf("This is a valid phrase, but for a DIFFERENT key than %s.\n", where.c_str());
+        return 1;
+    }
+    printf("MATCHES: this phrase restores the key in %s\n", where.c_str());
     return 0;
 }
 

@@ -527,6 +527,43 @@ int main() {
         CHECK(has(d->control("offload /b.bin"), "offloaded /Users/me/proj/b.bin") && !exists(e.path("b.bin")));
     }
 
+    {
+        printf("== the daemon takes its key from a key store, by volume id\n");
+        Env e;
+        spit(e.path("a.bin"), pattern(MiB + 5, 1));
+        std::string volume;
+        {  // the volume exists first (as after `tierctl init`); the key is stored under its id
+            std::string err;
+            auto L = Ledger::open(e.ledger, &err);
+            CHECK(L);
+            volume = L->volume_id();
+        }
+        std::string ks_dir = e.root + "/keystore";
+        DaemonConfig c = e.config();
+        c.key_file = "dir:" + ks_dir;
+        std::string err;
+        auto none = Daemon::create(c, &err);
+        CHECK(!none && has(err, "no key for volume") && has(err, volume.c_str()));
+        auto ks = crypto::make_file_keystore(ks_dir);
+        crypto::SecretKey key = crypto::SecretKey::random();
+        CHECK(ks->store(volume, key));
+        {
+            auto d = Daemon::create(c, &err);
+            CHECK(d && d->start(nullptr) && has(d->control("status"), "files LOCAL 1"));
+        }
+        // the same key through the legacy key-file form gives the same volume the same keys: data written under one is readable under the other
+        std::ofstream(e.root + "/same-key") << crypto::to_hex(key.data(), 32) << "\n";
+        c.key_file = e.root + "/same-key";
+        auto d2 = Daemon::create(c, &err);
+        CHECK(d2 && d2->start(nullptr));
+        d2.reset();  // (the ledger belongs to one daemon at a time)
+        // nonsense sources are errors, not guesses
+        c.key_file = "dir:";
+        CHECK(!Daemon::create(c, &err) && has(err, "needs a path"));
+        c.key_file = e.root + "/does-not-exist";
+        CHECK(!Daemon::create(c, &err) && has(err, "cannot read the key file"));
+    }
+
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
     return failures ? 1 : 0;
 }

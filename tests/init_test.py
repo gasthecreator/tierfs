@@ -26,6 +26,24 @@ def run_init(ledger, key, answer):
     err = p.stderr.read()
     p.wait()
     return p.returncode, out, err, phrase
+def run_init_args(args, answer):
+    p = subprocess.Popen([TC, 'init', *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out = ''
+    phrase = None
+    while True:
+        ch = p.stdout.read(1)
+        if not ch: break
+        out += ch
+        if phrase is None:
+            m = re.search(r'\n\n    ([^\n]+)\n\n', out)
+            if m: phrase = m.group(1).strip().split('-')
+        m = re.search(r'Type group (\d+) of the phrase: $', out)
+        if m and phrase is not None:
+            p.stdin.write(answer(int(m.group(1)), phrase) + '\n'); p.stdin.flush()
+            out += '\n'
+    err = p.stderr.read()
+    p.wait()
+    return p.returncode, out, err, phrase
 def good(g, ph): return ph[g - 1]
 def wrong(g, ph): return ph[g - 1][:-1] + ('A' if ph[g - 1][-1] != 'A' else 'B')
 
@@ -83,6 +101,55 @@ try:
     check('a second volume has its own phrase and key', rc == 0 and phrase2 != phrase and open(K2).read() != open(K).read())
     r = subprocess.run([TC, 'check-phrase', K], input='-'.join(phrase2) + '\n', capture_output=True, text=True)
     check("another volume's phrase is recognised as valid but different", r.returncode == 1 and 'DIFFERENT' in r.stdout)
+    # ---- key stores: the key lives in a store keyed by the volume id, not in a file the user names
+    KS = d + '/keystore'
+    L3 = d + '/l-store'
+    rc, out, err, phrase3 = run_init_args([L3, '--store', 'dir:' + KS], good)
+    vol = re.search(r'Created volume (\S+)', out).group(1) if rc == 0 else ''
+    check('init --store creates the volume and stores the key under the volume id', rc == 0 and vol and os.path.isfile(KS + '/' + vol + '.key') and stat.S_IMODE(os.stat(KS + '/' + vol + '.key').st_mode) == 0o600)
+    check('init --store tells the daemon how to find the key', ('keyfile=dir:' + KS) in out and 'account ' + vol in out)
+    check('init --store leaves no key file lying around', not os.path.exists(d + '/l-store/key') and 'key file' not in out)
+    r = subprocess.run([TC, 'check-phrase', '--store', 'dir:' + KS, L3], input='-'.join(phrase3) + '\n', capture_output=True, text=True)
+    check('check-phrase --store matches the stored key', r.returncode == 0 and 'MATCHES' in r.stdout and vol in r.stdout)
+    r = subprocess.run([TC, 'check-phrase', '--store', 'dir:' + KS, L3], input='-'.join(phrase) + '\n', capture_output=True, text=True)
+    check("check-phrase --store: another volume's phrase is valid but different", r.returncode == 1 and 'DIFFERENT' in r.stdout)
+    r = subprocess.run([TC, 'check-phrase', '--store', 'dir:' + d + '/empty-store', L3], input='-'.join(phrase3) + '\n', capture_output=True, text=True)
+    check('check-phrase --store: a store without the key says so', r.returncode == 1 and 'no key for volume' in r.stderr)
+    r = subprocess.run([TC, 'check-phrase', '--store', 'nonsense', L3], input='x\n', capture_output=True, text=True)
+    check('check-phrase --store: an unknown store is an error, not a guess', r.returncode == 1)
+    rc, out, err, _ = run_init_args([d + '/l-bad', '--store', 'bogus'], good)
+    check('init --store rejects an unknown store before showing a phrase', rc == 2 and 'phrase' not in out.lower() and not os.path.exists(d + '/l-bad'))
+    rc, out, err, _ = run_init_args([d + '/l-bad', '--store', 'dir:'], good)
+    check('init --store dir: needs a path', rc == 2 and 'needs a path' in err)
+    # a store that cannot be written: nothing is left behind, and a retry works
+    open(d + '/blocker', 'w').write('a file where a directory should be')
+    os.makedirs(d + '/l-fail', exist_ok=True)
+    open(d + '/l-fail/keep-me.txt', 'w').write('unrelated')
+    rc, out, err, _ = run_init_args([d + '/l-fail', '--store', 'dir:' + d + '/blocker/sub'], good)
+    check('init --store: a store that cannot be written saves nothing and removes the ledger it just made',
+          rc == 1 and 'could not store the key' in err and not os.path.exists(d + '/l-fail/ledger.db') and not os.path.exists(d + '/l-fail/ledger.reserve')
+          and open(d + '/l-fail/keep-me.txt').read() == 'unrelated')
+    rc, out, err, _ = run_init_args([d + '/l-fail', '--store', 'dir:' + d + '/okstore'], good)
+    check('init --store: the retry works in the same directory', rc == 0 and 'Created volume' in out)
+    rc, out, err, _ = run_init_args([d + '/l-fail', '--store', 'dir:' + d + '/okstore'], good)
+    check('init --store refuses an existing ledger', rc == 1 and 'already holds a ledger' in err)
+    # the real Keychain (opt-in: creates then deletes one item)
+    if os.environ.get('TIERFS_TEST_KEYCHAIN'):
+        L4 = d + '/l-keychain'
+        rc, out, err, phrase4 = run_init_args([L4, '--store', 'keychain'], good)
+        vol4 = re.search(r'Created volume (\S+)', out).group(1) if rc == 0 else ''
+        try:
+            check('KEYCHAIN: init --store keychain stores the key', rc == 0 and vol4 and 'keyfile=keychain' in out)
+            r = subprocess.run([TC, 'check-phrase', '--store', 'keychain', L4], input='-'.join(phrase4) + '\n', capture_output=True, text=True)
+            check('KEYCHAIN: check-phrase matches the Keychain item', r.returncode == 0 and 'MATCHES' in r.stdout)
+            r = subprocess.run(['security', 'find-generic-password', '-s', 'tierfs-master-key', '-a', vol4], capture_output=True, text=True)
+            check('KEYCHAIN: the item exists, this device only', r.returncode == 0 and 'tierfs-master-key' in r.stdout)
+        finally:
+            if vol4: subprocess.run(['security', 'delete-generic-password', '-s', 'tierfs-master-key', '-a', vol4], capture_output=True)
+        r = subprocess.run(['security', 'find-generic-password', '-s', 'tierfs-master-key', '-a', vol4], capture_output=True, text=True)
+        check('KEYCHAIN: the test item is gone again', r.returncode != 0)
+    else:
+        print('(Keychain checks skipped; set TIERFS_TEST_KEYCHAIN=1 to run them against the login Keychain)')
     # check-backup: read-only, driven by fake tmutil programs for each situation
     def fake(body):
         path = d + '/tmutil-' + str(abs(hash(body)))

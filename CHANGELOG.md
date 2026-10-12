@@ -6,6 +6,7 @@ once 1.0 is reached. Until then, anything may change.
 ## [Unreleased]
 
 ### Added
+- The master key can live in the login Keychain: `tierctl init <ledger> --store keychain`, `tierctl check-phrase --store keychain <ledger>`, daemon option `keyfile=keychain` (key sources: `keychain`, `dir:PATH`, or a key file). The real-Keychain tests are opt-in (`TIERFS_TEST_KEYCHAIN=1`).
 - Dated backup statements: a file may leave the Mac only if it was created or changed before the recorded backup, and the statement expires after 30 days; `tierctl check-backup` (read-only Time Machine report); the policy skips files the backup does not cover.
 - Case- and Unicode-insensitive name handling (unique folded key, schema version 2 with migration), matching APFS.
 - Repository standards: LICENSE (MIT), SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, CODEOWNERS, issue and PR templates, ADRs, threat model,

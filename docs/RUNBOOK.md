@@ -18,12 +18,15 @@ macOS VM without incident:
 
 ## First-time setup
 ```bash
-./build/tierctl init ~/tierfs-state/ledger ~/tierfs-state/keys/master.key   # shows the phrase once; you retype 3 groups
-./build/tierctl check-phrase ~/tierfs-state/keys/master.key                  # later: does my paper copy still match?
+./build/tierctl init ~/tierfs-state/ledger --store keychain                   # shows the phrase once; you retype 3 groups; the key goes into the login Keychain
+./build/tierctl check-phrase --store keychain ~/tierfs-state/ledger          # later: does my paper copy still match?
 ./build/tierctl check-backup ~/Folder                                        # read-only: what macOS says about Time Machine
 ./build/tierctl ack-backup ~/tierfs-state/ledger I-HAVE-A-BACKUP             # only after a real backup finished; records the TIME
 ```
-The key file is the development form (mode 0600). Keep the state directory on the internal disk and in your backups.
+The key is stored in your login Keychain, "this device only" (never synced to iCloud), under the service `tierfs-master-key` with the volume id as the account. The Keychain dies with the Mac, which is what the recovery phrase is for.
+Tell the daemon with `keyfile=keychain`. macOS may ask once whether to allow access to the item.
+Development alternatives: `--store dir:PATH` (one 0600 file per volume) or a plain key file (`tierctl init <ledger> <key-file>`, `keyfile=<key-file>`): neither is a secure store.
+Keep the ledger directory on the internal disk and in your backups.
 
 ## Backups
 tierfs never trusts itself with the only copy of a file, so before any file leaves the Mac you must state, with `ack-backup`, that a backup exists.
@@ -43,7 +46,7 @@ you do not control.
 
 ## Running the daemon (only after the mount-safety note is resolved)
 ```bash
-./build/tierfsd -o origin=<real folder>,prefix=/Users/you/Folder/,ledger=<ledger dir>,keyfile=<key file>,devices=host:port+host:port,namedattr,noappledouble <mountpoint>
+./build/tierfsd -o origin=<real folder>,prefix=/Users/you/Folder/,ledger=<ledger dir>,keyfile=keychain,devices=host:port+host:port,namedattr,noappledouble <mountpoint>
 ```
 - The mountpoint must not be the origin. To present files at their original path, move the real folder aside (same volume) and mount over the old path.
 - Control it with `./build/tierctl control <ledger dir> status|scan|replicate PATH|offload PATH|hydrate PATH|undelete PATH|tick`.

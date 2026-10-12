@@ -20,9 +20,9 @@ build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp cor
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/keysource.o build/keychain_mac.o
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) $(SQLITE_LIB)
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) $(SQLITE_LIB) -framework Security
 
 build/ledger.o: core/ledger.cpp core/ledger.hpp core/sqlutil.hpp core/hash.hpp core/crashpoint.hpp
 	@mkdir -p build
@@ -40,6 +40,10 @@ OPENSSL_INC := -I$(OPENSSL_DIR)/include
 OPENSSL_LIB := $(OPENSSL_DIR)/lib/libcrypto.a
 
 build/crypto.o: core/crypto.cpp core/crypto.hpp core/wire.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/keysource.o: core/keysource.cpp core/keysource.hpp core/crypto.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
@@ -129,19 +133,25 @@ build/tierfsd.o: mount/tierfsd.c core/tfs_c.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
 
-DAEMON_OBJS := build/tfs_c.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+DAEMON_OBJS := build/keysource.o build/keychain_mac.o build/tfs_c.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
 build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
-	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation
+	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security
 
 build/daemon.o: core/daemon.cpp core/daemon.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
 
-build/daemon_test: tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -o $@
+build/daemon_test: tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
 
 test-daemon: build/daemon_test build/tierfs-device build/drop_helper
 	./build/daemon_test
+
+build/keysource_test: tests/keysource_test.cpp build/keysource.o build/keychain_mac.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) -framework Security -framework CoreFoundation
+
+test-keysource: build/keysource_test
+	./build/keysource_test
 
 build/scanner.o: core/scanner.cpp core/scanner.hpp core/overlay.hpp core/ledger.hpp
 	@mkdir -p build
@@ -250,7 +260,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource
 test: $(NO_MOUNT_TESTS)
 
 .PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan
