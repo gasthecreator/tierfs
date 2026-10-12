@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -256,6 +257,9 @@ public:
     bool snapshot_to(const std::string& path);
 
 private:
+    // Every public method takes this (recursively: they call each other), so the ledger can be shared by the filesystem threads,
+    // the policy thread and the engines. It is held only inside one call, never across network or disk-heavy work of the callers.
+    mutable std::recursive_mutex mu_;
     Ledger() = default;
     bool init_schema(std::string* err);
     void append_event(const std::string& kind, const std::string& file_id, int64_t version,

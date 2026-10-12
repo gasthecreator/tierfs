@@ -102,6 +102,7 @@ const char* to_string(QuarantineState s) {
 int64_t Ledger::now() const { return clock_ ? clock_() : static_cast<int64_t>(time(nullptr)); }
 
 std::string Ledger::new_id() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     unsigned char b[16];
     arc4random_buf(b, sizeof b);
     static const char* hex = "0123456789abcdef";
@@ -111,6 +112,7 @@ std::string Ledger::new_id() {
 }
 
 bool Ledger::exec(const char* sql) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     char* e = nullptr;
     if (sqlite3_exec(db_, sql, nullptr, nullptr, &e) == SQLITE_OK) return true;
     fprintf(stderr, "tierfs ledger: %s\n", e ? e : "error");
@@ -190,6 +192,7 @@ Ledger::~Ledger() {
 }
 
 bool Ledger::init_schema(std::string* err) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) { *err = "cannot begin"; return false; }
     const char* ddl[] = {
@@ -275,6 +278,7 @@ bool Ledger::init_schema(std::string* err) {
 // describes commit or vanish together.
 void Ledger::append_event(const std::string& kind, const std::string& file_id, int64_t version,
                           const std::string& device_id, const std::string& detail) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     int64_t seq = 1;
     std::string prev = GENESIS;
     {
@@ -290,6 +294,7 @@ void Ledger::append_event(const std::string& kind, const std::string& file_id, i
 // ---------------------------------------------------------------- meta / reserve / devices
 
 std::optional<std::string> Ledger::get_meta(const std::string& key) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT value FROM meta WHERE key=?1");
     s.text(1, key);
     if (!s.row()) return std::nullopt;
@@ -297,6 +302,7 @@ std::optional<std::string> Ledger::get_meta(const std::string& key) {
 }
 
 bool Ledger::set_meta(const std::string& key, const std::string& value) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return false;
     Stmt s(db_, "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
@@ -308,6 +314,7 @@ bool Ledger::set_meta(const std::string& key, const std::string& value) {
 std::string Ledger::volume_id() { return get_meta("volume_id").value_or(""); }
 
 bool Ledger::ensure_reserve(uint64_t bytes) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::string p = dir_ + "/ledger.reserve";
     struct stat st;
     if (stat(p.c_str(), &st) == 0 && static_cast<uint64_t>(st.st_size) >= bytes) return true;
@@ -328,6 +335,7 @@ bool Ledger::ensure_reserve(uint64_t bytes) {
 }
 
 bool Ledger::has_reserve() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     struct stat st;
     return stat((dir_ + "/ledger.reserve").c_str(), &st) == 0 && st.st_size > 0;
 }
@@ -335,6 +343,7 @@ bool Ledger::has_reserve() {
 bool Ledger::release_reserve() { return unlink((dir_ + "/ledger.reserve").c_str()) == 0; }
 
 bool Ledger::register_device(const std::string& device_id, const std::string& name, const std::string& cls) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     if (cls != "A" && cls != "B" && cls != "C") return false;
     Txn t(db_);
     if (!t.began()) return false;
@@ -345,6 +354,7 @@ bool Ledger::register_device(const std::string& device_id, const std::string& na
 }
 
 bool Ledger::retire_device(const std::string& device_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return false;
     Stmt s(db_, "UPDATE devices SET state='retired' WHERE device_id=?1 AND state='active'");
@@ -357,6 +367,7 @@ bool Ledger::retire_device(const std::string& device_id) {
 // ---------------------------------------------------------------- files
 
 std::string Ledger::track_file(const std::string& path, uint64_t size, int64_t mtime, uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     if (auto f = get_file_by_path(path)) return f->file_id;
     Txn t(db_);
     if (!t.began()) return "";
@@ -370,6 +381,7 @@ std::string Ledger::track_file(const std::string& path, uint64_t size, int64_t m
 std::optional<FileRec> Ledger::get_file(const std::string& file_id) { return load_file(db_, file_id); }
 
 std::optional<FileRec> Ledger::get_file_by_path(const std::string& path) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, (std::string("SELECT ") + FILE_COLS + " FROM files WHERE path=?1").c_str());
     s.text(1, path);
     if (!s.row()) return std::nullopt;
@@ -377,6 +389,7 @@ std::optional<FileRec> Ledger::get_file_by_path(const std::string& path) {
 }
 
 std::vector<FileRec> Ledger::list_files(std::optional<FileState> state) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<FileRec> out;
     std::string q = std::string("SELECT ") + FILE_COLS + " FROM files";
     if (state) q += std::string(" WHERE state='") + to_string(*state) + "'";
@@ -387,6 +400,7 @@ std::vector<FileRec> Ledger::list_files(std::optional<FileState> state) {
 }
 
 std::vector<FileRec> Ledger::list_files_under(const std::string& prefix) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<FileRec> out;
     // Byte range [prefix, prefix + 0xFF): 0xFF never occurs in UTF-8, so this is exactly "starts with prefix"
     // without LIKE's wildcard characters (paths may contain % and _).
@@ -397,6 +411,7 @@ std::vector<FileRec> Ledger::list_files_under(const std::string& prefix) {
 }
 
 Res Ledger::note_local_modified(const std::string& file_id, uint64_t new_size, int64_t new_mtime) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -413,6 +428,7 @@ Res Ledger::note_local_modified(const std::string& file_id, uint64_t new_size, i
 }
 
 void Ledger::touch_access(const std::string& file_id, int64_t tm) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt u(db_, "UPDATE files SET last_access=?2 WHERE file_id=?1 AND last_access<?3");
     u.text(1, file_id).num(2, tm).num(3, tm - 60).run();
 }
@@ -421,6 +437,7 @@ void Ledger::touch_access(const std::string& file_id, int64_t tm) {
 
 Res Ledger::begin_replication(const std::string& file_id, const std::vector<ChunkRec>& chunks,
                               uint64_t size, int64_t mtime) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     uint64_t total = 0;
     for (size_t i = 0; i < chunks.size(); i++) {
         if (chunks[i].idx != i || chunks[i].len == 0 || chunks[i].chunk_id.empty() || chunks[i].blob_sha256.empty())
@@ -457,6 +474,7 @@ Res Ledger::begin_replication(const std::string& file_id, const std::vector<Chun
 
 Res Ledger::set_replica(const std::string& file_id, int64_t version, const std::string& device_id,
                         ReplicaState state, int64_t device_seq) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     if (state == ReplicaState::COMMITTED && device_seq <= 0)
         return fail("a COMMITTED replica needs the device's commit sequence number");
     Txn t(db_);
@@ -495,6 +513,7 @@ Res Ledger::set_replica(const std::string& file_id, int64_t version, const std::
 }
 
 Res Ledger::adopt_replica(const std::string& file_id, int64_t version, const std::string& device_id, int64_t device_seq) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     if (device_seq <= 0) return fail("adoption needs the device's commit sequence number");
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
@@ -515,6 +534,7 @@ Res Ledger::adopt_replica(const std::string& file_id, int64_t version, const std
 }
 
 Res Ledger::finish_replication(const std::string& file_id, int64_t version) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -537,6 +557,7 @@ Res Ledger::finish_replication(const std::string& file_id, int64_t version) {
 
 Res Ledger::record_audit(const std::string& file_id, int64_t version, const std::string& device_id,
                          bool good, const std::string& detail) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     Stmt r(db_, "SELECT state FROM replicas WHERE file_id=?1 AND version=?2 AND device_id=?3");
@@ -559,6 +580,7 @@ Res Ledger::record_audit(const std::string& file_id, int64_t version, const std:
 }
 
 std::vector<ReplicaRec> Ledger::get_replicas(const std::string& file_id, int64_t version) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<ReplicaRec> out;
     Stmt s(db_, "SELECT device_id,state,committed_at,last_audit_at,device_seq FROM replicas WHERE file_id=?1 AND version=?2 ORDER BY device_id");
     s.text(1, file_id).num(2, version);
@@ -575,12 +597,14 @@ std::vector<ReplicaRec> Ledger::get_replicas(const std::string& file_id, int64_t
 }
 
 bool Ledger::has_version(const std::string& file_id, int64_t version) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT 1 FROM versions WHERE file_id=?1 AND version=?2");
     s.text(1, file_id).num(2, version);
     return s.row();
 }
 
 std::vector<ChunkRec> Ledger::get_chunks(const std::string& file_id, int64_t version) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<ChunkRec> out;
     Stmt s(db_, "SELECT idx,chunk_id,len,blob_sha256 FROM version_chunks WHERE file_id=?1 AND version=?2 ORDER BY idx");
     s.text(1, file_id).num(2, version);
@@ -596,6 +620,7 @@ std::vector<ChunkRec> Ledger::get_chunks(const std::string& file_id, int64_t ver
 }
 
 double Ledger::replica_weight(const std::string& file_id, int64_t version, int64_t max_audit_age) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT COALESCE(SUM(CASE d.class WHEN 'C' THEN 0.5 ELSE 1.0 END),0) FROM replicas r JOIN devices d ON d.device_id=r.device_id"
                 " WHERE r.file_id=?1 AND r.version=?2 AND r.state='COMMITTED' AND d.state='active' AND r.last_audit_at>0 AND r.last_audit_at>=?3");
     s.text(1, file_id).num(2, version).num(3, now() - max_audit_age);
@@ -605,6 +630,7 @@ double Ledger::replica_weight(const std::string& file_id, int64_t version, int64
 // ---------------------------------------------------------------- orphaned files, devices, challenges
 
 void Ledger::demote_if_orphaned(const std::string& file_id, int64_t version, const std::string& device_id, const std::string& why) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     auto f = load_file(db_, file_id);
     if (!f || f->current_version != version) return;
     if (f->state != FileState::OFFLOADED && f->state != FileState::REPLICATED) return;
@@ -619,6 +645,7 @@ void Ledger::demote_if_orphaned(const std::string& file_id, int64_t version, con
 }
 
 void Ledger::reevaluate_for_device(const std::string& device_id, const std::string& why) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<std::pair<std::string, int64_t>> affected;
     {
         Stmt q(db_, "SELECT DISTINCT f.file_id, f.current_version FROM replicas r JOIN files f ON f.file_id=r.file_id AND f.current_version=r.version WHERE r.device_id=?1");
@@ -642,6 +669,7 @@ DeviceRec device_from(Stmt& s) {
 }  // namespace
 
 std::optional<DeviceRec> Ledger::get_device(const std::string& device_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT device_id,name,class,state,epoch,last_seq FROM devices WHERE device_id=?1");
     s.text(1, device_id);
     if (!s.row()) return std::nullopt;
@@ -649,6 +677,7 @@ std::optional<DeviceRec> Ledger::get_device(const std::string& device_id) {
 }
 
 std::vector<DeviceRec> Ledger::list_devices() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<DeviceRec> out;
     Stmt s(db_, "SELECT device_id,name,class,state,epoch,last_seq FROM devices ORDER BY device_id");
     while (s.row()) out.push_back(device_from(s));
@@ -656,6 +685,7 @@ std::vector<DeviceRec> Ledger::list_devices() {
 }
 
 DeviceObservation Ledger::observe_device(const std::string& device_id, uint64_t epoch, uint64_t seq) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return DeviceObservation::Unknown;
     auto d = get_device(device_id);
@@ -687,6 +717,7 @@ DeviceObservation Ledger::observe_device(const std::string& device_id, uint64_t 
 }
 
 Res Ledger::clear_device_suspect(const std::string& device_id, uint64_t seq) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     Stmt u(db_, "UPDATE devices SET state='active', last_seq=?2 WHERE device_id=?1 AND state='suspect'");
@@ -696,6 +727,7 @@ Res Ledger::clear_device_suspect(const std::string& device_id, uint64_t seq) {
 }
 
 std::vector<DeviceReplica> Ledger::replicas_on_device(const std::string& device_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<DeviceReplica> out;
     Stmt s(db_, "SELECT file_id, version, state FROM replicas WHERE device_id=?1 ORDER BY file_id, version");
     s.text(1, device_id);
@@ -704,6 +736,7 @@ std::vector<DeviceReplica> Ledger::replicas_on_device(const std::string& device_
 }
 
 Res Ledger::set_manifest_hash(const std::string& file_id, int64_t version, const std::string& sha) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     if (sha.size() != 64) return fail("a manifest hash is 64 hex characters");
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
@@ -718,6 +751,7 @@ Res Ledger::set_manifest_hash(const std::string& file_id, int64_t version, const
 }
 
 std::optional<std::string> Ledger::get_manifest_hash(const std::string& file_id, int64_t version) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt q(db_, "SELECT manifest_sha256 FROM versions WHERE file_id=?1 AND version=?2");
     q.text(1, file_id).num(2, version);
     if (!q.row() || q.col_null(0)) return std::nullopt;
@@ -725,6 +759,7 @@ std::optional<std::string> Ledger::get_manifest_hash(const std::string& file_id,
 }
 
 Res Ledger::add_challenges(const std::string& file_id, int64_t version, int64_t idx, const std::vector<Challenge>& cs) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     for (const auto& c : cs) {
@@ -736,6 +771,7 @@ Res Ledger::add_challenges(const std::string& file_id, int64_t version, int64_t 
 }
 
 std::optional<Challenge> Ledger::take_challenge(const std::string& file_id, int64_t version, int64_t idx) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return std::nullopt;
     Challenge c;
@@ -752,18 +788,21 @@ std::optional<Challenge> Ledger::take_challenge(const std::string& file_id, int6
 }
 
 size_t Ledger::challenges_left(const std::string& file_id, int64_t version, int64_t idx) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt q(db_, "SELECT COUNT(*) FROM chunk_challenges WHERE file_id=?1 AND version=?2 AND idx=?3 AND used=0");
     q.text(1, file_id).num(2, version).num(3, idx);
     return q.row() ? static_cast<size_t>(q.col_num(0)) : 0;
 }
 
 uint32_t Ledger::next_challenge_n(const std::string& file_id, int64_t version, int64_t idx) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt q(db_, "SELECT COALESCE(MAX(n)+1, 0) FROM chunk_challenges WHERE file_id=?1 AND version=?2 AND idx=?3");
     q.text(1, file_id).num(2, version).num(3, idx);
     return q.row() ? static_cast<uint32_t>(q.col_num(0)) : 0;
 }
 
 double Ledger::committed_weight(const std::string& file_id, int64_t version) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT COALESCE(SUM(CASE d.class WHEN 'C' THEN 0.5 ELSE 1.0 END),0) FROM replicas r JOIN devices d ON d.device_id=r.device_id"
                 " WHERE r.file_id=?1 AND r.version=?2 AND r.state='COMMITTED' AND d.state='active'");
     s.text(1, file_id).num(2, version);
@@ -773,6 +812,7 @@ double Ledger::committed_weight(const std::string& file_id, int64_t version) {
 // ---------------------------------------------------------------- consent
 
 std::string Ledger::create_consent(const std::string& scope_prefix, int64_t ttl_seconds, const std::string& ack_text) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     if (scope_prefix.empty() || ttl_seconds <= 0) return "";
     Txn t(db_);
     if (!t.began()) return "";
@@ -784,6 +824,7 @@ std::string Ledger::create_consent(const std::string& scope_prefix, int64_t ttl_
 }
 
 std::optional<std::string> Ledger::consent_ack(const std::string& consent_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT ack_text FROM consents WHERE consent_id=?1");
     s.text(1, consent_id);
     if (!s.row()) return std::nullopt;
@@ -794,6 +835,7 @@ std::optional<std::string> Ledger::consent_ack(const std::string& consent_id) {
 
 Res Ledger::begin_drop(const std::string& file_id, int64_t version, int64_t generation,
                        const std::string& consent_id, double min_weight, int64_t max_audit_age) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     // Everything below is one IMMEDIATE transaction: the checks and the state
     // change cannot be separated by another writer, and any early return rolls
     // back with nothing changed (fail closed, rule I3).
@@ -852,6 +894,7 @@ Res Ledger::begin_drop(const std::string& file_id, int64_t version, int64_t gene
 }
 
 Res Ledger::complete_drop(const std::string& intent_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     Stmt q(db_, "SELECT file_id,version,generation,payload FROM intents WHERE intent_id=?1 AND kind='DROP_LOCAL' AND state='open'");
@@ -888,6 +931,7 @@ Res Ledger::complete_drop(const std::string& intent_id) {
 }
 
 Res Ledger::abort_drop(const std::string& intent_id, const std::string& reason) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     Stmt q(db_, "SELECT file_id,version,generation FROM intents WHERE intent_id=?1 AND kind='DROP_LOCAL' AND state='open'");
@@ -904,6 +948,7 @@ Res Ledger::abort_drop(const std::string& intent_id, const std::string& reason) 
 }
 
 std::vector<IntentRec> Ledger::open_intents() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<IntentRec> out;
     Stmt s(db_, "SELECT intent_id,kind,file_id,version,generation,payload FROM intents WHERE state='open' ORDER BY created_at, intent_id");
     while (s.row()) {
@@ -944,6 +989,7 @@ const char* const QCOLS = "intent_id,file_id,version,state,held_at,resolved_at,n
 }  // namespace
 
 std::optional<QuarantineRec> Ledger::get_quarantine(const std::string& intent_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, (std::string("SELECT ") + QCOLS + " FROM quarantine WHERE intent_id=?1").c_str());
     s.text(1, intent_id);
     if (!s.row()) return std::nullopt;
@@ -951,6 +997,7 @@ std::optional<QuarantineRec> Ledger::get_quarantine(const std::string& intent_id
 }
 
 std::vector<QuarantineRec> Ledger::list_quarantine(std::optional<QuarantineState> state) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<QuarantineRec> out;
     std::string q = std::string("SELECT ") + QCOLS + " FROM quarantine";
     if (state) q += std::string(" WHERE state='") + to_string(*state) + "'";
@@ -961,6 +1008,7 @@ std::vector<QuarantineRec> Ledger::list_quarantine(std::optional<QuarantineState
 }
 
 Res Ledger::begin_purge(const std::string& intent_id, int64_t retention_seconds, bool emergency, double min_weight, int64_t max_audit_age) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     if (get_meta("recovery_acked").value_or("") != "1") return fail("recovery phrase not acknowledged");
@@ -999,6 +1047,7 @@ Res Ledger::begin_purge(const std::string& intent_id, int64_t retention_seconds,
 }
 
 Res Ledger::complete_purge(const std::string& intent_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto q = get_quarantine(intent_id);
@@ -1011,6 +1060,7 @@ Res Ledger::complete_purge(const std::string& intent_id) {
 }
 
 Res Ledger::begin_restore(const std::string& intent_id, const std::string& reason) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto q = get_quarantine(intent_id);
@@ -1032,6 +1082,7 @@ Res Ledger::begin_restore(const std::string& intent_id, const std::string& reaso
 }
 
 Res Ledger::complete_restore(const std::string& intent_id, bool bytes_verified) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto q = get_quarantine(intent_id);
@@ -1066,6 +1117,7 @@ bool has_committed(sqlite3* db, const std::string& file_id, int64_t version) {
 }  // namespace
 
 Res Ledger::begin_hydrate(const std::string& file_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -1079,6 +1131,7 @@ Res Ledger::begin_hydrate(const std::string& file_id) {
 }
 
 Res Ledger::complete_hydrate(const std::string& file_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -1090,6 +1143,7 @@ Res Ledger::complete_hydrate(const std::string& file_id) {
 }
 
 Res Ledger::abort_hydrate(const std::string& file_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -1101,6 +1155,7 @@ Res Ledger::abort_hydrate(const std::string& file_id) {
 }
 
 Res Ledger::mark_at_risk(const std::string& file_id, const std::string& reason) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -1114,6 +1169,7 @@ Res Ledger::mark_at_risk(const std::string& file_id, const std::string& reason) 
 }
 
 Res Ledger::clear_at_risk(const std::string& file_id) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Txn t(db_);
     if (!t.began()) return fail("cannot begin transaction");
     auto f = load_file(db_, file_id);
@@ -1133,11 +1189,13 @@ Res Ledger::clear_at_risk(const std::string& file_id) {
 // ---------------------------------------------------------------- integrity
 
 uint64_t Ledger::event_count() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     Stmt s(db_, "SELECT COUNT(*) FROM events");
     return s.row() ? static_cast<uint64_t>(s.col_num(0)) : 0;
 }
 
 bool Ledger::snapshot_to(const std::string& path) {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::error_code ec;
     if (std::filesystem::exists(path, ec)) return false;
     std::string q = "VACUUM INTO '";
@@ -1147,6 +1205,7 @@ bool Ledger::snapshot_to(const std::string& path) {
 }
 
 std::vector<std::string> Ledger::fsck() {
+    std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<std::string> bad;
     auto report = [&](const std::string& m) { bad.push_back(m); };
     {

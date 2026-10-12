@@ -791,3 +791,34 @@ Status of 3h-1 (the read side, implemented): `core/overlay.*` and `tests/overlay
   the overlay and recovery is redundant (kept as defence in depth, tagged as such in the mutant lists).
 Next: 3h-2, the write side (write gate, hydration on write), then 3h-3 namespace operations and the scanner, then 3h-4 the
 FUSE wrapper.
+
+Status of 3h-2 (the write side, implemented): `core/overlay.*` (handles, gate, hydration, recovery), `tests/overlay_write_test.cpp`
+(and `tests/overlay_helper.cpp` for kills in the middle of a hydration).
+- `open` / `create` / `read_fh` / `write_fh` / `ftruncate` / `fsync_fh` / `release` / `truncate` / `hydrate` / `recover`, and
+  `gate()`, the `FileGate` the drop engine uses. Writing registers the writer, THEN records the modification in the ledger (the
+  generation moves before a single byte does), THEN opens; closing records the final size/mtime BEFORE the writer is released, so
+  a drop can never freeze a file that is still being written, and a replication that raced the last write is never current.
+- A frozen file makes new writers wait (bounded, then EBUSY); readers are never held up; an open read handle keeps reading the
+  bytes it opened even after the file is dropped (the descriptor keeps the inode) or, for a remote file, after it is rewritten.
+- Hydration for writing: from the quarantine copy when one is still held (a local, verified rename; no network), else streamed
+  from the devices through the same verified chunk path as reads into a temp file, fsynced, renamed into place exclusively
+  (never over something that appeared there), directory synced, ledger completed. One hydration per file at a time; the drop
+  engine is not waited for (`engine_mutex()` busy: the devices are used instead); a drop in progress is waited for, a stale
+  DROPPING reports EBUSY.
+- Recovery: an interrupted hydration is finished only if the file in place verifies chunk by chunk against the ledger, else
+  undone; a foreign file at the path is never touched (reported); stray temp files are removed.
+- The ledger became thread-safe for this slice (an internal recursive mutex in every public method), because the filesystem
+  threads, the policy thread and the engines all use it; `tests/ledger_test.cpp` has a concurrency test, also run under TSan.
+- Tests: create/write/read-back, replication invalidated at open and at close, the gate against the real drop engine (including
+  a writer arriving during the audits of a drop), hydration from quarantine with every device down, hydration from the devices
+  with damage on one, a directory that was deleted meanwhile, truncation, odd ledger states (a file present but ledger OFFLOADED, an
+  AT_RISK file, a mid-drop file), six threads hydrating one file, kills at both crash points of a hydration, and a stress test
+  (writers rewriting four files in bursts while another thread replicates and drops them: ~23 drops and ~20 hydrations per run) that
+  ends with every file's last write read back from the devices alone. Clean under TSan.
+- Mutation testing of `overlay.cpp`: 212 mutants (read + write sides), 47 expected survivors (equivalent mutants, guards that
+  cover each other, races that cannot be staged, ledger refusals that cannot be forced, OS behaviour). The first pass of the
+  write side found 25 test gaps (two writers on one file, access times, descriptor leaks, errors of truncation, hydration lock,
+  waiting for a drop, the busy engine, stale-entry reset, recovery of files outside the folder and of a directory at the path).
+- Found on the way: `end_write` had a `notify_all` nobody could ever need (writers are refused, not waited for); removed.
+Next: 3h-3 namespace operations (unlink, rename, mkdir, rmdir, chmod, utimens, xattrs, symlinks) and the scanner; then 3h-4.
+

@@ -9,7 +9,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <atomic>
 #include <functional>
+#include <thread>
+#include <vector>
 
 #include "../core/hash.hpp"
 #include "../core/ledger.hpp"
@@ -949,6 +952,36 @@ int main() {
         fx.L->touch_access(id, 5100);
         CHECK(fx.L->get_file(id)->last_access == 5100);
         CHECK(fx.L->list_files(FileState::REPLICATED).size() == 1 && fx.L->list_files(FileState::LOCAL).empty());
+    }
+
+    {
+        printf("== the ledger can be shared by many threads (filesystem, policy and engines use it at once)\n");
+        Fixture fx;
+        const int threads = 8, per = 40;
+        std::atomic<int> errors{0};
+        std::vector<std::thread> ts;
+        for (int t = 0; t < threads; t++)
+            ts.emplace_back([&, t] {
+                for (int i = 0; i < per; i++) {
+                    std::string path = "/testdata/t" + std::to_string(t) + "/f" + std::to_string(i);
+                    std::string id = fx.L->track_file(path, 100 + i, 1000 + i, 0644);
+                    if (id.empty()) { errors++; continue; }
+                    auto f = fx.L->get_file_by_path(path);
+                    if (!f || f->file_id != id || f->size != static_cast<uint64_t>(100 + i)) errors++;
+                    if (!fx.L->note_local_modified(id, 200 + i, 2000 + i).ok) errors++;
+                    fx.L->touch_access(id, 5000 + i);
+                    if (!fx.L->set_meta("k" + std::to_string(t), std::to_string(i))) errors++;
+                    if (fx.L->list_files_under("/testdata/t" + std::to_string(t) + "/").empty()) errors++;
+                    fx.L->get_meta("k" + std::to_string(t));
+                    fx.L->list_devices();
+                }
+            });
+        for (auto& t : ts) t.join();
+        CHECK(errors == 0);
+        CHECK(fx.L->list_files().size() == static_cast<size_t>(threads * per));
+        CHECK(fx.L->list_files_under("/testdata/t3/").size() == static_cast<size_t>(per) && fx.L->list_files_under("/testdata/t3").size() == static_cast<size_t>(per));
+        CHECK(fx.L->fsck().empty());                                       // the hash chain is intact: no event was lost or interleaved
+        for (int t = 0; t < threads; t++) CHECK(fx.L->get_meta("k" + std::to_string(t)).value_or("") == std::to_string(per - 1));
     }
 
     printf("---- %d failure(s)\n", failures);

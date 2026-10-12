@@ -111,6 +111,15 @@ build/overlay_test: tests/overlay_test.cpp build/overlay.o build/dropengine.o bu
 test-overlay: build/overlay_test build/tierfs-device build/drop_helper
 	./build/overlay_test
 
+build/overlay_helper: tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+build/overlay_write_test: tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/overlay_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
+
+test-overlay-write: build/overlay_write_test build/tierfs-device
+	./build/overlay_write_test
+
 test-dropengine: build/dropengine_test build/tierfs-device
 	./build/dropengine_test
 
@@ -149,6 +158,17 @@ test-tsan: build/tierfs-backend
 	@mkdir -p build/tsan
 	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/client_test.cpp core/tierclient.cpp core/metastore.cpp core/chunkcache.cpp -o build/tsan/client_test -lsqlite3
 	./build/tsan/client_test
+
+test-ledger-tsan:
+	@mkdir -p build/tsan
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread tests/ledger_test.cpp core/ledger.cpp -o build/tsan/ledger_test -lsqlite3
+	@mkdir -p build && $(CXX) $(CXXFLAGS) tests/ledger_helper.cpp build/ledger.o -o build/ledger_helper -lsqlite3 2>/dev/null || true
+	./build/tsan/ledger_test | tail -3
+
+test-overlay-tsan: build/tierfs-device build/overlay_helper
+	@mkdir -p build/tsan
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) -lsqlite3 -o build/tsan/overlay_write_test
+	./build/tsan/overlay_write_test > build/tsan/overlay_write.log 2>&1; echo "exit $$?"; grep -c "ThreadSanitizer" build/tsan/overlay_write.log; grep -a "ALL PASSED\|FAILED" build/tsan/overlay_write.log
 
 test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test build/devicestore_test
 	./build/metastore_test | tail -1

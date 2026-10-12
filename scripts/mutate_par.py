@@ -13,10 +13,10 @@ BASE = ['c++', '-std=c++17', '-g', '-w', f'-I{OS}/include', '-Icore', '-Itests']
 COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/deviceclient.cpp', 'deviceclient'),
           ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine')]
 TARGETS = {
-    'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', test='tests/recovery_test.cpp', tmptag='recotest',
-                     extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tool='tools/tierctl.cpp', tool_env='TIERFS_TIERCTL', libs=['-lsqlite3']),
-    'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', test='tests/overlay_test.cpp', tmptag='ovtest',
-                    extra_objs=[], tool=None, tool_env=None, libs=['-lsqlite3']),
+    'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', tests=['tests/recovery_test.cpp'],
+                     extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL')], libs=['-lsqlite3']),
+    'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp'],
+                    extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3']),
 }
 if len(sys.argv) < 2 or sys.argv[1] not in TARGETS: sys.exit(__doc__)
 T = TARGETS[sys.argv[1]]
@@ -33,7 +33,7 @@ def sh(cmd):
     if r.returncode: sys.exit('build failed: ' + ' '.join(cmd) + '\n' + r.stderr[-800:])
 shutil.rmtree(D, ignore_errors=True)
 os.makedirs(D)
-for src, out in COMMON + T['extra_objs'] + [(T['test'], 'test_o')] + ([(T['tool'], 'tool_o')] if T['tool'] else []):
+for src, out in COMMON + T['extra_objs'] + [(t, f'test{i}_o') for i, t in enumerate(T['tests'])] + [(t[0], f'tool{i}_o') for i, t in enumerate(T['tools'])]:
     sh(BASE + ['-c', src, '-o', f'{D}/{out}.o'])
 OBJS = [o for _, o in COMMON + T['extra_objs']]
 results = {}
@@ -63,18 +63,23 @@ def test_mutant(job):
     mutated_obj = os.path.basename(T['mutated'])[:-4]
     objs = [f'{wd}/mut.o' if o.endswith(f'/{mutated_obj}.o') else o for o in objs]
     if not any(o == f'{wd}/mut.o' for o in objs): objs.append(f'{wd}/mut.o')
-    sh(['c++', '-o', f'{wd}/mut_test', f'{D}/test_o.o'] + objs + [CRYPTO] + T['libs'])
-    if T['tool']:
-        sh(['c++', '-o', f'{wd}/mut_tool', f'{D}/tool_o.o'] + objs + [CRYPTO] + T['libs'])
-        env[T['tool_env']] = f'./{wd}/mut_tool'
+    for i, _ in enumerate(T['tests']):
+        sh(['c++', '-o', f'{wd}/mut_test{i}', f'{D}/test{i}_o.o'] + objs + [CRYPTO] + T['libs'])
+    for i, (_, envname) in enumerate(T['tools']):
+        sh(['c++', '-o', f'{wd}/mut_tool{i}', f'{D}/tool{i}_o.o'] + objs + [CRYPTO] + T['libs'])
+        env[envname] = f'./{wd}/mut_tool{i}'
     def execute():
         wipe(tmp); os.makedirs(tmp, exist_ok=True)
         subprocess.run(['pkill', '-f', f'tierfs-device {tmp}/'])
-        try:
-            p = subprocess.run([f'{wd}/mut_test'], capture_output=True, text=True, timeout=600, env=env)
-            out, rc = p.stdout, p.returncode
-        except subprocess.TimeoutExpired:
-            out, rc = 'FAIL timeout', 99
+        out, rc = '', 0
+        for i, _ in enumerate(T['tests']):
+            try:
+                p = subprocess.run([f'{wd}/mut_test{i}'], capture_output=True, text=True, timeout=600, env=env)
+                out, rc = p.stdout, p.returncode
+            except subprocess.TimeoutExpired:
+                out, rc = 'FAIL timeout', 99
+            if rc != 0 or any(l.startswith('FAIL') for l in out.splitlines()): break   # killed by this test: no need for the next
+            wipe(tmp); os.makedirs(tmp, exist_ok=True)
         subprocess.run(['pkill', '-f', f'tierfs-device {tmp}/'])
         wipe(tmp)
         return rc, [l for l in out.splitlines() if l.startswith('FAIL')]
