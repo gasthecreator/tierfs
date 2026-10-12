@@ -55,7 +55,7 @@ bool DeviceClient::ensure_connected(DevRes* why) {
     Frame resp;
     uint32_t id = next_id_++;
     int64_t deadline = now_ms() + timeout_ms_;
-    if (!psk_.empty()) {   // a paired device: authenticate and encrypt first; the v3 messages then run inside the channel
+    if (!psk_.empty()) {  // a paired device: authenticate and encrypt first; the v3 messages then run inside the channel
         std::string cwhy;
         ch_ = chan::connect_secure(fd, psk_, deadline, &cwhy);
         if (!ch_) {

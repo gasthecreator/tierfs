@@ -38,8 +38,8 @@ using namespace tierfs;
 using crypto::Bytes;
 
 static DeviceStore* g_store;
-static std::optional<Bytes> g_psk;   // the pairing secret, if this device is paired
-static int64_t g_handshake_ms = 10000;   // a peer that has not finished the handshake by then is dropped (slow-loris)
+static std::optional<Bytes> g_psk;      // the pairing secret, if this device is paired
+static int64_t g_handshake_ms = 10000;  // a peer that has not finished the handshake by then is dropped (slow-loris)
 
 // One client connection, plain (open device) or sealed (paired device).
 struct Conn {
@@ -207,7 +207,7 @@ static void serve(int fd) {
     timeval tv{g_idle_s, 0};   // an idle or stalled connection must not hold a thread forever
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     Conn c{fd, nullptr};
-    if (g_psk) {   // a paired device speaks only the authenticated channel
+    if (g_psk) {  // a paired device speaks only the authenticated channel
         std::string why;
         int first = -1;
         auto lookup = [](const Bytes& id) -> std::optional<Bytes> {
@@ -216,7 +216,7 @@ static void serve(int fd) {
         };
         c.ch = chan::accept_secure(fd, lookup, now_ms() + g_handshake_ms, &why, &first);
         if (!c.ch) {
-            if (first == MSG_HELLO) {   // a plaintext client: tell it plainly what is needed, then hang up
+            if (first == MSG_HELLO) {  // a plaintext client: tell it plainly what is needed, then hang up
                 Writer w;
                 w.i32(EPERM);
                 w.str("this device is paired: authentication is required (pair this Mac with it first)");
@@ -262,7 +262,7 @@ static void serve(int fd) {
 static std::optional<Bytes> load_pairing(const std::string& store, std::string* err) {
     std::string path = store + "/pairing.key";
     struct stat st;
-    if (lstat(path.c_str(), &st) != 0) return std::nullopt;   // not paired
+    if (lstat(path.c_str(), &st) != 0) return std::nullopt;  // not paired
     if (!S_ISREG(st.st_mode) || (st.st_mode & 077) != 0) {
         *err = path + " must be a regular file readable only by its owner (chmod 600)";
         return std::nullopt;
@@ -271,7 +271,10 @@ static std::optional<Bytes> load_pairing(const std::string& store, std::string* 
     std::string hex;
     std::getline(f, hex);
     auto raw = crypto::from_hex(hex);
-    if (!raw || raw->size() != chan::PSK_LEN) { *err = path + " does not hold 64 hex characters"; return std::nullopt; }
+    if (!raw || raw->size() != chan::PSK_LEN) {
+        *err = path + " does not hold 64 hex characters";
+        return std::nullopt;
+    }
     return raw;
 }
 
@@ -279,22 +282,38 @@ static bool write_pairing(const std::string& store, const Bytes& secret, bool re
     std::string path = store + "/pairing.key", tmp = path + ".new";
     unlink(tmp.c_str());
     int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) { *err = "cannot create " + tmp + ": " + strerror(errno); return false; }
+    if (fd < 0) {
+        *err = "cannot create " + tmp + ": " + strerror(errno);
+        return false;
+    }
     std::string hex = crypto::to_hex(secret.data(), secret.size()) + "\n";
     bool ok = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fcntl(fd, F_FULLFSYNC) != -1;
     close(fd);
-    if (!ok) { unlink(tmp.c_str()); *err = "cannot write " + tmp; return false; }
+    if (!ok) {
+        unlink(tmp.c_str());
+        *err = "cannot write " + tmp;
+        return false;
+    }
     struct stat st;
-    if (!replace && lstat(path.c_str(), &st) == 0) { unlink(tmp.c_str()); *err = path + " already exists"; return false; }
-    if (rename(tmp.c_str(), path.c_str()) != 0) { unlink(tmp.c_str()); *err = "cannot move " + tmp + " into place"; return false; }
+    if (!replace && lstat(path.c_str(), &st) == 0) {
+        unlink(tmp.c_str());
+        *err = path + " already exists";
+        return false;
+    }
+    if (rename(tmp.c_str(), path.c_str()) != 0) {
+        unlink(tmp.c_str());
+        *err = "cannot move " + tmp + " into place";
+        return false;
+    }
     return true;
 }
 
 static void print_pairing(const Bytes& secret) {
     crypto::SecretKey k(secret.data());
-    printf("PAIRING CODE (type it on the Mac with: tierctl pair <host:port> --store keychain):\n\n    %s\n\nkey id: %s\n"
-           "Anyone who has this code can act as the Mac towards this device. Do not photograph it or send it anywhere.\n",
-           crypto::encode_recovery(k).c_str(), chan::key_id_hex(secret).c_str());
+    printf(
+        "PAIRING CODE (type it on the Mac with: tierctl pair <host:port> --store keychain):\n\n    %s\n\nkey id: %s\n"
+        "Anyone who has this code can act as the Mac towards this device. Do not photograph it or send it anywhere.\n",
+        crypto::encode_recovery(k).c_str(), chan::key_id_hex(secret).c_str());
 }
 
 int main(int argc, char** argv) {
@@ -307,24 +326,35 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a.compare(0, 9, "--faults=") == 0) faults_csv = a.substr(9);
         else if (a == "--insecure-allow-network") insecure = true;
-        else if (a == "--show-pairing-code") show_code = true;
-        else if (a == "--new-pairing-code") new_code = true;
+        else if (a == "--show-pairing-code")
+            show_code = true;
+        else if (a == "--new-pairing-code")
+            new_code = true;
         else pos.push_back(a);
     }
     if (pos.empty()) {
         fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network]\n", argv[0]);
         return 2;
     }
-    if (show_code || new_code) {   // pairing management: no server, no store needed beyond the directory
+    if (show_code || new_code) {  // pairing management: no server, no store needed beyond the directory
         std::string perr;
         mkdir(pos[0].c_str(), 0700);
         auto existing = load_pairing(pos[0], &perr);
-        if (!perr.empty()) { fprintf(stderr, "%s\n", perr.c_str()); return 1; }
+        if (!perr.empty()) {
+            fprintf(stderr, "%s\n", perr.c_str());
+            return 1;
+        }
         if (new_code && existing) fprintf(stderr, "replacing the pairing secret: every Mac must pair again\n");
         if (new_code || !existing) {
             Bytes secret = crypto::random_bytes(chan::PSK_LEN);
-            if (secret.size() != chan::PSK_LEN) { fprintf(stderr, "the system random generator failed\n"); return 1; }
-            if (!write_pairing(pos[0], secret, new_code, &perr)) { fprintf(stderr, "%s\n", perr.c_str()); return 1; }
+            if (secret.size() != chan::PSK_LEN) {
+                fprintf(stderr, "the system random generator failed\n");
+                return 1;
+            }
+            if (!write_pairing(pos[0], secret, new_code, &perr)) {
+                fprintf(stderr, "%s\n", perr.c_str());
+                return 1;
+            }
             existing = secret;
         }
         print_pairing(*existing);
@@ -332,13 +362,18 @@ int main(int argc, char** argv) {
     }
     std::string perr;
     g_psk = load_pairing(pos[0], &perr);
-    if (!perr.empty()) { fprintf(stderr, "%s\n", perr.c_str()); return 1; }
+    if (!perr.empty()) {
+        fprintf(stderr, "%s\n", perr.c_str());
+        return 1;
+    }
     if (const char* e = getenv("TIERFS_DEVICE_HANDSHAKE_MS")) g_handshake_ms = std::max(50, atoi(e));
     int port = pos.size() > 1 ? atoi(pos[1].c_str()) : 9100;
     std::string bind_addr = pos.size() > 2 ? pos[2] : "127.0.0.1";
     if (!g_psk && !insecure && bind_addr != "127.0.0.1") {
-        fprintf(stderr, "refusing to listen on %s: this device is not paired, so it has no authentication. "
-                        "Pair it (tierfs-device <store> --show-pairing-code), use 127.0.0.1, or pass --insecure-allow-network on a network you trust.\n", bind_addr.c_str());
+        fprintf(stderr,
+                "refusing to listen on %s: this device is not paired, so it has no authentication. "
+                "Pair it (tierfs-device <store> --show-pairing-code), use 127.0.0.1, or pass --insecure-allow-network on a network you trust.\n",
+                bind_addr.c_str());
         return 2;
     }
     DeviceFaults faults;
@@ -362,7 +397,8 @@ int main(int argc, char** argv) {
     if (bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || listen(ls, 32) != 0) { perror("bind/listen"); return 1; }
     DevInfo i = store->info();
     fprintf(stderr, "tierfs-device %s on %s:%d (epoch %llu, seq %llu, %s%s%s)\n", i.device_id.c_str(), bind_addr.c_str(), port,
-            (unsigned long long)i.epoch, (unsigned long long)i.seq, g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
+            (unsigned long long)i.epoch, (unsigned long long)i.seq,
+            g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
             faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
     for (;;) {
         int c = accept(ls, nullptr, nullptr);

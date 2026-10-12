@@ -3,7 +3,8 @@
 //   tierctl cache-info   <dir>          read-only; safe while mounted
 //   tierctl cache-verify <dir>          re-hash every chunk, drop damaged ones (needs unmounted)
 //   tierctl cache-clear  <dir> [--yes]  delete the caches (needs unmounted); dry run without --yes
-//   tierctl restore --out <dir> --device host:port[@keyid] [--device ...] [--phrase-file F] [--store S] [--pairing-file F] [--dry-run] [--only /prefix/]
+//   tierctl restore --out <dir> --device host:port[@keyid] [--device ...] [--phrase-file F] [--store S] [--pairing-file F] [--dry-run] [--only
+//   /prefix/]
 //                                       get files back from the devices with only the recovery phrase
 //   tierctl ledger-status <ledger-dir>  health of the ledger: files by state, open steps, quarantine, fsck
 //   tierctl pair <host:port> --store keychain|dir:PATH
@@ -137,11 +138,18 @@ static bool read_phrase(const std::string& file, std::string& out) {
 }
 
 // "host:port" or "host:port@keyid".
-struct DeviceSpec { std::string host, key_id; uint16_t port = 0; bool ok = false; };
+struct DeviceSpec {
+    std::string host, key_id;
+    uint16_t port = 0;
+    bool ok = false;
+};
 static DeviceSpec parse_device(const std::string& spec) {
     DeviceSpec d;
     std::string addr = spec;
-    if (size_t at = spec.find('@'); at != std::string::npos) { addr = spec.substr(0, at); d.key_id = spec.substr(at + 1); }
+    if (size_t at = spec.find('@'); at != std::string::npos) {
+        addr = spec.substr(0, at);
+        d.key_id = spec.substr(at + 1);
+    }
     size_t colon = addr.rfind(':');
     if (colon == std::string::npos || colon == 0 || colon + 1 >= addr.size()) return d;
     int port = atoi(addr.c_str() + colon + 1);
@@ -164,58 +172,98 @@ static std::optional<tierfs::crypto::Bytes> secret_from_code(const std::string& 
 static std::unique_ptr<tierfs::DeviceClient> make_device_client(const std::string& spec, const std::string& store,
                                                                 const std::map<std::string, std::string>& codes, int timeout_ms, std::string* err) {
     DeviceSpec d = parse_device(spec);
-    if (!d.ok) { *err = "device must be host:port or host:port@keyid, got " + spec; return nullptr; }
+    if (!d.ok) {
+        *err = "device must be host:port or host:port@keyid, got " + spec;
+        return nullptr;
+    }
     std::string hostport = d.host + ":" + std::to_string(d.port);
     tierfs::crypto::Bytes secret;
     if (!d.key_id.empty()) {
-        if (store.empty()) { *err = spec + ": a device with a key id needs --store (where its pairing secret is kept)"; return nullptr; }
+        if (store.empty()) {
+            *err = spec + ": a device with a key id needs --store (where its pairing secret is kept)";
+            return nullptr;
+        }
         auto sec = tierfs::load_pairing_secret(store, d.key_id, err);
         if (!sec) return nullptr;
         secret = *sec;
     } else if (auto it = codes.find(hostport); it != codes.end()) {
         auto sec = secret_from_code(it->second, err);
-        if (!sec) { *err = hostport + ": the pairing code in the pairing file is not valid: " + *err; return nullptr; }
+        if (!sec) {
+            *err = hostport + ": the pairing code in the pairing file is not valid: " + *err;
+            return nullptr;
+        }
         secret = *sec;
     }
     auto client = std::make_unique<tierfs::DeviceClient>(d.host, d.port, timeout_ms, secret);
     if (!secret.empty()) return client;
     tierfs::DevInfo info;
     tierfs::DevRes r = client->info(info);
-    if (r.ok() || r.err != EPERM) return client;   // reachable open device, or some other problem the restore itself will report
+    if (r.ok() || r.err != EPERM) return client;  // reachable open device, or some other problem the restore itself will report
     // the device says it is paired
-    if (!isatty(0)) { *err = hostport + ": this device is paired; give its code in a --pairing-file (lines: host:port code), or run this from a terminal"; return nullptr; }
-    fprintf(stderr, "%s is paired. Pairing code (shown by `tierfs-device <store> --show-pairing-code` on that device; typing is hidden): ", hostport.c_str());
+    if (!isatty(0)) {
+        *err = hostport + ": this device is paired; give its code in a --pairing-file (lines: host:port code), or run this from a terminal";
+        return nullptr;
+    }
+    fprintf(stderr,
+            "%s is paired. Pairing code (shown by `tierfs-device <store> --show-pairing-code` on that device; typing is hidden): ", hostport.c_str());
     std::string code;
     if (!read_phrase("", code)) return nullptr;
     auto sec = secret_from_code(code, err);
     for (auto& ch : code) ch = 0;
-    if (!sec) { *err = hostport + ": " + *err; return nullptr; }
+    if (!sec) {
+        *err = hostport + ": " + *err;
+        return nullptr;
+    }
     auto paired = std::make_unique<tierfs::DeviceClient>(d.host, d.port, timeout_ms, *sec);
     r = paired->info(info);
-    if (!r.ok()) { *err = hostport + ": " + r.msg; return nullptr; }
+    if (!r.ok()) {
+        *err = hostport + ": " + r.msg;
+        return nullptr;
+    }
     return paired;
 }
 
 static int cmd_pair(int argc, char** argv) {
-    const char* usage = "usage: tierctl pair <host:port> --store keychain|dir:PATH\n(the pairing code, shown by `tierfs-device <store> --show-pairing-code` on the device, is read from stdin, hidden on a terminal)\n";
-    if (argc < 5 || std::string(argv[3]) != "--store") { fputs(usage, stderr); return 2; }
+    const char* usage =
+        "usage: tierctl pair <host:port> --store keychain|dir:PATH\n(the pairing code, shown by `tierfs-device <store> --show-pairing-code` on the "
+        "device, is read from stdin, hidden on a terminal)\n";
+    if (argc < 5 || std::string(argv[3]) != "--store") {
+        fputs(usage, stderr);
+        return 2;
+    }
     DeviceSpec d = parse_device(argv[2]);
-    if (!d.ok || !d.key_id.empty()) { fputs(usage, stderr); return 2; }
+    if (!d.ok || !d.key_id.empty()) {
+        fputs(usage, stderr);
+        return 2;
+    }
     std::string source = argv[4], err;
-    if (!tierfs::keystore_for(source, &err)) { fprintf(stderr, "tierctl: %s\n", err.empty() ? "pairing secrets need a key store: 'keychain' or 'dir:PATH'" : err.c_str()); return 2; }
+    if (!tierfs::keystore_for(source, &err)) {
+        fprintf(stderr, "tierctl: %s\n", err.empty() ? "pairing secrets need a key store: 'keychain' or 'dir:PATH'" : err.c_str());
+        return 2;
+    }
     std::string code;
     if (!read_phrase("", code)) return 1;
     auto secret = secret_from_code(code, &err);
     for (auto& ch : code) ch = 0;
-    if (!secret) { fprintf(stderr, "tierctl: the pairing code is not accepted: %s\n", err.c_str()); return 1; }
+    if (!secret) {
+        fprintf(stderr, "tierctl: the pairing code is not accepted: %s\n", err.c_str());
+        return 1;
+    }
     tierfs::DeviceClient client(d.host, d.port, 8000, *secret);
     tierfs::DevInfo info;
-    tierfs::DevRes r = client.info(info);   // proves the code is right AND that this really is the device that holds it
-    if (!r.ok()) { fprintf(stderr, "tierctl: could not authenticate with %s:%d: %s\nnothing was saved\n", d.host.c_str(), d.port, r.msg.c_str()); return 1; }
-    if (!tierfs::store_pairing_secret(source, *secret, &err)) { fprintf(stderr, "tierctl: %s\n", err.c_str()); return 1; }
+    tierfs::DevRes r = client.info(info);  // proves the code is right AND that this really is the device that holds it
+    if (!r.ok()) {
+        fprintf(stderr, "tierctl: could not authenticate with %s:%d: %s\nnothing was saved\n", d.host.c_str(), d.port, r.msg.c_str());
+        return 1;
+    }
+    if (!tierfs::store_pairing_secret(source, *secret, &err)) {
+        fprintf(stderr, "tierctl: %s\n", err.c_str());
+        return 1;
+    }
     std::string id = tierfs::chan::key_id_hex(*secret);
-    printf("paired with device %s at %s:%d (key id %s)\nsecret stored in %s as %s\nuse it as:  --device %s:%d@%s   (daemon: devices=%s:%d@%s)\n", info.device_id.c_str(),
-           d.host.c_str(), d.port, id.c_str(), source.c_str(), tierfs::pairing_account(id).c_str(), d.host.c_str(), d.port, id.c_str(), d.host.c_str(), d.port, id.c_str());
+    printf("paired with device %s at %s:%d (key id %s)\nsecret stored in %s as %s\nuse it as:  --device %s:%d@%s   (daemon: devices=%s:%d@%s)\n",
+           info.device_id.c_str(), d.host.c_str(), d.port, id.c_str(), source.c_str(), tierfs::pairing_account(id).c_str(), d.host.c_str(), d.port,
+           id.c_str(), d.host.c_str(), d.port, id.c_str());
     return 0;
 }
 
@@ -229,16 +277,24 @@ static int cmd_restore(int argc, char** argv) {
         std::string tmp;
         if (a == "--out") { if (!val(out)) return 2; }
         else if (a == "--device") { if (!val(tmp)) return 2; devs.push_back(tmp); }
-        else if (a == "--phrase-file") { if (!val(phrase_file)) return 2; }
-        else if (a == "--store") { if (!val(store)) return 2; }
-        else if (a == "--pairing-file") { if (!val(pairing_file)) return 2; }
-        else if (a == "--only") { if (!val(opt.path_prefix)) return 2; }
-        else if (a == "--reserve-mb") { if (!val(tmp)) return 2; opt.reserve_bytes = strtoull(tmp.c_str(), nullptr, 10) << 20; }
-        else if (a == "--dry-run") opt.dry_run = true;
+        else if (a == "--phrase-file") { if (!val(phrase_file)) return 2;
+        } else if (a == "--store") {
+            if (!val(store)) return 2;
+        } else if (a == "--pairing-file") {
+            if (!val(pairing_file)) return 2;
+        } else if (a == "--only") {
+            if (!val(opt.path_prefix)) return 2;
+        } else if (a == "--reserve-mb") {
+            if (!val(tmp)) return 2;
+            opt.reserve_bytes = strtoull(tmp.c_str(), nullptr, 10) << 20;
+        } else if (a == "--dry-run")
+            opt.dry_run = true;
         else { fprintf(stderr, "tierctl: unknown option %s\n", a.c_str()); return 2; }
     }
     if (out.empty() || devs.empty()) {
-        fprintf(stderr, "usage: tierctl restore --out <dir> --device host:port[@keyid] [--device ...] [--phrase-file F] [--store keychain|dir:PATH] [--pairing-file F]\n                       [--dry-run] [--only /prefix/] [--reserve-mb N]\n");
+        fprintf(stderr,
+                "usage: tierctl restore --out <dir> --device host:port[@keyid] [--device ...] [--phrase-file F] [--store keychain|dir:PATH] "
+                "[--pairing-file F]\n                       [--dry-run] [--only /prefix/] [--reserve-mb N]\n");
         return 2;
     }
     std::string phrase;
@@ -248,10 +304,13 @@ static int cmd_restore(int argc, char** argv) {
     for (auto& ch : phrase) ch = 0;
     if (!key) { fprintf(stderr, "tierctl: the recovery phrase is not accepted: %s\n", err.c_str()); return 1; }
 
-    std::map<std::string, std::string> codes;   // host:port -> pairing code, from the pairing file
+    std::map<std::string, std::string> codes;  // host:port -> pairing code, from the pairing file
     if (!pairing_file.empty()) {
         std::ifstream pf(pairing_file);
-        if (!pf) { fprintf(stderr, "tierctl: cannot read %s\n", pairing_file.c_str()); return 1; }
+        if (!pf) {
+            fprintf(stderr, "tierctl: cannot read %s\n", pairing_file.c_str());
+            return 1;
+        }
         std::string line;
         while (std::getline(pf, line)) {
             size_t sp = line.find(' ');
@@ -264,7 +323,10 @@ static int cmd_restore(int argc, char** argv) {
     for (auto& d : devs) {
         std::string cerr_;
         auto client = make_device_client(d, store, codes, 15000, &cerr_);
-        if (!client) { fprintf(stderr, "tierctl: %s\n", cerr_.c_str()); return 2; }
+        if (!client) {
+            fprintf(stderr, "tierctl: %s\n", cerr_.c_str());
+            return 2;
+        }
         clients.push_back(std::move(client));
         rd.push_back({d, clients.back().get()});
     }

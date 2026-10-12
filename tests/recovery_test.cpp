@@ -103,7 +103,7 @@ struct Server {
             DeviceClient c("127.0.0.1", port, 300);
             DevInfo info;
             DevRes r = c.info(info);
-            if (r.ok() || r.err == EPERM) return true;   // (a paired device refuses a plaintext client: it is up)
+            if (r.ok() || r.err == EPERM) return true;  // (a paired device refuses a plaintext client: it is up)
             usleep(50000);
         }
         return false;
@@ -194,7 +194,7 @@ struct Lab {
     std::map<std::string, Item> items;
     int n_;
 
-    std::string code_a, code_b;   // the pairing codes, when the devices are paired
+    std::string code_a, code_b;  // the pairing codes, when the devices are paired
     // Pairs a device store (creating its secret) and returns the secret and the code the device prints.
     static Bytes pair_store(const std::string& store, std::string* code) {
         std::string cmd = std::string("./build/tierfs-device '") + store + "' --show-pairing-code 2>&1";
@@ -755,7 +755,8 @@ int main() {
         spit(codes, Bytes(cl.begin(), cl.end()));
         std::string text;
         int rc = sh(cli_restore(w, w.root + "/cli1", pf, "--pairing-file " + codes), &text);
-        CHECK(rc == 0 && has(text, "Everything was recovered") && matches(w.root + "/cli1", w.items["a.bin"]) && matches(w.root + "/cli1", w.items["b.txt"]));
+        CHECK(rc == 0 && has(text, "Everything was recovered") && matches(w.root + "/cli1", w.items["a.bin"]) &&
+              matches(w.root + "/cli1", w.items["b.txt"]));
         // without the codes it stops, and says what to do; nothing is written
         rc = sh(cli_restore(w, w.root + "/cli2", pf), &text);
         CHECK(rc == 2 && has(text, "device is paired") && !exists(w.root + "/cli2"));
@@ -763,7 +764,9 @@ int main() {
         std::string bad = "127.0.0.1:" + std::to_string(PA) + " " + w.code_b + "\n127.0.0.1:" + std::to_string(PB) + " " + w.code_b + "\n";
         spit(w.root + "/bad.txt", Bytes(bad.begin(), bad.end()));
         rc = sh(cli_restore(w, w.root + "/cli3", pf, "--pairing-file " + w.root + "/bad.txt"), &text);
-        CHECK(rc == 0 && has(text, "note: 127.0.0.1:" + std::to_string(PA) + " is not reachable") && has(text, "authentication with the device failed") && has(text, "1 device(s) reachable") && matches(w.root + "/cli3", w.items["a.bin"]));
+        CHECK(rc == 0 && has(text, "note: 127.0.0.1:" + std::to_string(PA) + " is not reachable") &&
+              has(text, "authentication with the device failed") && has(text, "1 device(s) reachable") &&
+              matches(w.root + "/cli3", w.items["a.bin"]));
         // every code wrong: nothing is recovered, nothing is written
         std::string worse = "127.0.0.1:" + std::to_string(PA) + " " + w.code_b + "\n127.0.0.1:" + std::to_string(PB) + " " + w.code_a + "\n";
         spit(w.root + "/worse.txt", Bytes(worse.begin(), worse.end()));

@@ -28,16 +28,33 @@ using crypto::Bytes;
 namespace fs = std::filesystem;
 
 static int failures = 0;
-static bool failfast() { static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr; return f; }
-#define CHECK(cond)                                                          \
-    do {                                                                     \
-        if (!(cond)) {                                                       \
-            printf("FAIL  line %d: %s\n", __LINE__, #cond);                  \
-            failures++;                                                      \
-            if (failfast()) { fflush(stdout); _exit(1); }                    \
-        } else printf("PASS  %s\n", #cond);                                  \
+static bool failfast() {
+    static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr;
+    return f;
+}
+#define CHECK(cond)                                         \
+    do {                                                    \
+        if (!(cond)) {                                      \
+            printf("FAIL  line %d: %s\n", __LINE__, #cond); \
+            failures++;                                     \
+            if (failfast()) {                               \
+                fflush(stdout);                             \
+                _exit(1);                                   \
+            }                                               \
+        } else                                              \
+            printf("PASS  %s\n", #cond);                    \
     } while (0)
-#define CHECK_QUIET(cond) do { if (!(cond)) { printf("FAIL  line %d: %s\n", __LINE__, #cond); failures++; if (failfast()) { fflush(stdout); _exit(1); } } } while (0)
+#define CHECK_QUIET(cond)                                   \
+    do {                                                    \
+        if (!(cond)) {                                      \
+            printf("FAIL  line %d: %s\n", __LINE__, #cond); \
+            failures++;                                     \
+            if (failfast()) {                               \
+                fflush(stdout);                             \
+                _exit(1);                                   \
+            }                                               \
+        }                                                   \
+    } while (0)
 
 static bool has(const std::string& s, const std::string& n) { return s.find(n) != std::string::npos; }
 static std::string tmpdir() {
@@ -80,7 +97,7 @@ static int run_device_no_writes(const std::vector<std::string>& args, std::strin
 struct Server {
     pid_t pid = 0;
     uint16_t port;
-    std::string log;   // when set, the server's stderr goes here
+    std::string log;  // when set, the server's stderr goes here
     explicit Server(uint16_t p) : port(p) {}
     bool start(const std::string& store, const std::vector<std::string>& extra = {}, const std::string& handshake_ms = "") {
         stop();
@@ -92,14 +109,16 @@ struct Server {
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
         posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
-        if (log.empty()) posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
-        else posix_spawn_file_actions_addopen(&fa, 2, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (log.empty())
+            posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+        else
+            posix_spawn_file_actions_addopen(&fa, 2, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (!handshake_ms.empty()) setenv("TIERFS_DEVICE_HANDSHAKE_MS", handshake_ms.c_str(), 1);
         int rc = posix_spawn(&pid, server_path(), &fa, nullptr, av.data(), environ);
         unsetenv("TIERFS_DEVICE_HANDSHAKE_MS");
         posix_spawn_file_actions_destroy(&fa);
         if (rc != 0) return false;
-        for (int i = 0; i < 100; i++) {   // up when something accepts a connection
+        for (int i = 0; i < 100; i++) {  // up when something accepts a connection
             int fd = socket(AF_INET, SOCK_STREAM, 0);
             sockaddr_in sa{};
             sa.sin_family = AF_INET;
@@ -127,7 +146,10 @@ static int raw_connect(uint16_t port) {
     sa.sin_family = AF_INET;
     sa.sin_port = htons(port);
     inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
-    if (connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0) { close(fd); return -1; }
+    if (connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0) {
+        close(fd);
+        return -1;
+    }
     return fd;
 }
 
@@ -146,7 +168,10 @@ static int listen_ephemeral(uint16_t* port) {
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
     inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
-    if (bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0 || listen(fd, 16) != 0) { close(fd); return -1; }
+    if (bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0 || listen(fd, 16) != 0) {
+        close(fd);
+        return -1;
+    }
     socklen_t l = sizeof sa;
     getsockname(fd, reinterpret_cast<sockaddr*>(&sa), &l);
     *port = ntohs(sa.sin_port);
@@ -163,11 +188,23 @@ static Bytes secret_from_code(const std::string& out) {
     auto k = crypto::decode_recovery(code, &err);
     return k ? Bytes(k->data(), k->data() + 32) : Bytes{};
 }
-static std::string read_text(const std::string& p) { std::ifstream f(p); std::string s; std::getline(f, s); return s; }
+static std::string read_text(const std::string& p) {
+    std::ifstream f(p);
+    std::string s;
+    std::getline(f, s);
+    return s;
+}
 
-static std::string read_all(const std::string& p) { std::ifstream f(p, std::ios::binary); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); }
+static std::string read_all(const std::string& p) {
+    std::ifstream f(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
 
-static Bytes blob_of(size_t n, uint8_t seed) { Bytes b(n); for (size_t i = 0; i < n; i++) b[i] = static_cast<uint8_t>(seed + i * 7); return b; }
+static Bytes blob_of(size_t n, uint8_t seed) {
+    Bytes b(n);
+    for (size_t i = 0; i < n; i++) b[i] = static_cast<uint8_t>(seed + i * 7);
+    return b;
+}
 
 int main() {
     signal(SIGPIPE, SIG_IGN);
@@ -182,8 +219,9 @@ int main() {
     CHECK(psk.size() == 32 && crypto::to_hex(psk.data(), 32) == read_text(store + "/pairing.key") && has(out1, chan::key_id_hex(psk)));
     struct stat st;
     CHECK(stat((store + "/pairing.key").c_str(), &st) == 0 && (st.st_mode & 07777) == 0600);
-    CHECK(run_device({store, "--show-pairing-code"}, &out2) == 0 && secret_from_code(out2) == psk && !has(out2, "must pair again"));   // the same secret again
-    CHECK(stat(store.c_str(), &st) == 0 && (st.st_mode & 07777) == 0700);   // the directory the device made is private too
+    CHECK(run_device({store, "--show-pairing-code"}, &out2) == 0 && secret_from_code(out2) == psk &&
+          !has(out2, "must pair again"));                                  // the same secret again
+    CHECK(stat(store.c_str(), &st) == 0 && (st.st_mode & 07777) == 0700);  // the directory the device made is private too
     {
         std::ifstream f(store + "/pairing.key", std::ios::binary);
         std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -192,10 +230,11 @@ int main() {
     CHECK(run_device({store, "--new-pairing-code"}, &out3) == 0 && has(out3, "every Mac must pair again") && secret_from_code(out3).size() == 32 &&
           secret_from_code(out3) != psk);
     Bytes psk2 = secret_from_code(out3);
-    CHECK(crypto::to_hex(psk2.data(), 32) == read_text(store + "/pairing.key") && stat((store + "/pairing.key").c_str(), &st) == 0 && (st.st_mode & 07777) == 0600);
+    CHECK(crypto::to_hex(psk2.data(), 32) == read_text(store + "/pairing.key") && stat((store + "/pairing.key").c_str(), &st) == 0 &&
+          (st.st_mode & 07777) == 0600);
     CHECK(!fs::exists(store + "/pairing.key.new"));
     std::string ow;
-    CHECK(run_device({root + "/other", "--new-pairing-code"}, &ow) == 0 && !has(ow, "every Mac must pair again"));   // nothing to replace
+    CHECK(run_device({root + "/other", "--new-pairing-code"}, &ow) == 0 && !has(ow, "every Mac must pair again"));  // nothing to replace
     CHECK(has(ow, "PAIRING CODE") && secret_from_code(ow).size() == 32);
 
     printf("== creating the secret copes with leftovers and refuses to pretend when it cannot write\n");
@@ -203,32 +242,42 @@ int main() {
         std::string o;
         std::string left = root + "/leftover";
         fs::create_directories(left);
-        { std::ofstream f(left + "/pairing.key.new"); f << "junk from an interrupted run\n"; }
+        {
+            std::ofstream f(left + "/pairing.key.new");
+            f << "junk from an interrupted run\n";
+        }
         chmod((left + "/pairing.key.new").c_str(), 0644);
         CHECK(run_device({left, "--show-pairing-code"}, &o) == 0 && secret_from_code(o).size() == 32);
         struct stat lst;
-        CHECK(stat((left + "/pairing.key").c_str(), &lst) == 0 && (lst.st_mode & 07777) == 0600 && lst.st_size == 65 && !fs::exists(left + "/pairing.key.new"));
+        CHECK(stat((left + "/pairing.key").c_str(), &lst) == 0 && (lst.st_mode & 07777) == 0600 && lst.st_size == 65 &&
+              !fs::exists(left + "/pairing.key.new"));
         // a store directory that cannot be written
         std::string ro = root + "/readonly";
         fs::create_directories(ro);
         chmod(ro.c_str(), 0500);
-        CHECK(run_device({ro, "--show-pairing-code"}, &o) == 1 && has(o, "cannot create") && has(o, "pairing.key.new") && !fs::exists(ro + "/pairing.key"));
+        CHECK(run_device({ro, "--show-pairing-code"}, &o) == 1 && has(o, "cannot create") && has(o, "pairing.key.new") &&
+              !fs::exists(ro + "/pairing.key"));
         chmod(ro.c_str(), 0700);
         // a write that fails half way leaves nothing behind and does not print a code
         std::string nw = root + "/nowrite";
         fs::create_directories(nw);
-        CHECK(run_device_no_writes({nw, "--show-pairing-code"}, &o) == 1 && has(o, "cannot write") && !has(o, "PAIRING CODE") && !fs::exists(nw + "/pairing.key") &&
-              !fs::exists(nw + "/pairing.key.new"));
+        CHECK(run_device_no_writes({nw, "--show-pairing-code"}, &o) == 1 && has(o, "cannot write") && !has(o, "PAIRING CODE") &&
+              !fs::exists(nw + "/pairing.key") && !fs::exists(nw + "/pairing.key.new"));
         std::string nw2 = root + "/nowrite-replace";
         run_device({nw2, "--show-pairing-code"}, &o);
         std::string before = read_text(nw2 + "/pairing.key");
-        CHECK(run_device_no_writes({nw2, "--new-pairing-code"}, &o) == 1 && !has(o, "PAIRING CODE") && read_text(nw2 + "/pairing.key") == before && !fs::exists(nw2 + "/pairing.key.new"));
+        CHECK(run_device_no_writes({nw2, "--new-pairing-code"}, &o) == 1 && !has(o, "PAIRING CODE") && read_text(nw2 + "/pairing.key") == before &&
+              !fs::exists(nw2 + "/pairing.key.new"));
         // asking to show the code of a damaged secret is refused, and does not replace it
         std::string dmg = root + "/damaged";
         fs::create_directories(dmg);
-        { std::ofstream f(dmg + "/pairing.key"); f << "not hex\n"; }
+        {
+            std::ofstream f(dmg + "/pairing.key");
+            f << "not hex\n";
+        }
         chmod((dmg + "/pairing.key").c_str(), 0600);
-        CHECK(run_device({dmg, "--show-pairing-code"}, &o) == 1 && has(o, "64 hex characters") && !has(o, "PAIRING CODE") && read_text(dmg + "/pairing.key") == "not hex");
+        CHECK(run_device({dmg, "--show-pairing-code"}, &o) == 1 && has(o, "64 hex characters") && !has(o, "PAIRING CODE") &&
+              read_text(dmg + "/pairing.key") == "not hex");
         CHECK(run_device({dmg, "--new-pairing-code"}, &o) == 1 && read_text(dmg + "/pairing.key") == "not hex");
         std::string loose = root + "/looseshow";
         run_device({loose, "--show-pairing-code"}, nullptr);
@@ -248,7 +297,7 @@ int main() {
             chmod((sm + "/pairing.key").c_str(), m);
             CHECK(run_device({sm, std::to_string(P + 9), nowhere}, &o) == 1 && has(o, "readable only by its owner"));
         }
-        {   // the owner's own bits are free to vary
+        {  // the owner's own bits are free to vary
             std::string sm = root + "/ownerbits";
             run_device({sm, "--show-pairing-code"}, nullptr);
             chmod((sm + "/pairing.key").c_str(), 0400);
@@ -256,26 +305,38 @@ int main() {
         }
         std::string s2 = root + "/garbled";
         fs::create_directories(s2);
-        { std::ofstream f(s2 + "/pairing.key"); f << "not hex\n"; }
+        {
+            std::ofstream f(s2 + "/pairing.key");
+            f << "not hex\n";
+        }
         chmod((s2 + "/pairing.key").c_str(), 0600);
         CHECK(run_device({s2, std::to_string(P + 9)}, &o) == 1 && has(o, "64 hex characters"));
         std::string s3 = root + "/short";
         fs::create_directories(s3);
-        { std::ofstream f(s3 + "/pairing.key"); f << std::string(62, 'a') << "\n"; }
+        {
+            std::ofstream f(s3 + "/pairing.key");
+            f << std::string(62, 'a') << "\n";
+        }
         chmod((s3 + "/pairing.key").c_str(), 0600);
         CHECK(run_device({s3, std::to_string(P + 9)}, &o) == 1 && has(o, "64 hex characters"));
         std::string s3b = root + "/long";
         fs::create_directories(s3b);
-        { std::ofstream f(s3b + "/pairing.key"); f << std::string(66, 'a') << "\n"; }
+        {
+            std::ofstream f(s3b + "/pairing.key");
+            f << std::string(66, 'a') << "\n";
+        }
         chmod((s3b + "/pairing.key").c_str(), 0600);
         CHECK(run_device({s3b, std::to_string(P + 9), nowhere}, &o) == 1 && has(o, "64 hex characters"));
         std::string s4 = root + "/linked";
         fs::create_directories(s4);
         std::string target = root + "/elsewhere.key";
-        { std::ofstream f(target); f << std::string(64, 'a') << "\n"; }
+        {
+            std::ofstream f(target);
+            f << std::string(64, 'a') << "\n";
+        }
         chmod(target.c_str(), 0600);
         symlink(target.c_str(), (s4 + "/pairing.key").c_str());
-        lchmod((s4 + "/pairing.key").c_str(), 0600);   // a link that looks private still is not a regular file
+        lchmod((s4 + "/pairing.key").c_str(), 0600);  // a link that looks private still is not a regular file
         CHECK(run_device({s4, std::to_string(P + 9), nowhere}, &o) == 1 && has(o, "regular file"));
         std::string s5 = root + "/dirkey";
         fs::create_directories(s5 + "/pairing.key");
@@ -287,9 +348,12 @@ int main() {
     {
         std::string o;
         std::string open_store = root + "/open";
-        CHECK(run_device({open_store, std::to_string(P + 9), "192.0.2.1"}, &o) == 2 && has(o, "not paired") && has(o, "--show-pairing-code") && has(o, "--insecure-allow-network"));   // unpaired: loopback only
-        CHECK(run_device({open_store, std::to_string(P + 9), "192.0.2.1", "--insecure-allow-network"}, &o) == 1 && !has(o, "not paired"));   // the flag lifts it (the bind then fails: not our address)
-        CHECK(run_device({store, std::to_string(P + 9), "192.0.2.1"}, &o) == 1 && !has(o, "not paired"));              // paired: allowed to try (this address is not ours, so bind fails)
+        CHECK(run_device({open_store, std::to_string(P + 9), "192.0.2.1"}, &o) == 2 && has(o, "not paired") && has(o, "--show-pairing-code") &&
+              has(o, "--insecure-allow-network"));  // unpaired: loopback only
+        CHECK(run_device({open_store, std::to_string(P + 9), "192.0.2.1", "--insecure-allow-network"}, &o) == 1 &&
+              !has(o, "not paired"));  // the flag lifts it (the bind then fails: not our address)
+        CHECK(run_device({store, std::to_string(P + 9), "192.0.2.1"}, &o) == 1 &&
+              !has(o, "not paired"));  // paired: allowed to try (this address is not ours, so bind fails)
     }
 
     // ---- a paired device, with real clients ----
@@ -308,13 +372,13 @@ int main() {
         PutChunkReply pr;
         CHECK(dc.put_chunk(cid, blob, pr).ok() && !pr.existed);
         Bytes got;
-        CHECK(dc.get_chunk(cid, got).ok() && got == blob);                                   // a megabyte, byte for byte
+        CHECK(dc.get_chunk(cid, got).ok() && got == blob);  // a megabyte, byte for byte
         std::vector<bool> have;
         CHECK(dc.has_chunks({cid, std::string(64, 'b')}, have).ok() && have == std::vector<bool>({true, false}));
         PutChunkReply again;
         CHECK(dc.put_chunk(cid, blob, again).ok() && again.existed);
         DevRes missing = dc.get_chunk(std::string(64, 'c'), got);
-        CHECK(!missing.ok() && missing.err == ENOENT);                                       // a device ERROR still arrives as an error, inside the channel
+        CHECK(!missing.ok() && missing.err == ENOENT);  // a device ERROR still arrives as an error, inside the channel
         PutManifestReply mr;
         CHECK(dc.put_manifest(std::string(32, 'f'), 1, blob_of(300, 9), {cid}, mr).ok() && mr.seq == 1);
         Bytes mgot;
@@ -354,7 +418,7 @@ int main() {
         DevInfo info;
         DevRes r = dc.info(info);
         CHECK(!r.ok() && r.err == EACCES && has(r.msg, "authentication with the device failed"));
-        DeviceClient old("127.0.0.1", P, 2000, psk);                                         // the secret from before --new-pairing-code
+        DeviceClient old("127.0.0.1", P, 2000, psk);  // the secret from before --new-pairing-code
         CHECK(!old.info(info).ok());
         DeviceClient plain("127.0.0.1", P, 2000);
         r = plain.info(info);
@@ -369,7 +433,7 @@ int main() {
     printf("== failures leave no sockets behind, and a silent device cannot hold the client past its deadline\n");
     {
         DevInfo info;
-        {   // wrong secret against the real device, many times; then a good client that disconnects
+        {  // wrong secret against the real device, many times; then a good client that disconnects
             DeviceClient warm("127.0.0.1", P, 2000, psk2);
             CHECK(warm.info(info).ok());
             warm.disconnect();
@@ -383,7 +447,7 @@ int main() {
             good.disconnect();
             CHECK(open_fds() == before);
         }
-        {   // a paired-looking device that completes the handshake and then hangs up before answering HELLO
+        {  // a paired-looking device that completes the handshake and then hangs up before answering HELLO
             uint16_t fp = 0;
             int before = open_fds();
             int lfd = listen_ephemeral(&fp);
@@ -393,10 +457,12 @@ int main() {
                     int c = accept(lfd, nullptr, nullptr);
                     if (c < 0) break;
                     std::string why;
-                    auto ch = chan::accept_secure(c, [&](const Bytes& id) -> std::optional<Bytes> { return id == chan::key_id(psk2) ? std::optional<Bytes>(psk2) : std::nullopt; },
-                                                  now_ms() + 3000, &why);
+                    auto ch = chan::accept_secure(
+                        c,
+                        [&](const Bytes& id) -> std::optional<Bytes> { return id == chan::key_id(psk2) ? std::optional<Bytes>(psk2) : std::nullopt; },
+                        now_ms() + 3000, &why);
                     Frame f;
-                    if (ch) ch->recv(f);   // the HELLO, never answered
+                    if (ch) ch->recv(f);  // the HELLO, never answered
                     close(c);
                 }
             });
@@ -409,7 +475,7 @@ int main() {
             close(lfd);
             CHECK(open_fds() == before);
         }
-        {   // a device that accepts and never speaks: the client gives up at its own timeout
+        {  // a device that accepts and never speaks: the client gives up at its own timeout
             uint16_t sp = 0;
             int lfd = listen_ephemeral(&sp);
             CHECK(lfd >= 0);
@@ -466,7 +532,10 @@ int main() {
         if (ch) {
             uint8_t forged[40];
             memset(forged, 0x41, sizeof forged);
-            forged[0] = 0; forged[1] = 0; forged[2] = 0; forged[3] = 36;
+            forged[0] = 0;
+            forged[1] = 0;
+            forged[2] = 0;
+            forged[3] = 36;
             write_full(fd, forged, sizeof forged, now_ms() + 1000);
             Frame g;
             CHECK(ch->recv(g, now_ms() + 2000) <= 0);

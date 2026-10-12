@@ -109,7 +109,7 @@ struct Server {
             DeviceClient c("127.0.0.1", port, 300);
             DevInfo info;
             DevRes r = c.info(info);
-            if (r.ok() || r.err == EPERM) return true;   // (a paired device answers a plaintext client with a refusal: it is up)
+            if (r.ok() || r.err == EPERM) return true;  // (a paired device answers a plaintext client with a refusal: it is up)
             usleep(50000);
         }
         return false;
@@ -571,7 +571,7 @@ int main() {
         Env e(false, false);
         Bytes a = pattern(MiB + 5, 1);
         spit(e.path("a.bin"), a);
-        auto run = [&](const std::string& store) {   // `tierfs-device <store> --show-pairing-code`: the secret and its key id
+        auto run = [&](const std::string& store) {  // `tierfs-device <store> --show-pairing-code`: the secret and its key id
             std::string cmd = std::string("./build/tierfs-device '") + store + "' --show-pairing-code 2>&1";
             FILE* f = popen(cmd.c_str(), "r");
             std::string out;
@@ -586,7 +586,7 @@ int main() {
         };
         auto pa = run(e.root + "/devA"), pb = run(e.root + "/devB");
         CHECK(pa.first.size() == 32 && pb.first.size() == 32 && pa.second != pb.second);
-        CHECK(e.sa.start(e.root + "/devA") && e.sb.start(e.root + "/devB"));          // paired devices: they now require the channel
+        CHECK(e.sa.start(e.root + "/devA") && e.sb.start(e.root + "/devB"));  // paired devices: they now require the channel
         std::string ks_dir = e.root + "/keystore", volume, err;
         {
             auto L = Ledger::open(e.ledger, &err);
@@ -623,7 +623,7 @@ int main() {
         c.devices = {"127.0.0.1:" + std::to_string(PA) + "@" + pa.second};
         c.key_file = e.root + "/plain-key-file";
         std::ofstream(c.key_file) << crypto::to_hex(master.data(), 32) << "\n";
-        CHECK(!Daemon::create(c, &err) && has(err, "key store"));                       // a plain key file cannot hold pairing secrets
+        CHECK(!Daemon::create(c, &err) && has(err, "key store"));  // a plain key file cannot hold pairing secrets
     }
 
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);

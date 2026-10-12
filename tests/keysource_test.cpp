@@ -132,13 +132,13 @@ int main() {
         err.clear();
         CHECK(!load_pairing_secret(pdir, "zz", &err) && has(err, "16 hex characters") && has(err, "\"zz\""));
         err.clear();
-        CHECK(!load_pairing_secret(pdir, "0123456789abcdeF", &err) && has(err, "16 hex characters"));   // upper case is not a key id
-        for (const char* bad : {"0123456789abcdef0", "0123456789abcde", "0123456789abcdeg", "0123456789abcde/", "/123456789abcdef", "0123456789abcde:",
-                                "`123456789abcdef", "0123456789abcde@", "0123456789abcde G", ""}) {
+        CHECK(!load_pairing_secret(pdir, "0123456789abcdeF", &err) && has(err, "16 hex characters"));  // upper case is not a key id
+        for (const char* bad : {"0123456789abcdef0", "0123456789abcde", "0123456789abcdeg", "0123456789abcde/", "/123456789abcdef",
+                                "0123456789abcde:", "`123456789abcdef", "0123456789abcde@", "0123456789abcde G", ""}) {
             err.clear();
             CHECK(!load_pairing_secret(pdir, bad, &err) && has(err, "16 hex characters"));
         }
-        for (const char* good : {"0123456789abcdef", "fedcba9876543210"}) {   // well-formed ids that name nothing
+        for (const char* good : {"0123456789abcdef", "fedcba9876543210"}) {  // well-formed ids that name nothing
             err.clear();
             CHECK(!load_pairing_secret(pdir, good, &err) && has(err, "no pairing secret"));
         }

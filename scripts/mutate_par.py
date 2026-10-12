@@ -4,7 +4,7 @@ mutants are tested at once (the tests honour TIERFS_TEST_PORT and TIERFS_TEST_TM
 Usage: mutate_par.py <target> [-j N] [name filters ...]      targets: recovery, overlay
 A mutant is killed when the test fails (or crashes; a crash-only kill is rerun once). Survivors are test gaps unless
 their name starts with a [reason] tag (an expected survivor, documented in the design doc)."""
-import subprocess, sys, os, shutil, threading, importlib
+import subprocess, sys, os, shutil, threading, importlib, re
 from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, 'scripts')
 OS = os.environ.get('OPENSSL_DIR', '/opt/homebrew/opt/openssl@3')
@@ -74,8 +74,10 @@ def test_mutant(job):
     os.makedirs(wd, exist_ok=True)
     tmp, env = worker_env(w)
     src = open(path).read()
-    if frm not in src: return name, 'stale', 'pattern not found'
-    open(f'{wd}/mut.cpp', 'w').write(src.replace(frm, to, 1))
+    # whitespace in a pattern matches any whitespace (including none), so reformatting the source does not stale the lists
+    m = re.search(r'\s*'.join(re.escape(t) for t in frm.split()), src)
+    if not m: return name, 'stale', 'pattern not found'
+    open(f'{wd}/mut.cpp', 'w').write(src[:m.start()] + to.strip() + src[m.end():] if frm.strip() == frm else src[:m.start()] + to + src[m.end():])
     r = run(BASE + ['-c', f'{wd}/mut.cpp', '-o', f'{wd}/mut.o'])
     if r.returncode: return name, 'nocompile', (r.stderr.strip().splitlines() or ['?'])[-1][:70]
     # the mutated file replaces the object of the same name (or, for a mutated PROGRAM, is built as the tool the tests launch)

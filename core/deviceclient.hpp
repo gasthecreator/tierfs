@@ -69,7 +69,7 @@ private:
     std::string host_, port_;
     int timeout_ms_;
     crypto::Bytes psk_;
-    std::unique_ptr<chan::Channel> ch_;   // set when psk_ is
+    std::unique_ptr<chan::Channel> ch_;  // set when psk_ is
     int fd_ = -1;
     uint32_t next_id_ = 1;
     std::mutex mu_;
