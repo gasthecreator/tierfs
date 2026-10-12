@@ -149,6 +149,9 @@ build/scanner.o: core/scanner.cpp core/scanner.hpp core/overlay.hpp core/ledger.
 build/scanner_test: tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -o $@
 
+test-init: build/tierctl
+	python3 -I tests/init_test.py
+
 test-scanner: build/scanner_test build/tierfs-device build/drop_helper
 	./build/scanner_test
 
