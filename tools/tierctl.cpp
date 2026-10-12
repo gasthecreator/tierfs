@@ -6,11 +6,18 @@
 //   tierctl restore --out <dir> --device host:port [--device ...] [--phrase-file F] [--dry-run] [--only /prefix/]
 //                                       get files back from the devices with only the recovery phrase
 //   tierctl ledger-status <ledger-dir>  health of the ledger: files by state, open steps, quarantine, fsck
+//   tierctl test-gates <ledger-dir> <test-prefix>
+//                                       FOR THROWAWAY TEST LEDGERS ONLY: acknowledges the recovery phrase and treats paths under
+//                                       <test-prefix> as covered by the "backup" gate, so tests can offload. Never use on real data.
+//   tierctl control <ledger-dir> <command...>
+//                                       send a command to a running tierfsd (status, scan, replicate PATH, offload PATH, ...)
 //
 // cache-clear only ever removes the files tierfs itself creates (chunks/,
 // chunks.db*, meta.db*), never "everything in the directory", so pointing it at
 // the wrong folder cannot delete anything else.
 #include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <termios.h>
 #include <sqlite3.h>
 #include <sys/file.h>
@@ -153,6 +160,41 @@ static int cmd_restore(int argc, char** argv) {
     return rep.complete() ? 0 : 3;
 }
 
+static int cmd_test_gates(int argc, char** argv) {
+    if (argc < 4) { fprintf(stderr, "usage: tierctl test-gates <ledger-dir> <test-prefix>\n"); return 2; }
+    std::string err;
+    auto L = tierfs::Ledger::open(argv[2], &err);
+    if (!L) { fprintf(stderr, "tierctl: cannot open the ledger: %s\n", err.c_str()); return 1; }
+    L->set_meta("recovery_acked", "1");
+    L->set_meta("test_prefix", argv[3]);
+    L->ensure_reserve(1 << 20);
+    printf("ledger %s: recovery phrase marked acknowledged, %s treated as a test area, reserve present\n", argv[2], argv[3]);
+    return 0;
+}
+
+static int cmd_control(int argc, char** argv) {
+    if (argc < 4) { fprintf(stderr, "usage: tierctl control <ledger-dir> <command...>\n"); return 2; }
+    std::string line = argv[3];
+    for (int i = 4; i < argc; i++) line += std::string(" ") + argv[i];
+    std::string sock = std::string(argv[2]) + "/control.sock";
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sun_family = AF_UNIX;
+    if (sock.size() >= sizeof sa.sun_path) { fprintf(stderr, "tierctl: the socket path is too long\n"); return 1; }
+    strcpy(sa.sun_path, sock.c_str());
+    if (connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) != 0) { fprintf(stderr, "tierctl: no running tierfsd answers at %s: %s\n", sock.c_str(), strerror(errno)); return 1; }
+    line += "\n";
+    if (write(fd, line.data(), line.size()) < 0) { close(fd); return 1; }
+    std::string reply;
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof buf)) > 0) reply.append(buf, static_cast<size_t>(n));
+    close(fd);
+    fputs(reply.c_str(), stdout);
+    return reply.size() >= 3 && reply.compare(reply.size() - 3, 3, "OK\n") == 0 ? 0 : 3;
+}
+
 static int cmd_ledger_status(int argc, char** argv) {
     if (argc < 3) { fprintf(stderr, "usage: tierctl ledger-status <ledger-dir>\n"); return 2; }
     std::string dir = argv[2];
@@ -189,6 +231,8 @@ int main(int argc, char** argv) {
     std::string cmd = argv[1], dir = argv[2];
     if (cmd == "restore") return cmd_restore(argc, argv);
     if (cmd == "ledger-status") return cmd_ledger_status(argc, argv);
+    if (cmd == "test-gates") return cmd_test_gates(argc, argv);
+    if (cmd == "control") return cmd_control(argc, argv);
     if (!fs::is_directory(dir)) { fprintf(stderr, "tierctl: %s is not a directory\n", dir.c_str()); return 1; }
     if (!looks_like_cache(dir)) { fprintf(stderr, "tierctl: %s does not look like a tierfs cache\n", dir.c_str()); return 1; }
 

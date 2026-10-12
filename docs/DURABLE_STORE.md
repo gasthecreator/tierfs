@@ -857,3 +857,18 @@ operations, `tests/overlay_ns_test.cpp`, `tests/scanner_test.cpp`.
   thresholds of the unavailable-folder guard, rename/chmod/delete racing a hydration.
 Next: 3h-4, the FUSE wrapper, the daemon and end-to-end mount tests.
 
+Status of 3h-4 (the daemon and the FUSE driver, written; real-mount testing paused):
+- `core/daemon.*` (everything a mount needs: ledger, keys, devices attached lazily and retried, start-up recovery of drops/purges/restores/
+  hydrations, a scan at start, a maintenance thread, and a private unix control socket with status/scan/replicate/offload/hydrate/undelete/tick),
+  `core/tfs_c.*` (a C interface), `mount/tierfsd.c` (the FUSE-T driver: a translation layer only), `tierctl control` and `tierctl test-gates`.
+  `tests/daemon_test.cpp` tests the daemon without any mount (configuration errors, start, offload on command, socket, a device down at start,
+  the maintenance thread, start-up recovery, an unavailable folder) and passes.
+- Findings from the one real-mount run (`scripts/phase3h-test.sh`, 42/42 three times): FUSE-T needs `namedattr` for extended attributes and
+  `noappledouble` to stop `._` files; after a change made behind the mount's back (undelete through the control socket) the NFS client shows it
+  only when its directory cache expires, so the directory's mtime (with nanoseconds) is moved and tests poll; the NFS client also caches
+  attribute reads for a while after a write.
+- SAFETY: that script reset the machine four times (watchdog resets at 22:51, 22:54, 23:20 and 00:59 on 2026-10-11/12; reports say
+  "Boot faults: wdog", i.e. a kernel hang with no panic log). The script kills the driver with `kill -9` while mounted and force-unmounts; a
+  FUSE-T/NFS mount whose server vanishes can wedge the kernel. Do not run it unattended. Before it is used again: no `kill -9` of a mounted
+  driver, a hard timeout on every step, clean shutdown before unmount, and run it only with the user's work saved.
+

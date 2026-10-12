@@ -76,6 +76,7 @@ int Overlay::getattr(const std::string& path, OvStat* out) {
         s.kind = kind_of(st.st_mode);
         s.size = static_cast<uint64_t>(st.st_size);
         s.mtime = st.st_mtimespec.tv_sec;
+        s.mtime_nsec = st.st_mtimespec.tv_nsec;
         s.mode = st.st_mode & 0777;
         if (s.kind == OvKind::File) {
             if (auto f = ledger_.get_file_by_path(lp)) s.file_id = f->file_id;
@@ -194,14 +195,16 @@ int64_t Overlay::read(const std::string& path, uint64_t offset, size_t size, uin
 std::vector<std::string> Overlay::device_order(const FileRec& f) {
     std::vector<std::string> order;
     std::set<std::string> have;
+    const DeviceMap known = devices_snapshot();
     auto usable = [&](const std::string& id) {
-        if (!devices_.count(id) || !devices_[id]) return false;
+        auto kit = known.find(id);
+        if (kit == known.end() || !kit->second) return false;
         auto d = ledger_.get_device(id);
         return d && d->state != "retired";
     };
     for (const auto& r : ledger_.get_replicas(f.file_id, f.current_version))
         if (r.state == ReplicaState::COMMITTED && usable(r.device_id) && have.insert(r.device_id).second) order.push_back(r.device_id);
-    for (const auto& kv : devices_)
+    for (const auto& kv : known)
         if (usable(kv.first) && have.insert(kv.first).second) order.push_back(kv.first);
     return order;
 }
@@ -222,7 +225,8 @@ std::shared_ptr<const crypto::Bytes> Overlay::fetch_chunk(const ChunkRec& c, con
             std::lock_guard<std::mutex> g(cache_mu_);
             stats_.chunk_fetches++;
         }
-        DevRes r = devices_[id]->get_chunk(c.chunk_id, blob);
+        DeviceClient* client = client_for(id);
+        DevRes r = client ? client->get_chunk(c.chunk_id, blob) : DevRes{ENODEV, "no such device"};
         bool good = r.ok() && crypto::open_chunk(keys_, volume_, c.chunk_id, blob.data(), blob.size(), plain) == crypto::OpenError::Ok &&
                     plain.size() == c.len && crypto::chunk_id(keys_, plain.data(), plain.size()) == c.chunk_id;
         if (!good) {
@@ -957,7 +961,8 @@ int Overlay::remote_xattrs(const FileRec& f, std::vector<std::pair<std::string, 
     }
     for (const auto& id : device_order(f)) {
         crypto::Bytes blob;
-        if (!devices_[id]->get_manifest(f.file_id, f.current_version, blob).ok()) continue;
+        DeviceClient* client = client_for(id);
+        if (!client || !client->get_manifest(f.file_id, f.current_version, blob).ok()) continue;
         crypto::Manifest m;
         if (crypto::open_manifest(keys_, volume_, f.file_id, f.current_version, blob.data(), blob.size(), m) != crypto::OpenError::Ok) continue;
         std::lock_guard<std::mutex> g(xattr_mu_);
@@ -1053,7 +1058,11 @@ int Overlay::undelete(const std::string& path) {
     if (ledger_.get_file_by_path(lp)) return -EEXIST;
     for (const auto& f : ledger_.list_retired()) {
         if (Ledger::former_path(f) != lp) continue;
-        return ledger_.undelete_file(f.file_id).ok ? 0 : -EINVAL;
+        if (!ledger_.undelete_file(f.file_id).ok) return -EINVAL;
+        // The name is back without anything in the origin changing, so the directory's modification time did not move, and the
+        // kernel (which caches names the way an NFS client does) would keep answering "no such file". Moving it makes it look again.
+        utimensat(AT_FDCWD, op.substr(0, op.rfind('/')).c_str(), nullptr, 0);
+        return 0;
     }
     return -ENOENT;
 }

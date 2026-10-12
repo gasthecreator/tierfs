@@ -47,6 +47,7 @@ struct OvStat {
     OvKind kind = OvKind::File;
     uint64_t size = 0;
     int64_t mtime = 0;              // seconds
+    int64_t mtime_nsec = 0;         // the sub-second part (the kernel decides whether a directory changed by comparing times)
     uint32_t mode = 0;              // permission bits only
     bool remote = false;            // the bytes are not in the origin: they live on the devices
     std::string file_id;            // set when the ledger tracks it
@@ -130,6 +131,8 @@ public:
     Stats stats();
 
     const OverlayConfig& config() const { return cfg_; }
+    // The devices can change while the overlay runs (one comes back, one is replaced).
+    void set_devices(DeviceMap devices) { std::lock_guard<std::mutex> g(dev_mu_); devices_ = std::move(devices); }
 
     // Resolves a mount path to {origin path, logical path}; false for anything that must not be reachable
     // (".." components, the bookkeeping directory, NUL bytes).
@@ -169,7 +172,10 @@ private:
 
     Ledger& ledger_;
     const crypto::Keys& keys_;
+    mutable std::mutex dev_mu_;   // guards devices_
     DeviceMap devices_;
+    DeviceMap devices_snapshot() const { std::lock_guard<std::mutex> g(dev_mu_); return devices_; }
+    DeviceClient* client_for(const std::string& id) const { std::lock_guard<std::mutex> g(dev_mu_); auto it = devices_.find(id); return it == devices_.end() ? nullptr : it->second; }
     OverlayConfig cfg_;
     std::string volume_;
     DropEngine* engine_;

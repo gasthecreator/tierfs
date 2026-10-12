@@ -9,7 +9,7 @@ FUSE_INC := -I/usr/local/include -I/usr/local/include/fuse
 # rpath entry telling dyld where to search at launch.
 FUSE_LIB := -L/usr/local/lib -lfuse-t -Wl,-rpath,/usr/local/lib
 
-all: build/tierfs build/tierfs-backend build/hellofs build/tierctl build/tierfs-device
+all: build/tierfs build/tierfs-backend build/hellofs build/tierctl build/tierfs-device build/tierfsd
 
 build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h core/sqlutil.hpp
 	@mkdir -p build
@@ -119,6 +119,28 @@ build/overlay_write_test: tests/overlay_write_test.cpp build/overlay.o build/dro
 
 test-overlay-write: build/overlay_write_test build/tierfs-device
 	./build/overlay_write_test
+
+build/tfs_c.o: core/tfs_c.cpp core/tfs_c.h core/daemon.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/tierfsd.o: mount/tierfsd.c core/tfs_c.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
+
+DAEMON_OBJS := build/tfs_c.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o
+build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
+	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) -lsqlite3 -framework CoreFoundation
+
+build/daemon.o: core/daemon.cpp core/daemon.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+
+build/daemon_test: tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o build/drop_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) -lsqlite3 -framework CoreFoundation -o $@
+
+test-daemon: build/daemon_test build/tierfs-device build/drop_helper
+	./build/daemon_test
 
 build/scanner.o: core/scanner.cpp core/scanner.hpp core/overlay.hpp core/ledger.hpp
 	@mkdir -p build

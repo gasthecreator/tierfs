@@ -436,7 +436,12 @@ int main() {
         CHECK(w.L->list_quarantine(QuarantineState::HELD).size() == 1 && w.L->get_file(r.fid)->state == FileState::OFFLOADED && w.L->fsck().empty());
         CHECK(ov.unlink("/r.bin") == -ENOENT);
         // ... and can be undeleted
+        struct timeval old_tv[2] = {{1000, 0}, {1000, 0}};
+        utimes(w.root.c_str(), old_tv);
+        utimes((w.root + "/files").c_str(), old_tv);
         CHECK(ov.undelete("/r.bin") == 0 && ov.getattr("/r.bin", &st) == 0 && st.remote && read_path_all(ov, "/r.bin", r.bytes.size()) == r.bytes);
+        struct stat dst;
+        CHECK(stat((w.root + "/files").c_str(), &dst) == 0 && dst.st_mtimespec.tv_sec > 1000);     // the directory looks changed, so the kernel looks again
         CHECK(ov.undelete("/r.bin") == -EEXIST && ov.undelete("/nope") == -ENOENT && ov.undelete("/") == -ENOENT);
         // undelete never covers a file that exists now
         CHECK(ov.unlink("/r.bin") == 0);

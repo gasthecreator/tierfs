@@ -73,8 +73,8 @@ M = [
  ('remote read: output not advanced', P, 'done += static_cast<size_t>(to - from);', ''),
  # --- devices
  ('devices: retired device used', P, 'return d && d->state != "retired";', 'return d != std::nullopt;'),
- ('[pair: the ledger lookup also rejects unknown ids] devices: unknown device used', P, 'if (!devices_.count(id) || !devices_[id]) return false;', ''),
- ('devices: only replica holders', P, 'for (const auto& kv : devices_)\n        if (usable(kv.first)', 'for (const auto& kv : std::map<std::string, DeviceClient*>())\n        if (usable(kv.first)'),
+ ('[pair: the ledger lookup also rejects unknown ids] devices: unknown device used', P, 'if (kit == known.end() || !kit->second) return false;', ''),
+ ('devices: only replica holders', P, 'for (const auto& kv : known)\n        if (usable(kv.first)', 'for (const auto& kv : std::map<std::string, DeviceClient*>())\n        if (usable(kv.first)'),
  ('devices: uncommitted replicas first', P, 'if (r.state == ReplicaState::COMMITTED && usable(r.device_id)', 'if (usable(r.device_id)'),
  ('[a device cannot have two replicas of one version] devices: duplicates in order', P, '&& have.insert(r.device_id).second) order.push_back(r.device_id);', ') order.push_back(r.device_id);'),
  # --- chunk fetch
@@ -334,7 +334,7 @@ M = [
  ('xattr remote: cache ignores the version', P, 'std::string key = f.file_id + ":" + std::to_string(f.current_version);', 'std::string key = f.file_id;'),
  ('xattr remote: cache hit not used', P, 'if (it != xattr_cache_.end()) { *out = it->second; return 0; }', ''),
  ('[needs a manifest the device accepts but this volume cannot open (the recovery tests cover that)] xattr remote: bad manifest accepted', P, 'if (crypto::open_manifest(keys_, volume_, f.file_id, f.current_version, blob.data(), blob.size(), m) != crypto::OpenError::Ok) continue;', 'crypto::open_manifest(keys_, volume_, f.file_id, f.current_version, blob.data(), blob.size(), m);'),
- ('xattr remote: failing device ends the search', P, 'if (!devices_[id]->get_manifest(f.file_id, f.current_version, blob).ok()) continue;', 'if (!devices_[id]->get_manifest(f.file_id, f.current_version, blob).ok()) return -EIO;'),
+ ('xattr remote: failing device ends the search', P, 'if (!client || !client->get_manifest(f.file_id, f.current_version, blob).ok()) continue;', 'if (!client || !client->get_manifest(f.file_id, f.current_version, blob).ok()) return -EIO;'),
  ('xattr remote: no device is not an error', P, '    return -EIO;\n}\n\nint64_t Overlay::getxattr', '    return 0;\n}\n\nint64_t Overlay::getxattr'),
  ('getxattr: local error lost', P, 'ssize_t n = ::getxattr(op.c_str(), name.c_str(), buf, size, 0, XATTR_NOFOLLOW);\n        return n < 0 ? -errno : n;', 'ssize_t n = ::getxattr(op.c_str(), name.c_str(), buf, size, 0, XATTR_NOFOLLOW);\n        return n < 0 ? 0 : n;'),
  ('getxattr: other errors become ENOENT', P, 'if (errno != ENOENT && errno != ENOTDIR) return -errno;\n    auto f = ledger_.get_file_by_path(lp);\n    if (rel.empty() || !f || !is_remote_state(*f)) return -ENOENT;\n    std::vector<std::pair<std::string, crypto::Bytes>> xs;\n    int r = remote_xattrs(*f, &xs);\n    if (r < 0) return r;\n    for (const auto& x : xs) {\n        if (x.first != name)', 'auto f = ledger_.get_file_by_path(lp);\n    if (rel.empty() || !f || !is_remote_state(*f)) return -ENOENT;\n    std::vector<std::pair<std::string, crypto::Bytes>> xs;\n    int r = remote_xattrs(*f, &xs);\n    if (r < 0) return r;\n    for (const auto& x : xs) {\n        if (x.first != name)'),
@@ -385,4 +385,6 @@ M = [
  ('attrs: remote file not waited for', P, 'int wr = wait_idle(g, lp, &f);\n    if (wr < 0) return wr;\n    if (f && !is_remote_state(*f)) {   // it may have been hydrated while we waited: is it a local file now?\n        struct stat again;\n        if (lstat(op.c_str(), &again) == 0 && depth < 4)', 'f = ledger_.get_file_by_path(lp);\n    if (f && !is_remote_state(*f)) {   // it may have been hydrated while we waited: is it a local file now?\n        struct stat again;\n        if (lstat(op.c_str(), &again) == 0 && depth < 4)'),
  ('[pair: the branch above already rejects a tracked file that is not remote] attrs: unknown remote name accepted', P, 'if (!f || !is_remote_state(*f)) return -ENOENT;\n    return ledger_.note_attrs_changed(f->file_id, mode, mtime).ok', 'if (!f) return -ENOENT;\n    return ledger_.note_attrs_changed(f->file_id, mode, mtime).ok'),
  ('attrs: hydrated files not retried', P, 'if (lstat(op.c_str(), &again) == 0 && depth < 4) { g.unlock(); return attr_change(path, apply, mode, mtime, depth + 1); }\n        return -ENOENT;', 'return -ENOENT;'),
+ ('undelete: directory time not moved', P, "utimensat(AT_FDCWD, op.substr(0, op.rfind('/')).c_str(), nullptr, 0);", ''),
+ ('undelete: wrong directory touched', P, "utimensat(AT_FDCWD, op.substr(0, op.rfind('/')).c_str(), nullptr, 0);", "utimensat(AT_FDCWD, \"/\", nullptr, 0);"),
 ]
