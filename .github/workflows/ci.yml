@@ -1,0 +1,17 @@
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+jobs:
+  tests:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: brew install openssl@3 || true
+      - name: Tests (nothing here mounts a filesystem)
+        run: |
+          make test-unit test-client test-device test-replicator test-dropengine test-policy \
+               test-recovery test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init
