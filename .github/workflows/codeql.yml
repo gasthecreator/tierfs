@@ -26,8 +26,8 @@ jobs:
         with:
           languages: c-cpp
           build-mode: manual
-      - name: Build (the core, the tools and the device server; no FUSE needed)
-        run: make build/tierctl build/tierfs-device build/tierfs-backend build/daemon.o build/overlay.o build/scanner.o build/policy.o
+      - name: Compile the core (CodeQL traces compiler calls; on Apple-silicon runners it runs builds under Rosetta, where the arm64-only OpenSSL cannot be linked, and linking adds nothing to the analysis)
+        run: make build/ledger.o build/crypto.o build/devicestore.o build/deviceclient.o build/replicator.o build/dropengine.o build/overlay.o build/scanner.o build/policy.o build/spaceprobe.o build/recovery.o build/daemon.o build/tfs_c.o build/chunkcache.o build/metastore.o build/tierclient.o
       - uses: github/codeql-action/analyze@9f759ee644a3e7c15c1390abf49868036c00067b # v3.38.3
         with:
           category: "/language:c-cpp"

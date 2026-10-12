@@ -525,14 +525,17 @@ int main() {
         CHECK(ov.rename("/b.bin", "/a.bin") == -EBUSY && exists(w.path("b.bin")));       // replacing a frozen file is also refused
         ov.gate()->unfreeze(arec);
         // a writer arriving while the rename waits does not deadlock it
-        CHECK(ov.gate()->freeze(brec, &why));
+        // (a patient overlay: the wait must outlast a slow machine, or the test would measure the machine, not the code)
+        Overlay patient(*w.L, *w.keys, devmap(w), cfg_for(w, 20000), w.E.get());
+        CHECK(patient.gate()->freeze(brec, &why));
         std::atomic<int> rc{999};
-        std::thread t([&] { rc = ov.rename("/b.bin", "/b2.bin"); });
-        usleep(100000);
-        ov.gate()->unfreeze(brec);
+        std::thread t([&] { rc = patient.rename("/b.bin", "/b2.bin"); });
+        usleep(150000);
+        CHECK(rc == 999 && exists(w.path("b.bin")));                       // still waiting, nothing moved
+        patient.gate()->unfreeze(brec);
         t.join();
         CHECK(rc == 0 && exists(w.path("b2.bin")) && !exists(w.path("b.bin")));
-        CHECK(ov.rename("/b2.bin", "/a.bin") == 0 && slurp(w.path("a.bin")) == b.bytes);
+        CHECK(patient.rename("/b2.bin", "/a.bin") == 0 && slurp(w.path("a.bin")) == b.bytes);
     }
 
     {
@@ -999,12 +1002,13 @@ int main() {
         std::atomic<int> hrc{999}, urc{999};
         auto t0 = std::chrono::steady_clock::now();
         std::thread h([&] { hrc = ov.hydrate("/f.bin"); });
-        usleep(150000);
+        for (int i = 0; i < 400 && w.L->get_file(f.fid)->state != FileState::HYDRATING; i++) usleep(25000);   // wait until it really is under way
         CHECK(w.L->get_file(f.fid)->state == FileState::HYDRATING);
         std::thread u([&] { urc = ov.unlink("/f.bin"); });
         h.join();
         u.join();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        if (!(hrc == 0 && urc == 0 && ms < 8000)) printf("      hydrate rc=%d unlink rc=%d after %lld ms\n", hrc.load(), urc.load(), (long long)ms);
         CHECK(hrc == 0 && urc == 0 && ms < 8000);                           // it was woken when the hydration ended, not at the deadline
         OvStat st;
         CHECK(!exists(w.path("f.bin")) && ov.getattr("/f.bin", &st) == -ENOENT && Ledger::is_retired_path(w.L->get_file(f.fid)->path) && w.L->fsck().empty());
@@ -1021,11 +1025,12 @@ int main() {
         Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w, 20000), w.E.get());
         std::atomic<int> hrc{999}, orc{999};
         std::thread h([&] { hrc = ov.hydrate("/f.bin"); });
-        usleep(150000);
+        for (int i = 0; i < 400 && w.L->get_file(f.fid)->state != FileState::HYDRATING; i++) usleep(25000);   // wait until it really is under way
         CHECK(w.L->get_file(f.fid)->state == FileState::HYDRATING);
         std::thread u([&] { orc = op == 0 ? ov.rename("/f.bin", "/g.bin") : ov.chmod("/f.bin", 0600); });
         h.join();
         u.join();
+        if (!(hrc == 0 && orc == 0)) printf("      hydrate rc=%d op rc=%d\n", hrc.load(), orc.load());
         CHECK(hrc == 0 && orc == 0);
         if (op == 0) CHECK(!exists(w.path("f.bin")) && slurp(w.path("g.bin")) == f.bytes && w.L->get_file(f.fid)->path == "/Users/me/proj/g.bin");
         else {
