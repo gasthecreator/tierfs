@@ -5,8 +5,10 @@
 // Rules this class enforces on the device, because the Mac must be able to trust an ack:
 //   - an ack means the bytes are on disk: temp file -> F_FULLFSYNC -> rename ->
 //     F_FULLFSYNC of the directory -> only then the index row (also full-fsync);
-//   - append-only: nothing is ever deleted or overwritten (database triggers back this
-//     up). Re-sending something that exists returns "existed" and the ORIGINAL's hash,
+//   - append-only by default: nothing is overwritten, and nothing is deleted except through the two operations below, which
+//     only an authorized Mac can call (docs/adr/0010): delete_manifests (exactly the named versions) and sweep (chunks that
+//     no stored manifest lists; a database trigger refuses to delete a listed chunk whatever the code does).
+//     Re-sending something that exists returns "existed" and the ORIGINAL's hash,
 //     because random nonces make a re-sealed chunk differ from the stored one;
 //   - every upload is checked against the hash the sender claims, every download and
 //     audit reads the bytes from disk again;
@@ -88,8 +90,34 @@ constexpr size_t MAX_CHUNK_BLOB = 8u << 20;
 constexpr size_t MAX_MANIFEST_BLOB = 15u << 20;
 constexpr size_t MAX_MANIFEST_CHUNKS = 1u << 20;
 constexpr size_t MAX_AUDIT_ITEMS = 64;
+constexpr size_t MAX_DELETE_ITEMS = 64;
+constexpr size_t MAX_SWEEP_CHUNKS = 100000;
+constexpr uint64_t DEFAULT_MIN_SWEEP_AGE = 3600;  // seconds a chunk must be unreferenced and untouched before it may be swept
 constexpr size_t MAX_LIST_ENTRIES = 1000;
 constexpr uint64_t MIN_FREE_RESERVE = 16u << 20;  // never fill the disk to the last byte
+
+struct DeleteManifestsOut {
+    int err = 0;
+    std::string msg;
+    uint64_t seq = 0;              // the device's commit sequence after the call (deleting bumps it, so rollbacks stay visible)
+    std::vector<uint8_t> deleted;  // per item: 1 deleted now, 0 it was not there
+};
+
+struct GcStatus {
+    bool deletions_allowed = false;
+    uint32_t manifests = 0, manifests_without_refs = 0;  // the latter: stored before reference lists existed; sweep is refused while any remain
+    uint64_t chunks = 0, chunk_bytes = 0;
+    uint64_t unreferenced_chunks = 0, unreferenced_bytes = 0;  // listed by no manifest, whatever their age
+    uint64_t manifests_deleted = 0, chunks_deleted = 0;        // lifetime totals, from the device's own log
+};
+
+struct SweepOut {
+    int err = 0;
+    std::string msg;
+    uint64_t chunks_deleted = 0, bytes_deleted = 0;
+    uint64_t chunks_left = 0;     // unreferenced chunks still on the device (too young, or over the limit)
+    uint64_t strays_removed = 0;  // files with no index row, older than the age (leftovers of a crash)
+};
 
 bool valid_chunk_id(const std::string& s);   // 64 lowercase hex
 bool valid_file_id(const std::string& s);    // 32 lowercase hex
@@ -118,6 +146,19 @@ public:
 
     std::vector<AuditOut> audit(const std::vector<AuditItem>& items);
 
+    // --- garbage collection (ADR-0010) ---
+    // Whether this device may delete at all (a paired device, or one started with --allow-delete). Off until enabled: both operations
+    // below then answer EPERM.
+    void set_deletions_allowed(bool allowed);
+    // The floor for the age a sweep may ask for (a request for less is raised to it). Tests lower it.
+    void set_min_sweep_age(uint64_t seconds);
+    // Removes exactly these manifests (and their reference lists), idempotently, and bumps the commit sequence. The chunks stay until a sweep.
+    DeleteManifestsOut delete_manifests(const std::vector<std::pair<std::string, int64_t>>& items);
+    GcStatus gc_status();
+    // Deletes chunks that no stored manifest lists and that were neither uploaded nor reported present within `min_age_s`, at most
+    // `max_chunks` of them, and removes stray files older than that. Refused while any manifest lacks its reference list.
+    SweepOut sweep(uint64_t min_age_s, size_t max_chunks, bool dry_run);
+
     // Free space that must remain after a write (default MIN_FREE_RESERVE). Tests raise it to
     // simulate a nearly full disk without filling one.
     void set_free_reserve(uint64_t bytes);
@@ -141,6 +182,12 @@ private:
     DeviceFaults faults_;
     uint64_t damaged_ = 0;
     uint64_t min_free_ = MIN_FREE_RESERVE;
+    bool deletions_allowed_ = false;
+    uint64_t min_sweep_age_ = DEFAULT_MIN_SWEEP_AGE;
+    bool migrate_1_to_2();
+    bool create_gc_schema();
+    int count_refless_locked();
+    void touch_unreferenced_locked(const std::vector<std::string>& ids);
 };
 
 }  // namespace tierfs

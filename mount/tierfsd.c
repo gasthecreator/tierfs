@@ -181,15 +181,26 @@ static struct fuse_operations ops = {
 
 struct opts {
     char *origin, *prefix, *ledger, *keyfile, *devices, *control;
-    int maint, wait_ms, background, notify, scan, cache_mb;
+    int maint, wait_ms, background, notify, scan, cache_mb, gc, gc_keep, gc_retention_days;
 };
 
 #define OPT(t, f) {t, offsetof(struct opts, f), 0}
-static struct fuse_opt specs[] = {
-    OPT("origin=%s", origin), OPT("prefix=%s", prefix), OPT("ledger=%s", ledger), OPT("keyfile=%s", keyfile),
-    OPT("devices=%s", devices), OPT("control=%s", control), OPT("maint=%d", maint), OPT("waitms=%d", wait_ms),
-    OPT("background=%d", background), OPT("notify=%d", notify), OPT("scan=%d", scan), OPT("cachemb=%d", cache_mb),
-    FUSE_OPT_END};
+static struct fuse_opt specs[] = {OPT("origin=%s", origin),
+                                  OPT("prefix=%s", prefix),
+                                  OPT("ledger=%s", ledger),
+                                  OPT("keyfile=%s", keyfile),
+                                  OPT("devices=%s", devices),
+                                  OPT("control=%s", control),
+                                  OPT("maint=%d", maint),
+                                  OPT("waitms=%d", wait_ms),
+                                  OPT("background=%d", background),
+                                  OPT("notify=%d", notify),
+                                  OPT("scan=%d", scan),
+                                  OPT("cachemb=%d", cache_mb),
+                                  OPT("gc=%d", gc),
+                                  OPT("gckeep=%d", gc_keep),
+                                  OPT("gcretentiondays=%d", gc_retention_days),
+                                  FUSE_OPT_END};
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
@@ -206,6 +217,9 @@ int main(int argc, char *argv[]) {
     t.ledger = o.ledger; t.origin = o.origin; t.prefix = o.prefix; t.keyfile = o.keyfile; t.devices = o.devices;
     t.control = o.control; t.maint_seconds = o.maint; t.write_wait_ms = o.wait_ms; t.background = o.background;
     t.notify = o.notify; t.scan_at_start = o.scan; t.cache_mb = o.cache_mb;
+    t.gc = o.gc;
+    t.gc_keep_versions = o.gc_keep;
+    t.gc_retention_days = o.gc_retention_days;
     char err[512] = {0};
     g_ctx = tfs_open(&t, err, sizeof err);
     if (!g_ctx) {

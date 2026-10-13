@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <filesystem>
 #include <thread>
 
@@ -24,7 +25,8 @@ using sql::Stmt;
 using sql::Txn;
 namespace fs = std::filesystem;
 
-constexpr int SCHEMA_VERSION = 1;
+constexpr int SCHEMA_VERSION =
+    2;  // 2: reference lists, the guarded delete triggers, chunk_touch and gc_log (ADR-0010); version 1 is migrated on open
 
 bool is_lower_hex(const std::string& s, size_t n) {
     if (s.size() != n) return false;
@@ -161,7 +163,7 @@ bool DeviceStore::init(std::string* err) {
         if (t.valid() && t.row()) tables = static_cast<long>(t.col_num(0));
         else { *err = path + " is not a readable database; refusing to touch it"; return false; }
     }
-    if (version != 0 && version != SCHEMA_VERSION) {
+    if (version != 0 && version != SCHEMA_VERSION && version != 1) {
         *err = "device store schema version " + std::to_string(version) + " is not understood by this build; refusing to touch it";
         return false;
     }
@@ -180,7 +182,11 @@ bool DeviceStore::init(std::string* err) {
         *err = "cannot enable full-fsync durability settings";
         return false;
     }
-    if (version != 0) return true;
+    if (version == 1) return migrate_1_to_2() ? true : (*err = "cannot upgrade the device store to schema version 2; it was left as it was", false);
+    if (version != 0) {
+        exec("UPDATE meta SET value='0' WHERE key='gc_open'");  // only ever 1 inside a transaction that rolled back or committed it back to 0
+        return true;
+    }
 
     Txn t(db_);
     if (!t.began()) { *err = "cannot begin"; return false; }
@@ -191,9 +197,7 @@ bool DeviceStore::init(std::string* err) {
         " seq INTEGER NOT NULL UNIQUE, created_at INTEGER NOT NULL, PRIMARY KEY(file_id, version)) WITHOUT ROWID",
         // Append-only: the device cannot be told to forget (I4), and a bug cannot either.
         "CREATE TRIGGER chunks_append_only_u BEFORE UPDATE ON chunks BEGIN SELECT RAISE(ABORT,'append-only'); END",
-        "CREATE TRIGGER chunks_append_only_d BEFORE DELETE ON chunks BEGIN SELECT RAISE(ABORT,'append-only'); END",
         "CREATE TRIGGER manifests_append_only_u BEFORE UPDATE ON manifests BEGIN SELECT RAISE(ABORT,'append-only'); END",
-        "CREATE TRIGGER manifests_append_only_d BEFORE DELETE ON manifests BEGIN SELECT RAISE(ABORT,'append-only'); END",
         "CREATE TRIGGER meta_no_delete BEFORE DELETE ON meta BEGIN SELECT RAISE(ABORT,'meta rows are never deleted'); END",
         // Identity never changes; a volume binding never changes once set; seq only goes up.
         "CREATE TRIGGER meta_fixed_identity BEFORE UPDATE ON meta WHEN OLD.key IN ('device_id','epoch','created_at')"
@@ -205,6 +209,10 @@ bool DeviceStore::init(std::string* err) {
     };
     for (const char* q : ddl)
         if (!exec(q)) { *err = std::string("schema: ") + q; return false; }
+    if (!create_gc_schema()) {
+        *err = "schema: garbage collection tables";
+        return false;
+    }
     crypto::Bytes id = crypto::random_bytes(16), ep = crypto::random_bytes(8);
     if (id.size() != 16 || ep.size() != 8) { *err = "system RNG failed"; return false; }
     uint64_t epoch = 0;
@@ -227,6 +235,65 @@ std::string DeviceStore::meta_get(const std::string& key) {
     Stmt s(db_, "SELECT value FROM meta WHERE key=?1");
     s.text(1, key);
     return s.row() ? s.col_text(0) : "";
+}
+
+// Everything schema version 2 adds, inside the caller's transaction. Deleting a chunk or a manifest is possible only inside a transaction
+// that has set meta gc_open to 1, and a chunk that any stored manifest lists can never be deleted at all (the trigger does not look at gc_open).
+bool DeviceStore::create_gc_schema() {
+    const char* ddl[] = {
+        "CREATE TABLE manifest_refs(file_id TEXT NOT NULL, version INTEGER NOT NULL, chunk_id TEXT NOT NULL,"
+        " PRIMARY KEY(file_id, version, chunk_id)) WITHOUT ROWID",
+        "CREATE INDEX manifest_refs_by_chunk ON manifest_refs(chunk_id)",
+        "CREATE TABLE refs_done(file_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY(file_id, version)) WITHOUT ROWID",
+        "CREATE TABLE chunk_touch(chunk_id TEXT PRIMARY KEY, at INTEGER NOT NULL) WITHOUT ROWID",
+        "CREATE TABLE gc_log(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, item TEXT NOT NULL,"
+        " version INTEGER NOT NULL, size INTEGER NOT NULL)",
+        "CREATE TRIGGER gc_log_no_update BEFORE UPDATE ON gc_log BEGIN SELECT RAISE(ABORT,'the deletion log is append-only'); END",
+        "CREATE TRIGGER gc_log_no_delete BEFORE DELETE ON gc_log BEGIN SELECT RAISE(ABORT,'the deletion log is append-only'); END",
+        "CREATE TRIGGER chunks_delete_guard BEFORE DELETE ON chunks WHEN (SELECT value FROM meta WHERE key='gc_open')!='1'"
+        " BEGIN SELECT RAISE(ABORT,'append-only outside a sweep'); END",
+        "CREATE TRIGGER chunks_delete_listed BEFORE DELETE ON chunks WHEN EXISTS(SELECT 1 FROM manifest_refs WHERE chunk_id=OLD.chunk_id)"
+        " BEGIN SELECT RAISE(ABORT,'a stored manifest still lists this chunk'); END",
+        "CREATE TRIGGER manifests_delete_guard BEFORE DELETE ON manifests WHEN (SELECT value FROM meta WHERE key='gc_open')!='1'"
+        " BEGIN SELECT RAISE(ABORT,'append-only outside a deletion'); END",
+        "INSERT INTO meta(key,value) VALUES('gc_open','0')",
+    };
+    for (const char* q : ddl)
+        if (!exec(q)) return false;
+    return true;
+}
+
+bool DeviceStore::migrate_1_to_2() {
+    Txn t(db_);
+    if (!t.began()) return false;
+    if (!exec("DROP TRIGGER IF EXISTS chunks_append_only_d") || !exec("DROP TRIGGER IF EXISTS manifests_append_only_d") || !create_gc_schema())
+        return false;
+    // The manifests stored so far have no reference lists: sweeping stays refused until the Mac re-sends them (backfill in put_manifest).
+    if (!exec("PRAGMA user_version=2") || !t.commit()) return false;
+    return true;
+}
+
+int DeviceStore::count_refless_locked() {
+    Stmt q(db_, "SELECT COUNT(*) FROM manifests m WHERE NOT EXISTS(SELECT 1 FROM refs_done r WHERE r.file_id=m.file_id AND r.version=m.version)");
+    return q.row() ? static_cast<int>(q.col_num(0)) : 1 << 30;  // unreadable: count as unknown, which refuses a sweep
+}
+
+// A chunk that no manifest lists is a sweep candidate: remember that the Mac mentioned it, so one it is about to use is not swept.
+void DeviceStore::touch_unreferenced_locked(const std::vector<std::string>& ids) {
+    std::vector<std::string> todo;
+    for (const auto& id : ids) {
+        Stmt q(db_, "SELECT 1 FROM manifest_refs WHERE chunk_id=?1 LIMIT 1");
+        q.text(1, id);
+        if (!q.row()) todo.push_back(id);
+    }
+    if (todo.empty()) return;
+    Txn t(db_);
+    if (!t.began()) return;
+    for (const auto& id : todo) {
+        Stmt ins(db_, "INSERT OR REPLACE INTO chunk_touch(chunk_id,at) VALUES(?1,?2)");
+        if (!ins.text(1, id).num(2, time(nullptr)).run()) return;
+    }
+    t.commit();
 }
 
 std::string DeviceStore::chunk_path(const std::string& id) const { return dir_ + "/chunks/" + first_n(id, 2) + "/" + id + ".blob"; }
@@ -299,6 +366,10 @@ std::vector<bool> DeviceStore::has_chunks(const std::vector<std::string>& ids) {
         s.text(1, id);
         out.push_back(valid_chunk_id(id) && s.row());
     }
+    std::vector<std::string> present;
+    for (size_t i = 0; i < ids.size(); i++)
+        if (out[i]) present.push_back(ids[i]);
+    touch_unreferenced_locked(present);
     return out;
 }
 
@@ -318,8 +389,11 @@ PutChunkOut DeviceStore::put_chunk(const std::string& id, const std::vector<uint
         if (q.row()) {   // append-only: keep the original, say so, and tell the sender what we hold
             out.existed = true;
             out.sha256_hex = q.col_text(0);
-            return out;
         }
+    }
+    if (out.existed) {
+        touch_unreferenced_locked({id});
+        return out;
     }
     if (faults_.enospc) return fail(ENOSPC, "device is full");
     struct statvfs sv;
@@ -429,8 +503,31 @@ PutManifestOut DeviceStore::put_manifest(const std::string& file_id, int64_t ver
             out.existed = true;
             out.sha256_hex = q.col_text(0);
             out.seq = static_cast<uint64_t>(q.col_num(1));
-            return out;
         }
+    }
+    if (out.existed) {
+        // A manifest stored before reference lists existed gets its list when the very same manifest is sent again (the Mac fetched the
+        // blob, read the list inside it and re-sent both): only if every listed chunk is here, and only for an identical blob.
+        Stmt done(db_, "SELECT 1 FROM refs_done WHERE file_id=?1 AND version=?2");
+        done.text(1, file_id).num(2, version);
+        bool have = done.row();
+        bool all_here = out.sha256_hex == actual;
+        for (size_t i = 0; !have && all_here && i < chunk_ids.size(); i++) {
+            Stmt c(db_, "SELECT 1 FROM chunks WHERE chunk_id=?1");
+            c.text(1, chunk_ids[i]);
+            all_here = c.row();
+        }
+        if (!have && all_here) {
+            Txn t(db_);
+            bool ok = t.began();
+            for (const auto& c : chunk_ids) {
+                Stmt r(db_, "INSERT OR IGNORE INTO manifest_refs(file_id,version,chunk_id) VALUES(?1,?2,?3)");
+                ok = ok && r.text(1, file_id).num(2, version).text(3, c).run();
+            }
+            Stmt d(db_, "INSERT OR IGNORE INTO refs_done(file_id,version) VALUES(?1,?2)");
+            ok = ok && d.text(1, file_id).num(2, version).run() && t.commit();
+        }
+        return out;
     }
     // A manifest may only describe chunks the device really has.
     for (const auto& c : chunk_ids) {
@@ -461,6 +558,12 @@ PutManifestOut DeviceStore::put_manifest(const std::string& file_id, int64_t ver
                  .num(6, time(nullptr)).run() ||
             !up.text(1, std::to_string(seq)).run())
             return fail(EIO, "cannot record manifest");
+        for (const auto& c : chunk_ids) {
+            Stmt r(db_, "INSERT OR IGNORE INTO manifest_refs(file_id,version,chunk_id) VALUES(?1,?2,?3)");
+            if (!r.text(1, file_id).num(2, version).text(3, c).run()) return fail(EIO, "cannot record the manifest's chunk list");
+        }
+        Stmt dn(db_, "INSERT INTO refs_done(file_id,version) VALUES(?1,?2)");
+        if (!dn.text(1, file_id).num(2, version).run()) return fail(EIO, "cannot record the manifest's chunk list");
         crash_point("device.manifest.before_commit");
         if (!t.commit()) return fail(EIO, "cannot commit manifest");
     }
@@ -544,6 +647,217 @@ std::vector<AuditOut> DeviceStore::audit(const std::vector<AuditItem>& items) {
         if (rc) { a.status = 2; out.push_back(a); continue; }
         a.response_hex = crypto::audit_response_hex(it.nonce, data.data(), data.size());
         out.push_back(a);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- garbage collection (ADR-0010)
+
+void DeviceStore::set_deletions_allowed(bool allowed) {
+    std::lock_guard<std::mutex> lk(mu_);
+    deletions_allowed_ = allowed;
+}
+
+void DeviceStore::set_min_sweep_age(uint64_t seconds) {
+    std::lock_guard<std::mutex> lk(mu_);
+    min_sweep_age_ = seconds;
+}
+
+static const char* const NO_DELETIONS = "this device does not accept deletions (pair it, or start it with --allow-delete)";
+
+DeleteManifestsOut DeviceStore::delete_manifests(const std::vector<std::pair<std::string, int64_t>>& items) {
+    DeleteManifestsOut out;
+    auto fail = [&](int e, const std::string& m) {
+        out.err = e;
+        out.msg = m;
+        out.deleted.clear();
+        return out;
+    };
+    if (items.empty() || items.size() > MAX_DELETE_ITEMS) return fail(EMSGSIZE, "between 1 and 64 manifests per request");
+    for (const auto& it : items)
+        if (!valid_file_id(it.first) || it.second < 1 || it.second > (1ll << 40)) return fail(EINVAL, "bad manifest id");
+
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!deletions_allowed_) return fail(EPERM, NO_DELETIONS);
+    if (faults_.slow_ms) std::this_thread::sleep_for(std::chrono::milliseconds(faults_.slow_ms));
+    std::vector<std::string> gone_paths;
+    out.deleted.assign(items.size(), 0);
+    uint64_t seq = strtoull(meta_get("seq").c_str(), nullptr, 10);
+    {
+        Txn t(db_);
+        if (!t.began() || !exec("UPDATE meta SET value='1' WHERE key='gc_open'")) return fail(EIO, "cannot begin");
+        bool any = false;
+        for (size_t i = 0; i < items.size(); i++) {
+            int64_t size = 0;
+            {
+                Stmt q(db_, "SELECT size FROM manifests WHERE file_id=?1 AND version=?2");
+                q.text(1, items[i].first).num(2, items[i].second);
+                if (!q.row()) continue;  // not here (already deleted, or never was): fine, say so
+                size = q.col_num(0);
+            }
+            Stmt r(db_, "DELETE FROM manifest_refs WHERE file_id=?1 AND version=?2");
+            Stmt d(db_, "DELETE FROM refs_done WHERE file_id=?1 AND version=?2");
+            Stmt m(db_, "DELETE FROM manifests WHERE file_id=?1 AND version=?2");
+            Stmt lg(db_, "INSERT INTO gc_log(ts,kind,item,version,size) VALUES(?1,'manifest',?2,?3,?4)");
+            if (!r.text(1, items[i].first).num(2, items[i].second).run() || !d.text(1, items[i].first).num(2, items[i].second).run() ||
+                !m.text(1, items[i].first).num(2, items[i].second).run() ||
+                !lg.num(1, time(nullptr)).text(2, items[i].first).num(3, items[i].second).num(4, size).run())
+                return fail(EIO, "cannot delete the manifest's records");
+            out.deleted[i] = 1;
+            any = true;
+            gone_paths.push_back(manifest_path(items[i].first, items[i].second));
+        }
+        if (any) {
+            seq++;
+            Stmt up(db_, "UPDATE meta SET value=?1 WHERE key='seq'");
+            if (!up.text(1, std::to_string(seq)).run()) return fail(EIO, "cannot advance the commit sequence");
+        }
+        if (!exec("UPDATE meta SET value='0' WHERE key='gc_open'")) return fail(EIO, "cannot close the deletion");
+        crash_point("device.delete.before_commit");
+        if (!t.commit()) return fail(EIO, "cannot commit the deletion");
+    }
+    crash_point("device.delete.after_commit");  // records gone, files still there: strays, removed below or by the next sweep
+    for (const auto& p : gone_paths) {
+        unlink(p.c_str());
+        std::string parent = fs::path(p).parent_path().string();
+        rmdir(parent.c_str());  // only succeeds when it is empty
+    }
+    if (!gone_paths.empty()) sync_dir(dir_ + "/manifests");
+    out.seq = seq;
+    return out;
+}
+
+GcStatus DeviceStore::gc_status() {
+    std::lock_guard<std::mutex> lk(mu_);
+    GcStatus g;
+    g.deletions_allowed = deletions_allowed_;
+    auto num = [&](const char* sql) {
+        Stmt q(db_, sql);
+        return q.row() ? static_cast<uint64_t>(q.col_num(0)) : 0;
+    };
+    g.manifests = static_cast<uint32_t>(num("SELECT COUNT(*) FROM manifests"));
+    int refless = count_refless_locked();
+    g.manifests_without_refs = static_cast<uint32_t>(refless);
+    g.chunks = num("SELECT COUNT(*) FROM chunks");
+    g.chunk_bytes = num("SELECT COALESCE(SUM(size),0) FROM chunks");
+    g.unreferenced_chunks = num("SELECT COUNT(*) FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM manifest_refs r WHERE r.chunk_id=c.chunk_id)");
+    g.unreferenced_bytes =
+        num("SELECT COALESCE(SUM(size),0) FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM manifest_refs r WHERE r.chunk_id=c.chunk_id)");
+    g.manifests_deleted = num("SELECT COUNT(*) FROM gc_log WHERE kind='manifest'");
+    g.chunks_deleted = num("SELECT COUNT(*) FROM gc_log WHERE kind='chunk'");
+    return g;
+}
+
+SweepOut DeviceStore::sweep(uint64_t min_age_s, size_t max_chunks, bool dry_run) {
+    SweepOut out;
+    auto fail = [&](int e, const std::string& m) {
+        out.err = e;
+        out.msg = m;
+        return out;
+    };
+    if (max_chunks == 0) return fail(EINVAL, "a sweep must be allowed to delete at least one chunk");
+    if (max_chunks > MAX_SWEEP_CHUNKS) max_chunks = MAX_SWEEP_CHUNKS;
+
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!deletions_allowed_) return fail(EPERM, NO_DELETIONS);
+    if (faults_.slow_ms) std::this_thread::sleep_for(std::chrono::milliseconds(faults_.slow_ms));
+    int refless = count_refless_locked();
+    if (refless > 0)
+        return fail(EPERM, std::to_string(refless) +
+                               " stored manifest(s) have no chunk list yet (stored by an older version); the Mac must re-send them first (a "
+                               "garbage-collection run from the Mac does that)");
+    uint64_t age = std::max(min_age_s, min_sweep_age_);
+    int64_t now = time(nullptr);
+    int64_t cutoff = now - static_cast<int64_t>(std::min<uint64_t>(age, 1ull << 40));
+
+    struct Cand {
+        std::string id;
+        int64_t size;
+    };
+    std::vector<Cand> cands;
+    {
+        Stmt q(db_,
+               "SELECT c.chunk_id, c.size FROM chunks c LEFT JOIN chunk_touch t ON t.chunk_id=c.chunk_id"
+               " WHERE NOT EXISTS(SELECT 1 FROM manifest_refs r WHERE r.chunk_id=c.chunk_id)"
+               " AND MAX(c.created_at, COALESCE(t.at,0)) <= ?1 ORDER BY c.created_at LIMIT ?2");
+        q.num(1, cutoff).num(2, static_cast<int64_t>(max_chunks));
+        while (q.row()) cands.push_back({q.col_text(0), q.col_num(1)});
+    }
+    uint64_t unref_total = 0;
+    {
+        Stmt q(db_, "SELECT COUNT(*) FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM manifest_refs r WHERE r.chunk_id=c.chunk_id)");
+        if (q.row()) unref_total = static_cast<uint64_t>(q.col_num(0));
+    }
+    for (const auto& c : cands) {
+        out.chunks_deleted++;
+        out.bytes_deleted += static_cast<uint64_t>(c.size);
+    }
+    if (!dry_run && !cands.empty()) {
+        Txn t(db_);
+        if (!t.began() || !exec("UPDATE meta SET value='1' WHERE key='gc_open'")) {
+            out = SweepOut();
+            return fail(EIO, "cannot begin");
+        }
+        for (const auto& c : cands) {
+            Stmt tc(db_, "DELETE FROM chunk_touch WHERE chunk_id=?1");
+            Stmt d(db_, "DELETE FROM chunks WHERE chunk_id=?1");
+            Stmt lg(db_, "INSERT INTO gc_log(ts,kind,item,version,size) VALUES(?1,'chunk',?2,0,?3)");
+            if (!tc.text(1, c.id).run() || !d.text(1, c.id).run() || !lg.num(1, now).text(2, c.id).num(3, c.size).run()) {
+                out = SweepOut();
+                return fail(EIO, "cannot delete a chunk's records");  // the transaction rolls back: nothing was swept
+            }
+        }
+        if (!exec("UPDATE meta SET value='0' WHERE key='gc_open'")) {
+            out = SweepOut();
+            return fail(EIO, "cannot close the sweep");
+        }
+        crash_point("device.sweep.before_commit");
+        if (!t.commit()) {
+            out = SweepOut();
+            return fail(EIO, "cannot commit the sweep");
+        }
+        crash_point("device.sweep.after_commit");  // records gone, files still there: strays, removed below or by the next sweep
+        for (const auto& c : cands) unlink(chunk_path(c.id).c_str());
+        sync_dir(dir_ + "/chunks");
+    }
+    out.chunks_left = unref_total >= out.chunks_deleted ? unref_total - out.chunks_deleted : 0;
+
+    // Leftovers of a crash between "records deleted" and "file unlinked" (or the reverse for an upload): files that no row describes.
+    std::error_code ec;
+    for (auto& sub : fs::directory_iterator(dir_ + "/chunks", ec)) {
+        std::error_code e2;
+        if (!sub.is_directory(e2)) continue;
+        for (auto& f : fs::directory_iterator(sub.path(), e2)) {
+            std::string name = f.path().filename().string();
+            if (name.size() != 64 + 5 || name.compare(64, 5, ".blob") != 0 || !valid_chunk_id(name.substr(0, 64))) continue;
+            Stmt q(db_, "SELECT 1 FROM chunks WHERE chunk_id=?1");
+            q.text(1, name.substr(0, 64));
+            if (q.row()) continue;
+            struct stat st;
+            if (stat(f.path().c_str(), &st) != 0 || static_cast<int64_t>(st.st_mtime) > cutoff) continue;
+            if (!dry_run) unlink(f.path().c_str());
+            out.strays_removed++;
+        }
+    }
+    for (auto& sub : fs::directory_iterator(dir_ + "/manifests", ec)) {
+        std::error_code e2;
+        std::string fid = sub.path().filename().string();
+        if (!sub.is_directory(e2) || !valid_file_id(fid)) continue;
+        for (auto& f : fs::directory_iterator(sub.path(), e2)) {
+            std::string name = f.path().filename().string();
+            size_t dot = name.rfind(".mf");
+            if (dot == std::string::npos || dot + 3 != name.size() || dot == 0) continue;
+            int64_t ver = atoll(name.substr(0, dot).c_str());
+            if (ver < 1 || std::to_string(ver) != name.substr(0, dot)) continue;
+            Stmt q(db_, "SELECT 1 FROM manifests WHERE file_id=?1 AND version=?2");
+            q.text(1, fid).num(2, ver);
+            if (q.row()) continue;
+            struct stat st;
+            if (stat(f.path().c_str(), &st) != 0 || static_cast<int64_t>(st.st_mtime) > cutoff) continue;
+            if (!dry_run) unlink(f.path().c_str());
+            out.strays_removed++;
+        }
+        if (!dry_run) rmdir(sub.path().c_str());
     }
     return out;
 }

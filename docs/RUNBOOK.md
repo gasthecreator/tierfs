@@ -54,6 +54,17 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## Freeing space on the devices
+Devices keep every version of every file until you let the Mac forget the old ones. Nothing is forgotten unless you ask.
+```bash
+./build/tierctl control <ledger dir> gc-plan     # read-only: what would be forgotten, what each device owes, what a sweep would take
+./build/tierctl control <ledger dir> gc-run      # decide, tell the devices, sweep
+```
+Rules (see ADR-0010): a file keeps its newest 3 versions; older ones go once a newer version is held by two good devices (the run audits them first, so enough devices must be
+reachable); a deleted file keeps all versions for 30 days (until then `undelete` works), then they go. A device accepts deletions only if it is paired or was started with
+`--allow-delete`. A device that is away keeps owing its deletions and is served by the next run. To run it automatically once a day, start the daemon with `-o gc=1`
+(`gckeep=N` for the versions kept, `gcretentiondays=N` for the days a deleted file is kept).
+
 ## Running the daemon (only after the mount-safety note is resolved)
 ```bash
 ./build/tierfsd -o origin=<real folder>,prefix=/Users/you/Folder/,ledger=<ledger dir>,keyfile=keychain,devices=host:port+host:port,namedattr,noappledouble <mountpoint>

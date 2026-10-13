@@ -360,7 +360,8 @@ int main() {
     Server srv(P);
     srv.log = root + "/paired-banner.log";
     CHECK(srv.start(store));
-    CHECK(has(read_all(srv.log), "PAIRED, authenticated channel required") && !has(read_all(srv.log), "NOT PAIRED"));
+    CHECK(has(read_all(srv.log), "PAIRED, authenticated channel required") && !has(read_all(srv.log), "NOT PAIRED") &&
+          has(read_all(srv.log), "deletions accepted"));
     {
         printf("== the right secret: every operation works through the channel\n");
         DeviceClient dc("127.0.0.1", P, 3000, psk2);
@@ -387,6 +388,17 @@ int main() {
         CHECK(dc.list_manifests(0, 100, lr).ok() && lr.entries.size() == 1);
         std::vector<AuditOut> ao;
         CHECK(dc.audit({{0, cid, 0, Bytes(32, 1)}}, ao).ok() && ao.size() == 1 && ao[0].status == 0);
+        // a paired device accepts deletions without being told to (an open one does not): only the authenticated Mac can ask
+        GcStatus gs;
+        CHECK(dc.gc_status(gs).ok() && gs.deletions_allowed && gs.manifests == 1 && gs.chunks == 1 && gs.manifests_without_refs == 0);
+        PutManifestReply mr2;
+        CHECK(dc.put_manifest(std::string(32, 'f'), 2, blob_of(310, 10), {cid}, mr2).ok() && mr2.seq == 2);
+        std::vector<uint8_t> deleted;
+        uint64_t dseq = 0;
+        CHECK(dc.delete_manifests({{std::string(32, 'f'), 2}}, deleted, &dseq).ok() && deleted == std::vector<uint8_t>({1}) && dseq == 3);
+        SweepOut sw;
+        CHECK(dc.sweep(0, 100, false, sw).ok() && sw.chunks_deleted == 0);  // the default floor (1 hour) protects a chunk uploaded a moment ago
+        CHECK(dc.get_manifest(std::string(32, 'f'), 2, mgot).err == ENOENT && dc.get_chunk(cid, got).ok());
         // a dropped connection is re-established, with a fresh handshake and fresh keys
         dc.disconnect();
         CHECK(dc.info(info).ok());
@@ -613,6 +625,20 @@ int main() {
         DeviceClient plain("127.0.0.1", P + 2, 2000);
         DevInfo info;
         CHECK(plain.info(info).ok());
+        GcStatus gs;
+        std::vector<uint8_t> del;
+        CHECK(plain.gc_status(gs).ok() && !gs.deletions_allowed);
+        DevRes dr = plain.delete_manifests({{std::string(32, 'a'), 1}}, del);
+        CHECK(dr.err == EPERM && has(dr.msg, "does not accept deletions") && !has(read_all(open.log), "deletions accepted"));
+        {  // an open device started with --allow-delete says so (and accepts the deletion)
+            Server del(P + 5);
+            del.log = root + "/open-delete-banner.log";
+            CHECK(del.start(root + "/open-delete-store", {"--allow-delete"}));
+            DeviceClient dcl("127.0.0.1", P + 5, 2000);
+            std::vector<uint8_t> gone;
+            CHECK(has(read_all(del.log), "NOT PAIRED") && has(read_all(del.log), "deletions accepted") &&
+                  dcl.delete_manifests({{std::string(32, 'a'), 1}}, gone).ok() && gone.size() == 1);
+        }
         DeviceClient with_secret("127.0.0.1", P + 2, 2000, psk2);
         DevRes r = with_secret.info(info);
         CHECK(!r.ok() && r.err == EACCES && has(r.msg, "authentication with the device failed") && has(r.msg, "refused"));

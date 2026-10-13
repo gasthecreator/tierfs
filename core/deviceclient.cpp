@@ -296,4 +296,82 @@ DevRes DeviceClient::audit(const std::vector<AuditItem>& items, std::vector<Audi
     return r;
 }
 
+DevRes DeviceClient::delete_manifests(const std::vector<std::pair<std::string, int64_t>>& items, std::vector<uint8_t>& deleted, uint64_t* seq) {
+    deleted.clear();
+    if (items.empty() || items.size() > MAX_DELETE_ITEMS) return {EMSGSIZE, "between 1 and 64 manifests per request"};
+    Writer w;
+    w.u32(static_cast<uint32_t>(items.size()));
+    for (const auto& it : items) {
+        w.str(it.first);
+        w.i64(it.second);
+    }
+    std::vector<uint8_t> rep;
+    DevRes r = call(MSG_DEV_DELETE_MANIFESTS, w.b, rep, 0);
+    if (!r.ok()) return r;
+    try {
+        Reader rd(rep);
+        uint64_t s = rd.u64();
+        uint32_t n = rd.u32();
+        if (n != items.size()) return {EPROTO, "wrong number of deletion answers"};
+        for (uint32_t i = 0; i < n; i++) {
+            uint8_t d = rd.u8();
+            if (d > 1) return {EPROTO, "bad deletion answer"};
+            deleted.push_back(d);
+        }
+        if (seq) *seq = s;
+    } catch (...) {
+        deleted.clear();
+        return {EPROTO, "malformed reply"};
+    }
+    return r;
+}
+
+DevRes DeviceClient::gc_status(GcStatus& out) {
+    std::vector<uint8_t> rep;
+    DevRes r = call(MSG_DEV_GC_STATUS, {}, rep, 0);
+    if (!r.ok()) return r;
+    try {
+        Reader rd(rep);
+        GcStatus g;
+        uint8_t allowed = rd.u8();
+        if (allowed > 1) return {EPROTO, "bad status"};
+        g.deletions_allowed = allowed == 1;
+        g.manifests = rd.u32();
+        g.manifests_without_refs = rd.u32();
+        g.chunks = rd.u64();
+        g.chunk_bytes = rd.u64();
+        g.unreferenced_chunks = rd.u64();
+        g.unreferenced_bytes = rd.u64();
+        g.manifests_deleted = rd.u64();
+        g.chunks_deleted = rd.u64();
+        out = g;
+    } catch (...) {
+        return {EPROTO, "malformed reply"};
+    }
+    return r;
+}
+
+DevRes DeviceClient::sweep(uint64_t min_age_s, uint32_t max_chunks, bool dry_run, SweepOut& out) {
+    Writer w;
+    w.u64(min_age_s);
+    w.u32(max_chunks);
+    w.u8(dry_run ? 1 : 0);
+    std::vector<uint8_t> rep;
+    // A sweep reads the device's directories: allow it time in proportion to the work it may do.
+    DevRes r = call(MSG_DEV_SWEEP, w.b, rep, static_cast<uint64_t>(max_chunks) * 4096);
+    if (!r.ok()) return r;
+    try {
+        Reader rd(rep);
+        SweepOut o;
+        o.chunks_deleted = rd.u64();
+        o.bytes_deleted = rd.u64();
+        o.chunks_left = rd.u64();
+        o.strays_removed = rd.u64();
+        out = o;
+    } catch (...) {
+        return {EPROTO, "malformed reply"};
+    }
+    return r;
+}
+
 }  // namespace tierfs

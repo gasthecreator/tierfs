@@ -55,6 +55,8 @@ struct ReconcileReport {
     std::vector<std::string> chunks_missing;     // a committed version with chunks absent from the device
     std::vector<std::string> conflicts;          // the device holds a DIFFERENT manifest than the ledger recorded
     std::vector<std::string> unknown_manifests;  // on the device, unknown to the ledger (never adopted blindly)
+    std::vector<std::string>
+        pruned_leftovers;  // on the device, but the ledger gave up on that version: never adopted, deletion is owed again (ADR-0010)
     size_t replicas_checked = 0, audited = 0, audit_failed = 0;
     bool suspect_cleared = false;
 };

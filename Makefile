@@ -5,6 +5,9 @@ CXX      ?= clang++
 SAN      ?= -fsanitize=address,undefined
 CFLAGS   ?= -Wall -Wextra -g $(SAN) -D_FILE_OFFSET_BITS=64
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -g $(SAN)
+# Header dependencies are generated while compiling (build/*.d), so changing a header rebuilds everything that includes it, however indirectly
+# (a stale object that disagrees with a header about a struct's layout is memory corruption, not a build error).
+DEPFLAGS := -MMD -MP
 FUSE_INC := -I/usr/local/include -I/usr/local/include/fuse
 # The dylib's install name is @rpath/libfuse-t.dylib, so the binary needs an
 # rpath entry telling dyld where to search at launch.
@@ -14,11 +17,11 @@ all: build/tierfs build/tierfs-backend build/hellofs build/tierctl build/tierfs-
 
 build/metastore.o: core/metastore.cpp core/metastore.hpp core/tierclient.h core/sqlutil.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp core/hash.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/keysource.o build/keychain_mac.o
 	@mkdir -p build
@@ -26,7 +29,7 @@ build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledge
 
 build/ledger.o: core/ledger.cpp core/ledger.hpp core/sqlutil.hpp core/hash.hpp core/crashpoint.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/ledger_test: tests/ledger_test.cpp build/ledger.o build/ledger_helper
 	$(CXX) $(CXXFLAGS) tests/ledger_test.cpp build/ledger.o -o $@ $(SQLITE_LIB)
@@ -41,51 +44,61 @@ OPENSSL_LIB := $(OPENSSL_DIR)/lib/libcrypto.a
 
 build/crypto.o: core/crypto.cpp core/crypto.hpp core/wire.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/securechannel.o: core/securechannel.cpp core/securechannel.hpp core/crypto.hpp core/wire.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/keysource.o: core/keysource.cpp core/keysource.hpp core/securechannel.hpp core/crypto.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/keychain_mac.o: core/keychain_mac.cpp core/crypto.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/devicestore.o: core/devicestore.cpp core/devicestore.hpp core/crypto.hpp core/sqlutil.hpp core/crashpoint.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/deviceclient.o: core/deviceclient.cpp core/deviceclient.hpp core/devicestore.hpp core/net.hpp core/wire.hpp core/crypto.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/spaceprobe.o: core/spaceprobe.cpp core/spaceprobe.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/recovery.o: core/recovery.cpp core/recovery.hpp core/crypto.hpp core/deviceclient.hpp core/fsutil.hpp core/crashpoint.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/overlay.o: core/overlay.cpp core/overlay.hpp core/ledger.hpp core/crypto.hpp core/dropengine.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
+
+build/gc.o: core/gc.cpp core/gc.hpp core/replicator.hpp core/ledger.hpp core/devicestore.hpp core/crashpoint.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
+
+build/gc_test: tests/gc_test.cpp build/gc.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/gc_test.cpp build/gc.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+
+test-gc: build/gc_test build/tierfs-device
+	./build/gc_test
 
 build/policy.o: core/policy.cpp core/policy.hpp core/spaceprobe.hpp core/dropengine.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/dropengine.o: core/dropengine.cpp core/dropengine.hpp core/fsutil.hpp core/replicator.hpp core/ledger.hpp core/crashpoint.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/replicator.o: core/replicator.cpp core/replicator.hpp core/ledger.hpp core/deviceclient.hpp core/crypto.hpp core/crashpoint.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/repl_helper: tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/repl_helper.cpp build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
@@ -131,22 +144,22 @@ test-overlay-write: build/overlay_write_test build/tierfs-device
 
 build/tfs_c.o: core/tfs_c.cpp core/tfs_c.h core/daemon.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/tierfsd.o: mount/tierfsd.c core/tfs_c.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
+	$(CC) $(CFLAGS) $(FUSE_INC) $(DEPFLAGS) -c $< -o $@
 
-DAEMON_OBJS := build/keysource.o build/keychain_mac.o build/tfs_c.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+DAEMON_OBJS := build/keysource.o build/keychain_mac.o build/tfs_c.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
 build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
 	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security
 
-build/daemon.o: core/daemon.cpp core/daemon.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
+build/daemon.o: core/daemon.cpp core/daemon.hpp core/gc.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
-build/daemon_test: tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
+build/daemon_test: tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
 
 test-daemon: build/daemon_test build/tierfs-device build/drop_helper
 	./build/daemon_test
@@ -171,7 +184,7 @@ test-keysource: build/keysource_test
 
 build/scanner.o: core/scanner.cpp core/scanner.hpp core/overlay.hpp core/ledger.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
 build/scanner_test: tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
@@ -260,11 +273,11 @@ build/tierfs-backend: backend/server.cpp core/wire.hpp
 
 build/tierclient.o: core/tierclient.cpp core/tierclient.h core/wire.hpp core/chunkcache.hpp core/metastore.hpp
 	@mkdir -p build
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
 build/tierfs.o: mount/tierfs.c core/tierclient.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) $(FUSE_INC) -c $< -o $@
+	$(CC) $(CFLAGS) $(FUSE_INC) $(DEPFLAGS) -c $< -o $@
 
 # Linked with the C++ compiler so libc++ comes along for the client library.
 build/tierfs: build/tierfs.o build/tierclient.o build/metastore.o build/chunkcache.o
@@ -279,7 +292,9 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc
 test: $(NO_MOUNT_TESTS)
 
 .PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan
+
+-include $(wildcard build/*.d)
