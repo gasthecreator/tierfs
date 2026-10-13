@@ -41,6 +41,9 @@ enum MsgType : uint8_t {
     MSG_DEV_GET_MANIFEST = 0x16,
     MSG_DEV_LIST_MANIFESTS = 0x17,
     MSG_DEV_AUDIT = 0x18,
+    MSG_DEV_DELETE_MANIFESTS = 0x19,   // garbage collection (ADR-0010): only on a device that accepts deletions
+    MSG_DEV_GC_STATUS = 0x1A,
+    MSG_DEV_SWEEP = 0x1B,
     MSG_REPLY_FLAG = 0x80,
     MSG_ERROR = 0xFF,
 };

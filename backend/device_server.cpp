@@ -2,7 +2,7 @@
 // It stores encrypted chunks and manifests; it never sees keys or plaintext.
 //
 // Usage: tierfs-device <store-dir> [port=9100] [bind-addr=127.0.0.1]
-//                      [--faults=a,b,slow=N] [--insecure-allow-network]
+//                      [--faults=a,b,slow=N] [--insecure-allow-network] [--allow-delete]
 //        tierfs-device <store-dir> --show-pairing-code     print the pairing code (creating the secret on first use) and exit
 //        tierfs-device <store-dir> --new-pairing-code      replace the pairing secret (every Mac must pair again) and exit
 //
@@ -12,6 +12,7 @@
 //   * Open (no pairing.key): plaintext protocol version 3 with no authentication. Anyone who can connect could upload junk
 //     under a chunk id they have seen on the wire, so it refuses any bind address except loopback unless
 //     --insecure-allow-network is given (for experiments on a trusted LAN).
+// Deleting (garbage collection, ADR-0010) is accepted only by a paired device, or by an open one started with --allow-delete.
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -198,6 +199,51 @@ static bool handle(Conn& c, const Frame& f, Reader& r) {
             }
             return reply(c, f.type, f.id, w);
         }
+        case MSG_DEV_DELETE_MANIFESTS: {
+            uint32_t n = r.u32();
+            if (n < 1 || n > MAX_DELETE_ITEMS) return reply_err(c, f.id, EMSGSIZE, "between 1 and 64 manifests per request");
+            std::vector<std::pair<std::string, int64_t>> items;
+            for (uint32_t i = 0; i < n; i++) {
+                std::string fid = r.str();
+                int64_t ver = r.i64();
+                items.emplace_back(std::move(fid), ver);
+            }
+            DeleteManifestsOut o = g_store->delete_manifests(items);
+            if (o.err) return reply_err(c, f.id, o.err, o.msg);
+            Writer w;
+            w.u64(o.seq);
+            w.u32(static_cast<uint32_t>(o.deleted.size()));
+            for (uint8_t d : o.deleted) w.u8(d);
+            return reply(c, f.type, f.id, w);
+        }
+        case MSG_DEV_GC_STATUS: {
+            GcStatus g = g_store->gc_status();
+            Writer w;
+            w.u8(g.deletions_allowed ? 1 : 0);
+            w.u32(g.manifests);
+            w.u32(g.manifests_without_refs);
+            w.u64(g.chunks);
+            w.u64(g.chunk_bytes);
+            w.u64(g.unreferenced_chunks);
+            w.u64(g.unreferenced_bytes);
+            w.u64(g.manifests_deleted);
+            w.u64(g.chunks_deleted);
+            return reply(c, f.type, f.id, w);
+        }
+        case MSG_DEV_SWEEP: {
+            uint64_t min_age = r.u64();
+            uint32_t max_chunks = r.u32();
+            uint8_t dry = r.u8();
+            if (dry > 1) return reply_err(c, f.id, EINVAL, "bad flag");
+            SweepOut o = g_store->sweep(min_age, max_chunks, dry == 1);
+            if (o.err) return reply_err(c, f.id, o.err, o.msg);
+            Writer w;
+            w.u64(o.chunks_deleted);
+            w.u64(o.bytes_deleted);
+            w.u64(o.chunks_left);
+            w.u64(o.strays_removed);
+            return reply(c, f.type, f.id, w);
+        }
         default:
             return reply_err(c, f.id, ENOSYS, "unknown message type");
     }
@@ -319,13 +365,14 @@ static void print_pairing(const Bytes& secret) {
 int main(int argc, char** argv) {
     std::vector<std::string> pos;
     std::string faults_csv;
-    bool insecure = false, show_code = false, new_code = false;
+    bool insecure = false, show_code = false, new_code = false, allow_delete = false;
     if (const char* e = getenv("TIERFS_DEVICE_FAULTS")) faults_csv = e;
     if (const char* e = getenv("TIERFS_DEVICE_IDLE_S")) g_idle_s = atoi(e) > 0 ? atoi(e) : 120;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a.compare(0, 9, "--faults=") == 0) faults_csv = a.substr(9);
         else if (a == "--insecure-allow-network") insecure = true;
+        else if (a == "--allow-delete") allow_delete = true;
         else if (a == "--show-pairing-code")
             show_code = true;
         else if (a == "--new-pairing-code")
@@ -333,7 +380,7 @@ int main(int argc, char** argv) {
         else pos.push_back(a);
     }
     if (pos.empty()) {
-        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network]\n", argv[0]);
+        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete]\n", argv[0]);
         return 2;
     }
     if (show_code || new_code) {  // pairing management: no server, no store needed beyond the directory
@@ -384,6 +431,9 @@ int main(int argc, char** argv) {
     auto store = DeviceStore::open(pos[0], &err);
     if (!store) { fprintf(stderr, "cannot open store: %s\n", err.c_str()); return 1; }
     store->set_faults(faults);
+    // Deleting is allowed only for a Mac that proved it knows the pairing secret, or when the operator says so (loopback experiments, tests).
+    store->set_deletions_allowed(g_psk.has_value() || allow_delete);
+    if (const char* e = getenv("TIERFS_DEVICE_MIN_SWEEP_AGE")) store->set_min_sweep_age(strtoull(e, nullptr, 10));
     g_store = store.get();
 
     signal(SIGPIPE, SIG_IGN);
@@ -396,9 +446,10 @@ int main(int argc, char** argv) {
     if (inet_pton(AF_INET, bind_addr.c_str(), &addr.sin_addr) != 1) { fprintf(stderr, "bad bind address\n"); return 2; }
     if (bind(ls, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || listen(ls, 32) != 0) { perror("bind/listen"); return 1; }
     DevInfo i = store->info();
-    fprintf(stderr, "tierfs-device %s on %s:%d (epoch %llu, seq %llu, %s%s%s)\n", i.device_id.c_str(), bind_addr.c_str(), port,
+    fprintf(stderr, "tierfs-device %s on %s:%d (epoch %llu, seq %llu, %s%s%s%s)\n", i.device_id.c_str(), bind_addr.c_str(), port,
             (unsigned long long)i.epoch, (unsigned long long)i.seq,
             g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
+            (g_psk || allow_delete) ? ", deletions accepted" : "",
             faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
     for (;;) {
         int c = accept(ls, nullptr, nullptr);

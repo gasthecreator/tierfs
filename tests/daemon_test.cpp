@@ -75,6 +75,12 @@ static void spit(const std::string& p, const Bytes& b) {
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
 }
+static size_t count_files_under(const std::string& dir) {
+    size_t n = 0;
+    std::error_code ec;
+    for (auto& e : fs::recursive_directory_iterator(dir, ec)) n += e.is_regular_file();
+    return n;
+}
 static std::string slurp_text(const std::string& p) { Bytes b = slurp(p); return std::string(b.begin(), b.end()); }
 static bool exists(const std::string& p) { struct stat st; return lstat(p.c_str(), &st) == 0; }
 static size_t count_entries(const std::string& dir) {
@@ -88,10 +94,12 @@ struct Server {
     pid_t pid = 0;
     uint16_t port;
     std::string faults;   // TIERFS_DEVICE_FAULTS for the next start
+    std::vector<std::string> args;   // extra command-line arguments for the next start
     explicit Server(uint16_t p) : port(p) {}
     bool start(const std::string& store) {
         stop();
         std::vector<std::string> a = {"tierfs-device", store, std::to_string(port), "127.0.0.1"};
+        a.insert(a.end(), args.begin(), args.end());
         std::vector<char*> av;
         for (auto& x : a) av.push_back(const_cast<char*>(x.c_str()));
         av.push_back(nullptr);
@@ -273,6 +281,7 @@ static Bytes read_through(Overlay& ov, const std::string& path, size_t size) {
 
 int main() {
     signal(SIGPIPE, SIG_IGN);
+    setenv("TIERFS_DEVICE_MIN_SWEEP_AGE", "0", 1);   // (devices started with --allow-delete have no age floor in these tests)
 
     {
         printf("== configuration problems are reported, not papered over\n");
@@ -564,6 +573,82 @@ int main() {
         CHECK(!Daemon::create(c, &err) && has(err, "needs a path"));
         c.key_file = e.root + "/does-not-exist";
         CHECK(!Daemon::create(c, &err) && has(err, "cannot read the key file"));
+    }
+
+    {
+        printf("== garbage collection on command: a plan changes nothing, a run forgets old versions and deleted files, the newest stays readable\n");
+        Env e(false, false);
+        e.sa.args = {"--allow-delete"};
+        e.sb.args = {"--allow-delete"};
+        e.sa.start(e.root + "/devA");
+        e.sb.start(e.root + "/devB");
+        e.open_gates(true);
+        DaemonConfig cfg = e.config();
+        cfg.gc_config.keep_versions = 1;
+        cfg.gc_config.rules.grace_seconds = 0;
+        cfg.gc_config.rules.deleted_retention_seconds = 0;
+        cfg.gc_config.sweep_min_age = 0;
+        Bytes v1 = pattern(MiB + 5, 1), v2 = pattern(MiB + 7, 2), w = pattern(300, 5);
+        spit(e.path("v.bin"), v1);
+        spit(e.path("w.bin"), w);
+        auto d = make(e, nullptr, &cfg);
+        CHECK(d && d->start(nullptr));
+        CHECK(has(d->control("replicate /v.bin"), "replicated /Users/me/proj/v.bin") && has(d->control("replicate /w.bin"), "replicated /Users/me/proj/w.bin"));
+        spit(e.path("v.bin"), v2);
+        struct utimbuf tb = {time(nullptr) + 5, time(nullptr) + 5};
+        utime(e.path("v.bin").c_str(), &tb);
+        CHECK(ends_ok(d->control("scan")) && has(d->control("replicate /v.bin"), "replicated /Users/me/proj/v.bin"));
+        auto fid = d->ledger().get_file_by_path("/Users/me/proj/v.bin")->file_id;
+        CHECK(d->ledger().get_file(fid)->current_version == 2 && count_files_under(e.root + "/devA/manifests") == 3);   // v1 and v2 of v.bin, v1 of w.bin
+        uint64_t events = d->ledger().event_count();
+        std::string plan = d->control("gc-plan");
+        CHECK(ends_ok(plan) && has(plan, "plan only") && has(plan, "versions the rules would let go of: 1") && d->ledger().event_count() == events && d->ledger().pruned_count() == 0);
+        std::string run = d->control("gc-run");
+        CHECK(ends_ok(run) && has(run, "decided now: 1") && has(run, "manifests deleted 1") && has(run, "deletions still owed by devices: 0"));
+        CHECK(d->ledger().pruned_count() == 1 && d->ledger().is_version_pruned(fid, 1) && d->ledger().get_meta("gc_last_run").has_value());
+        CHECK(count_files_under(e.root + "/devA/manifests") == 2 && count_files_under(e.root + "/devB/manifests") == 2);
+        // the newest version is still there, whole: move it off the Mac and read it back from the devices
+        CHECK(has(d->control("offload /v.bin"), "offloaded /Users/me/proj/v.bin") && !exists(e.path("v.bin")));
+        CHECK(read_through(d->overlay(), "/v.bin", v2.size()) == v2);
+        // delete a file: it goes after its retention period (here: at once)
+        CHECK(d->overlay().unlink("/w.bin") == 0);
+        std::string run2 = d->control("gc-run");
+        CHECK(ends_ok(run2) && has(run2, "decided now: 1") && count_files_under(e.root + "/devA/manifests") == 1 && count_files_under(e.root + "/devB/manifests") == 1);
+        CHECK(d->ledger().fsck().empty() && has(d->control("gc-run"), "decided now: 0"));
+    }
+
+    {
+        printf("== the maintenance thread collects garbage only when switched on\n");
+        for (int on = 0; on < 2; on++) {
+            Env e(false, false);
+            e.sa.args = {"--allow-delete"};
+            e.sb.args = {"--allow-delete"};
+            e.sa.start(e.root + "/devA");
+            e.sb.start(e.root + "/devB");
+            e.open_gates(true);
+            DaemonConfig cfg = e.config();
+            cfg.maint_seconds = 1;
+            cfg.gc = on == 1;
+            cfg.gc_interval_seconds = 1;
+            cfg.gc_config.keep_versions = 1;
+            cfg.gc_config.rules.grace_seconds = 0;
+            cfg.gc_config.sweep_min_age = 0;
+            cfg.background_replication = false;
+            spit(e.path("m.bin"), pattern(MiB, 1));
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            d->control("replicate /m.bin");
+            spit(e.path("m.bin"), pattern(MiB + 3, 2));
+            struct utimbuf tb = {time(nullptr) + 5, time(nullptr) + 5};
+            utime(e.path("m.bin").c_str(), &tb);
+            d->control("scan");
+            d->control("replicate /m.bin");
+            CHECK(count_files_under(e.root + "/devA/manifests") == 2);
+            for (int i = 0; i < 60 && count_files_under(e.root + "/devA/manifests") == 2; i++) usleep(200000);
+            if (on) CHECK(count_files_under(e.root + "/devA/manifests") == 1 && count_files_under(e.root + "/devB/manifests") == 1 && d->ledger().pruned_count() == 1);
+            else CHECK(count_files_under(e.root + "/devA/manifests") == 2 && d->ledger().pruned_count() == 0);
+            d->stop();
+        }
     }
 
     {

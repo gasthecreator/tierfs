@@ -11,7 +11,7 @@ OS = os.environ.get('OPENSSL_DIR', '/opt/homebrew/opt/openssl@3')
 CRYPTO = f'{OS}/lib/libcrypto.a'
 BASE = ['c++', '-std=c++17', '-g', '-w', f'-I{OS}/include', '-Icore', '-Itests']
 COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/securechannel.cpp', 'securechannel'), ('core/deviceclient.cpp', 'deviceclient'),
-          ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine')]
+          ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine'), ('core/gc.cpp', 'gc')]
 TARGETS = {
     'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', tests=['tests/recovery_test.cpp'],
                      extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
@@ -25,9 +25,15 @@ TARGETS = {
                       extra_objs=[('core/keychain_mac.cpp', 'keychain_mac')], tools=[], libs=['-lsqlite3', '-framework', 'CoreFoundation', '-framework', 'Security']),
     'securechannel': dict(mutants='securechannel_mutants', mutated='core/securechannel.cpp', tests=['tests/securechannel_test.cpp'],
                           extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
-    'deviceauth': dict(mutants='deviceauth_mutants', mutated='core/deviceclient.cpp', tests=['tests/deviceauth_test.cpp'], extra_objs=[],
+    'deviceauth': dict(mutants='deviceauth_mutants', mutated='core/deviceclient.cpp', tests=['tests/deviceauth_test.cpp', 'tests/devicenet_test.cpp', 'tests/gc_test.cpp'], extra_objs=[],
                        tools=[('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
-    'deviceserver': dict(mutants='deviceserver_mutants', mutated='backend/device_server.cpp', tests=['tests/deviceauth_test.cpp'], extra_objs=[], mutated_tool=0,
+    'gc': dict(mutants='gc_mutants', mutated='core/gc.cpp', tests=['tests/gc_test.cpp'], extra_objs=[], tools=[],
+               libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'ledgerprune': dict(mutants='ledgerprune_mutants', mutated='core/ledger.cpp', tests=['tests/ledger_test.cpp'], extra_objs=[],
+                        tools=[('tests/ledger_helper.cpp', 'TIERFS_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
+    'devicestore': dict(mutants='devicestore_mutants', mutated='core/devicestore.cpp', tests=['tests/devicestore_test.cpp', 'tests/devicenet_test.cpp'], extra_objs=[],
+                        tools=[('tests/device_helper.cpp', 'TIERFS_DEVICE_HELPER'), ('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'deviceserver': dict(mutants='deviceserver_mutants', mutated='backend/device_server.cpp', tests=['tests/deviceauth_test.cpp', 'tests/devicenet_test.cpp'], extra_objs=[], mutated_tool=0,
                          tools=[('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'overlay': dict(mutants='overlay_mutants', mutated='core/overlay.cpp', tests=['tests/overlay_test.cpp', 'tests/overlay_write_test.cpp', 'tests/overlay_ns_test.cpp'],
                     extra_objs=[], tools=[('tests/overlay_helper.cpp', 'TIERFS_OVERLAY_HELPER')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),

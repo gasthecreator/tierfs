@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dropengine.hpp"
+#include "gc.hpp"
 #include "ledger.hpp"
 #include "overlay.hpp"
 #include "policy.hpp"
@@ -43,6 +44,11 @@ struct DaemonConfig {
     int64_t write_wait_ms = 30000;
     size_t cache_bytes = 64u << 20;
     TierPolicy policy;                       // roots are set to the logical prefix
+    // Garbage collection on the devices (ADR-0010): forgets old versions and deleted files, and has the devices free their space. Off unless asked:
+    // `gc` makes the maintenance thread run it every gc_interval_seconds; `gc-plan` and `gc-run` on the control socket work either way.
+    bool gc = false;
+    int64_t gc_interval_seconds = 86400;
+    GcConfig gc_config;
 };
 
 class Daemon {
@@ -74,6 +80,7 @@ private:
     std::string cmd_status();
     std::string cmd_files(const std::string& path, bool drop);   // replicate (drop=false) or offload (drop=true)
     std::string cmd_tick();
+    std::string cmd_gc(bool run);
 
     DaemonConfig cfg_;
     std::unique_ptr<Ledger> ledger_;
@@ -87,6 +94,7 @@ private:
     std::unique_ptr<Scanner> scanner_;
     std::unique_ptr<SpaceProbe> probe_;
     std::unique_ptr<PolicyEngine> policy_;
+    std::unique_ptr<GarbageCollector> gc_;
     std::unique_ptr<Notifier> notifier_;
 
     std::atomic<bool> stop_{false};

@@ -76,15 +76,24 @@ anything else, so an id can never be a path. `sha256` fields are 32 raw bytes.
 | 0x16 | GET_MANIFEST   | str file_id, i64 version                                               | u32-length blob                           |
 | 0x17 | LIST_MANIFESTS | u64 since_seq, u32 max (<= 1000)                                       | u64 epoch, u64 seq, u32 n, n x (u64 seq, str file_id, i64 version, sha256) |
 | 0x18 | AUDIT          | u32 n (<= 64), n x (u8 kind 0=chunk 1=manifest, str id, i64 version, 32-byte nonce) | u32 n, n x (u8 status 0=answered 1=missing 2=unreadable, 32-byte response) |
+| 0x19 | DELETE_MANIFESTS | u32 n (1..64), n x (str file_id, i64 version)                        | u64 seq, u32 n, n x u8 (1 = deleted now, 0 = it was not there) |
+| 0x1A | GC_STATUS      | (empty)                                                                | u8 deletions_allowed, u32 manifests, u32 manifests_without_refs, u64 chunks, u64 chunk_bytes, u64 unreferenced_chunks, u64 unreferenced_bytes, u64 manifests_deleted, u64 chunks_deleted |
+| 0x1B | SWEEP          | u64 min_age_s, u32 max_chunks (1..100000), u8 dry_run (0/1)            | u64 chunks_deleted, u64 bytes_deleted, u64 chunks_left, u64 strays_removed |
 
 Semantics the Mac relies on
 - **An ack means durable.** The device writes a temp file, full-fsyncs it, renames it, full-fsyncs the
   directory, and only then records it in its index (also full-fsync). A crash at any point leaves
   either nothing or an invisible orphan file; never an index row without data.
-- **Append-only.** There is no delete message. Re-sending an existing chunk or an existing
+- **Append-only, except for garbage collection.** Nothing is ever overwritten. Re-sending an existing chunk or an existing
   (file, version) manifest is not an error: the device keeps the original and answers `existed = 1`
   with the hash of the bytes it actually holds (re-sealed data differs from the original because
   of random nonces). The caller fetches and verifies what is stored before trusting it.
+  Deleting is possible only through DELETE_MANIFESTS (exactly the named versions) and SWEEP (chunks no stored manifest lists, older
+  than the age, after a grace floor the device operator sets), and only if the device accepts deletions (it is paired, or was started with
+  `--allow-delete`): otherwise EPERM. A device from before these messages answers ENOSYS. See docs/adr/0010.
+- **Chunk lists.** PUT_MANIFEST's chunk list is kept with the manifest (one transaction) so the device can tell which chunks are still wanted. Sending a manifest
+  again, byte for byte, with its list, gives that list to a manifest stored before lists existed. SWEEP is refused (EPERM) while any stored manifest has no list.
+- **Deleting bumps `seq`**, so a device restored from an older copy still shows as rolled back. A deleted (file, version) may be stored again.
 - **Integrity.** Every upload carries the sha256 the sender computed; the device refuses a mismatch
   (EBADMSG). GET re-reads the file and re-checks it against the recorded hash and refuses to serve
   damaged data (EIO).

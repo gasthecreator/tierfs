@@ -55,6 +55,12 @@ public:
     DevRes list_manifests(uint64_t since_seq, uint32_t max, ListReply& out);
     DevRes audit(const std::vector<AuditItem>& items, std::vector<AuditOut>& out);
 
+    // Garbage collection (ADR-0010). EPERM from a device that does not accept deletions; ENOSYS from one that predates them.
+    // `deleted[i]` is 1 if item i was removed now, 0 if it was not there; `seq` is the device's commit sequence afterwards.
+    DevRes delete_manifests(const std::vector<std::pair<std::string, int64_t>>& items, std::vector<uint8_t>& deleted, uint64_t* seq = nullptr);
+    DevRes gc_status(GcStatus& out);
+    DevRes sweep(uint64_t min_age_s, uint32_t max_chunks, bool dry_run, SweepOut& out);
+
     // Test hook: drop the connection so the next call has to reconnect.
     void disconnect();
 

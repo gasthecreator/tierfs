@@ -62,6 +62,7 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     tp.roots = {d->cfg_.logical_prefix};
     if (tp.exclude.empty()) tp.exclude = {"/.git/"};
     if (cfg.notify) d->notifier_ = std::make_unique<OsascriptNotifier>();
+    d->gc_ = std::make_unique<GarbageCollector>(*d->ledger_, *d->replicator_, *d->keys_, cfg.gc_config);
     d->policy_ = std::make_unique<PolicyEngine>(*d->ledger_, *d->replicator_, *d->engine_, *d->probe_, tp,
                                                 [origin, pfx = d->cfg_.logical_prefix](const FileRec& f) { return origin + "/" + f.path.substr(pfx.size()); },
                                                 d->notifier_.get());
@@ -190,6 +191,11 @@ void Daemon::maintenance_loop() {
             last_scan_ = o.str();
         }
         if (cfg_.background_replication && !stop_) cmd_tick();
+        if (cfg_.gc && !stop_) {
+            int64_t last = 0;
+            if (auto v = ledger_->get_meta("gc_last_run")) last = atoll(v->c_str());
+            if (time(nullptr) - last >= cfg_.gc_interval_seconds) cmd_gc(true);
+        }
     }
 }
 
@@ -278,6 +284,14 @@ std::string Daemon::cmd_tick() {
     return o.str();
 }
 
+std::string Daemon::cmd_gc(bool run) {
+    std::lock_guard<std::mutex> g(overlay_->engine_mutex());
+    DeviceMap devs = devices_snapshot();
+    GcReport r = run ? gc_->run(devs) : gc_->plan(devs);
+    if (run) ledger_->set_meta("gc_last_run", std::to_string(time(nullptr)));
+    return format_gc_report(r) + "OK\n";
+}
+
 std::string Daemon::control(const std::string& raw) {
     std::string line = trim(raw);
     size_t sp = line.find(' ');
@@ -297,6 +311,8 @@ std::string Daemon::control(const std::string& raw) {
     if (cmd == "hydrate" && !arg.empty()) { int r = overlay_->hydrate(arg); return r == 0 ? "OK\n" : "ERR " + std::string(strerror(-r)) + "\n"; }
     if (cmd == "undelete" && !arg.empty()) { int r = overlay_->undelete(arg); return r == 0 ? "OK\n" : "ERR " + std::string(strerror(-r)) + "\n"; }
     if (cmd == "tick") return cmd_tick();
+    if (cmd == "gc-plan") return cmd_gc(false);
+    if (cmd == "gc-run") return cmd_gc(true);
     return "ERR unknown command; try: status, scan, replicate PATH, offload PATH, hydrate PATH, undelete PATH, tick\n";
 }
 

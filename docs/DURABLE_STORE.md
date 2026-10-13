@@ -38,8 +38,9 @@ NOT defended against (say so to the user, in the UI):
   completion is logged after it. After a crash we can always tell which step ran.
 - **I3  Fail closed.** Any error, timeout, mismatch, or unwritable ledger means
   "keep the local bytes". There is no code path where uncertainty deletes.
-- **I4  Remote data is append-only in Phase 3.** No remote delete or overwrite of
-  a committed chunk or manifest. (Garbage collection is a later, separate design.)
+- **I4  Remote data is append-only, except through garbage collection (section 25, ADR-0010).** No overwrite of
+  a committed chunk or manifest, ever. A device deletes only when an authorized Mac names exactly which manifests to
+  remove (after the ledger recorded that decision), and only chunks that no stored manifest lists.
 - **I5  Versions are immutable.** A change creates version N+1; version N stays.
 - **I6  The device alone can rebuild the tree** (self-describing encrypted
   manifests) given the recovery phrase. The Mac's ledger is an index, not the
@@ -904,3 +905,36 @@ socket leaks), `tests/pairing_test.py` (the CLI end to end), `tests/daemon_test.
 Mutation testing of the client side, the server side and the pairing-secret helpers of `core/keysource.cpp` (scripts `deviceauth_mutants.py`, `deviceserver_mutants.py`, `keysource_mutants.py`).
 Not done: revocation of a single Mac, per-Mac secrets, rate limiting of failed handshakes beyond the deadline.
 
+## 25. Garbage collection on the devices (implemented; ADR-0010)
+Code: `core/gc.{hpp,cpp}` (the engine), `core/ledger.*` (`prune_*`, schema 3), `core/devicestore.*` (`delete_manifests`, `sweep`, schema 2),
+`backend/device_server.cpp` and `core/deviceclient.*` (messages 0x19-0x1B), `core/daemon.*` (`gc-plan`, `gc-run`, `gc=on`).
+Tests: `tests/gc_test.cpp` (the engine end to end, two device processes), `tests/ledger_test.cpp` (the rules), `tests/devicestore_test.cpp` and
+`tests/devicenet_test.cpp` (the device), `tests/deviceauth_test.cpp` (who may delete). Mutants: `scripts/{gc,ledgerprune,devicestore}_mutants.py`.
+
+What is forgotten, and when
+- A live file keeps its newest `keep_versions` (default 3) COMMITTED versions. Older ones may go once the next version is more than one hour old (an open reader
+  finishes) and a newer version is held with the full replica weight (2.0) by audits no older than 5 minutes. The engine audits that newer version itself, so a run
+  needs enough devices reachable to vouch for it; with one device away nothing is decided.
+- A deleted file (the user removed it) keeps every version for 30 days (`tierctl control ... undelete` works until then); after that every version goes,
+  including the current one, unless local bytes of the file still sit in quarantine. After that `undelete` is refused.
+- The decision is recorded in the ledger first (`versions.pruned_at`, one `version.pruned` event with the reason), and it is permanent. Each device that has (or may
+  have) a replica of it owes the deletion (`prune_state`); a confirmation is another event. A device that is away keeps owing it; one that comes back holding a
+  forgotten manifest is not trusted with it (`reconcile` reports it as a pruned leftover and the debt is owed again).
+
+How a device forgets
+- `DELETE_MANIFESTS` removes exactly the named (file, version) manifests, idempotently, and advances the device's commit sequence (a restored-from-backup device still shows).
+- `SWEEP` removes chunks that no stored manifest lists, that were neither uploaded nor reported present to the Mac within the age (the device operator's floor, default 1 hour;
+  the engine asks for 24 hours), plus leftover files no index row describes. The device keeps each manifest's chunk list (written in the same transaction as the manifest) and a trigger
+  refuses to delete a chunk that is still listed, whatever the code does; deleting needs a transaction that has opened the window (`meta.gc_open`).
+- A device whose store predates chunk lists (schema 1) is upgraded on open and refuses to sweep until every manifest has its list; the engine re-sends them (it reads the list inside
+  each manifest, which it can decrypt, and sends the identical blob back with it). A manifest it cannot read keeps the sweep refused: its chunks might be needed.
+- A device accepts deletions only if it is paired or started with `--allow-delete`.
+
+Running it
+- `tierctl control <ledger dir> gc-plan` (changes nothing), `gc-run` (decide, delete, sweep). The daemon runs it every `gc_interval_seconds` (one day) only with `-o gc=1`
+  (`gckeep=N`, `gcretentiondays=N`). Everything is repeatable: a run that stops anywhere is simply continued by the next.
+
+Limits / not done
+- A restore from a device that missed a deletion shows the older state (the next run removes it). No per-Mac authorization of deletions and no revocation.
+- Chunk lists are trusted as the Mac sends them (a lying authenticated Mac could cause a premature sweep).
+- One request deletes at most 64 manifests and a sweep at most 100,000 chunks; a run is bounded by `max_decisions` (2000 versions) and `sweep_rounds`.

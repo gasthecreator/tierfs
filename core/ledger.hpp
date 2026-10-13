@@ -79,6 +79,26 @@ enum class DeviceObservation {
     EpochChanged,  // a different epoch: re-initialised or replaced. Device is now suspect.
 };
 
+// Dropping history on the devices (ADR-0010). The ledger decides, under rules it enforces itself; the devices only execute.
+struct PruneRules {
+    double min_weight = 2.0;                  // a live file's newer version must be held by at least this replica weight...
+    int64_t max_audit_age = 300;              // ...from audits no older than this many seconds
+    int64_t grace_seconds = 86400;            // an old version is kept this long after the next version appeared (open readers finish)
+    int64_t deleted_retention_seconds = 30 * 86400;   // a deleted file can be undeleted for this long
+};
+
+struct PruneCandidate {
+    std::string file_id;
+    int64_t version = 0;
+    bool file_deleted = false;                // the user deleted the file (all its versions go after the retention period)
+};
+
+struct PruneWork {                            // a device that may still hold a manifest the ledger has decided to forget
+    std::string file_id;
+    int64_t version = 0;
+    std::string device_id;
+};
+
 struct Challenge {
     uint32_t n = 0;
     std::string response;  // hex of SHA-256(nonce_n || blob), precomputed when the chunk was sealed
@@ -144,6 +164,7 @@ public:
     DeviceObservation observe_device(const std::string& device_id, uint64_t epoch, uint64_t seq);
     // After every replica on it has been re-audited. `seq` becomes the new high-water mark.
     Res clear_device_suspect(const std::string& device_id, uint64_t seq);
+    // Replicas whose manifests the device may still hold (versions the ledger pruned are not expected to be there any more).
     std::vector<DeviceReplica> replicas_on_device(const std::string& device_id);
 
     // --- files ---
@@ -190,6 +211,27 @@ public:
     // chmod / utimens. A file with local bytes becomes LOCAL again (its manifest has the old attributes); an offloaded file
     // only has its recorded attributes changed (they are what stat shows and what hydration restores).
     Res note_attrs_changed(const std::string& file_id, std::optional<uint32_t> mode, std::optional<int64_t> mtime);
+
+    // --- pruning (ADR-0010) ---
+    // Versions the rules would let go of if their conditions held when asked (a live file: all but its newest `keep_versions` committed
+    // versions; a deleted file past its retention: everything). Pruning re-checks every condition, with fresh audits.
+    std::vector<PruneCandidate> prune_candidates(int keep_versions, const PruneRules& rules, size_t limit);
+    // The decision to forget one version, recorded BEFORE any device is asked to delete. Refused unless: it is not the current version of a live
+    // file; a NEWER version is held with replica weight >= rules.min_weight from audits younger than rules.max_audit_age, and the next version
+    // is older than rules.grace_seconds; or, for a deleted file, the retention period is over. Never while its local bytes sit in quarantine.
+    // Final: a pruned version stays pruned.
+    Res prune_version(const std::string& file_id, int64_t version, const std::string& reason, const PruneRules& rules);
+    bool is_version_pruned(const std::string& file_id, int64_t version);
+    // The nearest newer version of a live file that is held with the full replica weight (judged without demanding fresh audits), or 0.
+    // Pruning needs a recent audit of it; this is the one to audit.
+    int64_t safe_successor(const std::string& file_id, int64_t version, const PruneRules& rules);
+    // Pruned versions that active devices may still hold, oldest decision first.
+    std::vector<PruneWork> pending_prunes(size_t limit);
+    // The device confirmed the manifest is gone (or never had it).
+    Res record_pruned(const std::string& file_id, int64_t version, const std::string& device_id);
+    // A device turned out to hold a manifest of a pruned version (it was away during the deletion): deletion is owed there too.
+    Res queue_prune(const std::string& file_id, int64_t version, const std::string& device_id);
+    size_t pruned_count();
 
     // --- replication (never deletes anything) ---
     // Records version N+1 of the file as it is NOW (snapshots the generation) and
@@ -308,6 +350,9 @@ private:
     Ledger() = default;
     bool case_sensitive_ = false;
     bool migrate_1_to_2(std::string* err);
+    bool migrate_2_to_3(std::string* err);
+    // Why this version may not be pruned now (empty: it may). `planning` judges the replica weight without demanding fresh audits.
+    std::string prune_blocker(const FileRec& f, int64_t version, const PruneRules& rules, bool planning);
     bool init_schema(std::string* err);
     void append_event(const std::string& kind, const std::string& file_id, int64_t version,
                       const std::string& device_id, const std::string& detail);

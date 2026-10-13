@@ -27,7 +27,7 @@ jobs:
           languages: c-cpp
           build-mode: manual
       - name: Compile the core (CodeQL traces compiler calls; on Apple-silicon runners it runs builds under Rosetta, where the arm64-only OpenSSL cannot be linked, and linking adds nothing to the analysis)
-        run: make build/ledger.o build/crypto.o build/devicestore.o build/deviceclient.o build/replicator.o build/dropengine.o build/overlay.o build/scanner.o build/policy.o build/spaceprobe.o build/recovery.o build/daemon.o build/tfs_c.o build/keysource.o build/keychain_mac.o build/securechannel.o build/chunkcache.o build/metastore.o build/tierclient.o
+        run: make build/ledger.o build/crypto.o build/devicestore.o build/deviceclient.o build/replicator.o build/dropengine.o build/overlay.o build/scanner.o build/policy.o build/spaceprobe.o build/recovery.o build/daemon.o build/gc.o build/tfs_c.o build/keysource.o build/keychain_mac.o build/securechannel.o build/chunkcache.o build/metastore.o build/tierclient.o
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: "/language:c-cpp"
