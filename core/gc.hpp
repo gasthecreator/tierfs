@@ -18,42 +18,42 @@
 #include <vector>
 
 #include "crypto.hpp"
-#include "dropengine.hpp"   // DeviceMap
+#include "dropengine.hpp"  // DeviceMap
 #include "ledger.hpp"
 #include "replicator.hpp"
 
 namespace tierfs {
 
 struct GcConfig {
-    int keep_versions = 3;                 // a live file keeps its newest committed versions (at least 1)
+    int keep_versions = 3;  // a live file keeps its newest committed versions (at least 1)
     PruneRules rules;
-    uint64_t sweep_min_age = 24 * 3600;    // a chunk must have been unlisted and unmentioned this long before a device sweeps it
-    size_t max_decisions = 2000;           // versions to decide on in one run (the rest wait for the next)
-    size_t sweep_chunks = 20000;           // chunks one sweep request may delete
-    int sweep_rounds = 10;                 // sweep requests per device per run
+    uint64_t sweep_min_age = 24 * 3600;  // a chunk must have been unlisted and unmentioned this long before a device sweeps it
+    size_t max_decisions = 2000;         // versions to decide on in one run (the rest wait for the next)
+    size_t sweep_chunks = 20000;         // chunks one sweep request may delete
+    int sweep_rounds = 10;               // sweep requests per device per run
     bool sweep = true;
-    bool prepare = true;                   // re-send chunk lists to a device that needs them before sweeping it
+    bool prepare = true;  // re-send chunk lists to a device that needs them before sweeping it
 };
 
 struct GcDeviceReport {
     std::string device_id;
     bool reachable = false;
     bool deletions_allowed = false;
-    uint64_t owed = 0;                     // manifests this device owed at the start
-    uint64_t manifests_deleted = 0;        // confirmed during this run (including "it was not there")
+    uint64_t owed = 0;               // manifests this device owed at the start
+    uint64_t manifests_deleted = 0;  // confirmed during this run (including "it was not there")
     uint64_t chunks_swept = 0, bytes_swept = 0, strays_removed = 0;
     uint32_t chunk_lists_sent = 0;
-    GcStatus status;                       // what the device said before the run touched it
-    std::string note;                      // why it was skipped, or what went wrong
+    GcStatus status;   // what the device said before the run touched it
+    std::string note;  // why it was skipped, or what went wrong
 };
 
 struct GcReport {
     bool dry_run = false;
-    size_t candidates = 0;                 // versions the rules would let go of
-    size_t decided = 0;                    // recorded in the ledger by this run
-    size_t audited = 0;                    // successor audits done to make a decision possible
-    std::vector<std::string> refused;      // "file_id vN: why", the first few
-    size_t owed_total = 0;                 // deletions still owed by devices after the run (before it, for a dry run)
+    size_t candidates = 0;             // versions the rules would let go of
+    size_t decided = 0;                // recorded in the ledger by this run
+    size_t audited = 0;                // successor audits done to make a decision possible
+    std::vector<std::string> refused;  // "file_id vN: why", the first few
+    size_t owed_total = 0;             // deletions still owed by devices after the run (before it, for a dry run)
     std::vector<GcDeviceReport> devices;
     uint64_t manifests_deleted() const;
     uint64_t chunks_swept() const;

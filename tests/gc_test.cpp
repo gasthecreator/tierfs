@@ -31,14 +31,21 @@ using crypto::Bytes;
 namespace fs = std::filesystem;
 
 static int failures = 0;
-static bool failfast() { static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr; return f; }
-#define CHECK(cond)                                                                \
-    do {                                                                           \
-        if (!(cond)) {                                                             \
-            printf("FAIL  line %d: %s\n", __LINE__, #cond);                        \
-            failures++;                                                            \
-            if (failfast()) { fflush(stdout); _exit(1); }                          \
-        } else printf("PASS  %s\n", #cond);                                        \
+static bool failfast() {
+    static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr;
+    return f;
+}
+#define CHECK(cond)                                         \
+    do {                                                    \
+        if (!(cond)) {                                      \
+            printf("FAIL  line %d: %s\n", __LINE__, #cond); \
+            failures++;                                     \
+            if (failfast()) {                               \
+                fflush(stdout);                             \
+                _exit(1);                                   \
+            }                                               \
+        } else                                              \
+            printf("PASS  %s\n", #cond);                    \
     } while (0)
 
 static bool has(const std::string& s, const char* n) { return s.find(n) != std::string::npos; }
@@ -107,7 +114,7 @@ struct Server {
 // A scripted device: it answers HELLO, INFO and BIND like any other, records every other request, and answers those through `custom` (or
 // with the error `gc_errno`: ENOSYS is what an older device looks like, EIO a broken one).
 struct FakeDevice {
-    using Handler = std::function<bool(const Frame&, Writer&, uint8_t& reply_type)>;   // true: handled
+    using Handler = std::function<bool(const Frame&, Writer&, uint8_t& reply_type)>;  // true: handled
     int lfd = -1;
     uint16_t port = 0;
     int gc_errno;
@@ -116,7 +123,7 @@ struct FakeDevice {
     std::atomic<bool> stop{false};
     std::thread th;
     std::mutex mu;
-    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> seen;   // (type, payload) of every request after BIND
+    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> seen;  // (type, payload) of every request after BIND
     FakeDevice(uint16_t p, int err, std::string id, std::string vol, Handler h = nullptr)
         : port(p), gc_errno(err), device_id(std::move(id)), volume_id(std::move(vol)), custom(std::move(h)) {
         lfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -139,7 +146,11 @@ struct FakeDevice {
             }
         });
     }
-    ~FakeDevice() { stop = true; if (th.joinable()) th.join(); close(lfd); }
+    ~FakeDevice() {
+        stop = true;
+        if (th.joinable()) th.join();
+        close(lfd);
+    }
     int count(uint8_t type) {
         std::lock_guard<std::mutex> g(mu);
         int n = 0;
@@ -149,7 +160,8 @@ struct FakeDevice {
     std::vector<std::vector<uint8_t>> payloads(uint8_t type) {
         std::lock_guard<std::mutex> g(mu);
         std::vector<std::vector<uint8_t>> out;
-        for (auto& x : seen) if (x.first == type) out.push_back(x.second);
+        for (auto& x : seen)
+            if (x.first == type) out.push_back(x.second);
         return out;
     }
     void serve(int c) {
@@ -158,11 +170,21 @@ struct FakeDevice {
             if (recv_frame(c, f, now_ms() + 2000) != 1) return;
             Writer w;
             uint8_t type = f.type | MSG_REPLY_FLAG;
-            if (f.type == MSG_HELLO) { w.u16(DEVICE_PROTO_VERSION); w.str("fake"); }
-            else if (f.type == MSG_DEV_INFO) { w.str(device_id); w.u64(7); w.u64(0); w.str(volume_id); w.u64(1ull << 30); }
-            else if (f.type == MSG_DEV_BIND) {}
-            else {
-                { std::lock_guard<std::mutex> g(mu); seen.emplace_back(f.type, f.payload); }
+            if (f.type == MSG_HELLO) {
+                w.u16(DEVICE_PROTO_VERSION);
+                w.str("fake");
+            } else if (f.type == MSG_DEV_INFO) {
+                w.str(device_id);
+                w.u64(7);
+                w.u64(0);
+                w.str(volume_id);
+                w.u64(1ull << 30);
+            } else if (f.type == MSG_DEV_BIND) {
+            } else {
+                {
+                    std::lock_guard<std::mutex> g(mu);
+                    seen.emplace_back(f.type, f.payload);
+                }
                 if (!(custom && custom(f, w, type))) {
                     w = Writer();
                     type = MSG_ERROR;
@@ -187,7 +209,7 @@ struct World {
     std::string ida, idb, dir_a, dir_b;
     int64_t now_ = static_cast<int64_t>(time(nullptr));
     DeviceMap devs;
-    std::map<std::string, std::vector<Bytes>> versions;   // file_id -> the bytes of each version, index = version - 1
+    std::map<std::string, std::vector<Bytes>> versions;  // file_id -> the bytes of each version, index = version - 1
     GcConfig cfg;
 
     explicit World(bool allow_delete_b = true) {
@@ -216,7 +238,18 @@ struct World {
         cfg.sweep_min_age = 0;
         make_gc();
     }
-    ~World() { G.reset(); R.reset(); L.reset(); da.reset(); db.reset(); dc.reset(); sa.stop(); sb.stop(); sc.stop(); fs::remove_all(root); }
+    ~World() {
+        G.reset();
+        R.reset();
+        L.reset();
+        da.reset();
+        db.reset();
+        dc.reset();
+        sa.stop();
+        sb.stop();
+        sc.stop();
+        fs::remove_all(root);
+    }
     // A third real device (class B), for tests where the copies of different versions sit on different devices.
     Server sc{static_cast<uint16_t>(PORT + 4)};
     std::unique_ptr<DeviceClient> dc;
@@ -228,7 +261,11 @@ struct World {
         R->attach(*dc, "device-c", "B", &idc);
         devs[idc] = dc.get();
     }
-    void close_ledger() { G.reset(); R.reset(); L.reset(); }
+    void close_ledger() {
+        G.reset();
+        R.reset();
+        L.reset();
+    }
     void open_ledger() {
         std::string err;
         L = Ledger::open(root + "/ledger", &err);
@@ -309,7 +346,10 @@ struct World {
     // The version, fetched from the device and verified end to end.
     bool intact(const std::string& fid, int64_t version, DeviceClient& dev) {
         Bytes got;
-        Res r = R->fetch_version(dev, fid, version, [&](const uint8_t* p, size_t n) { got.insert(got.end(), p, p + n); return true; });
+        Res r = R->fetch_version(dev, fid, version, [&](const uint8_t* p, size_t n) {
+            got.insert(got.end(), p, p + n);
+            return true;
+        });
         return r.ok && got == versions[fid][static_cast<size_t>(version - 1)];
     }
     bool listed(DeviceClient& dev, const std::string& fid, int64_t version) {
@@ -347,7 +387,7 @@ static int child_main(char** argv) {
 int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc >= 9 && std::string(argv[1]) == "--child") return child_main(argv);
-    setenv("TIERFS_DEVICE_MIN_SWEEP_AGE", "0", 1);   // the devices here have no age floor: the tests control age through the request
+    setenv("TIERFS_DEVICE_MIN_SWEEP_AGE", "0", 1);  // the devices here have no age floor: the tests control age through the request
 
     {
         printf("== a file edited five times keeps its newest two versions, and the devices give the rest back\n");
@@ -361,36 +401,41 @@ int main(int argc, char** argv) {
         CHECK(soon.candidates == 0 && soon.decided == 0 && soon.manifests_deleted() == 0 && soon.chunks_swept() == 0);
         w.later();
         uint64_t events = w.L->event_count();
-        GcReport plan = w.G->plan(w.devs);   // read-only
+        GcReport plan = w.G->plan(w.devs);  // read-only
         CHECK(plan.dry_run && plan.candidates == 3 && plan.owed_total == 0 && w.L->event_count() == events && w.L->pruned_count() == 0);
         CHECK(w.manifests_on(w.dir_a) == 5 && w.chunks_on(w.dir_b) == 11);
         CHECK(has(format_gc_report(plan).c_str(), "plan only") && has(format_gc_report(plan).c_str(), "versions the rules would let go of: 3"));
         GcReport r = w.G->run(w.devs);
         CHECK(r.candidates == 3 && r.decided == 3 && r.audited >= 1 && r.refused.empty() && r.manifests_deleted() == 6 && r.owed_total == 0);
-        CHECK(r.chunks_swept() == 12 && r.bytes_swept() > 0);   // two private chunks per forgotten version, on each device
-        CHECK(w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2 && w.chunks_on(w.dir_a) == 5 && w.chunks_on(w.dir_b) == 5);   // the shared chunk and v4, v5 stay
+        CHECK(r.chunks_swept() == 12 && r.bytes_swept() > 0);  // two private chunks per forgotten version, on each device
+        CHECK(w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2 && w.chunks_on(w.dir_a) == 5 &&
+              w.chunks_on(w.dir_b) == 5);  // the shared chunk and v4, v5 stay
         for (int v = 1; v <= 3; v++) CHECK(!w.listed(*w.da, fid, v) && !w.listed(*w.db, fid, v));
-        for (int v = 4; v <= 5; v++) CHECK(w.intact(fid, v, *w.da) && w.intact(fid, v, *w.db));   // what is kept still verifies, byte for byte
+        for (int v = 4; v <= 5; v++) CHECK(w.intact(fid, v, *w.da) && w.intact(fid, v, *w.db));  // what is kept still verifies, byte for byte
         CHECK(w.L->pruned_count() == 3 && w.L->pending_prunes(100).empty() && w.L->fsck().empty());
         CHECK(has(w.event_detail("version.pruned").c_str(), "older than the newest 2 committed versions"));
-        for (const auto& p : {std::pair<DeviceClient*, std::string>{w.da.get(), w.ida}, {w.db.get(), w.idb}}) {   // the ledger's view of each device moved with its commit sequence
+        for (const auto& p : {std::pair<DeviceClient*, std::string>{w.da.get(), w.ida},
+                              {w.db.get(), w.idb}}) {  // the ledger's view of each device moved with its commit sequence
             DevInfo di;
             CHECK(p.first->info(di).ok() && w.L->get_device(p.second)->last_seq == static_cast<int64_t>(di.seq) && di.seq > 5);
         }
         for (const auto& p : {std::pair<DeviceClient*, std::string>{w.da.get(), w.ida}, {w.db.get(), w.idb}}) {
             ReconcileReport rc = w.R->reconcile(*p.first, p.second, false);
-            CHECK(rc.ok && rc.adopted.empty() && rc.manifests_missing.empty() && rc.chunks_missing.empty() && rc.pruned_leftovers.empty() && rc.replicas_checked == 2);
+            CHECK(rc.ok && rc.adopted.empty() && rc.manifests_missing.empty() && rc.chunks_missing.empty() && rc.pruned_leftovers.empty() &&
+                  rc.replicas_checked == 2);
         }
         CHECK(has(format_gc_report(r).c_str(), "decided now: 3") && has(format_gc_report(r).c_str(), "manifests deleted 3"));
         // nothing more to do, and doing it again changes nothing
         events = w.L->event_count();
         GcReport again = w.G->run(w.devs);
-        CHECK(again.candidates == 0 && again.decided == 0 && again.manifests_deleted() == 0 && again.chunks_swept() == 0 && w.L->event_count() == events);
+        CHECK(again.candidates == 0 && again.decided == 0 && again.manifests_deleted() == 0 && again.chunks_swept() == 0 &&
+              w.L->event_count() == events);
         // the file keeps working: a new version is replicated and the old ones are forgotten in turn
         w.edit(fid, "big.bin", 40);
         w.later();
         GcReport next = w.G->run(w.devs);
-        CHECK(next.decided == 1 && next.manifests_deleted() == 2 && w.manifests_on(w.dir_a) == 2 && w.intact(fid, 5, *w.da) && w.intact(fid, 6, *w.db) && !w.listed(*w.da, fid, 4));
+        CHECK(next.decided == 1 && next.manifests_deleted() == 2 && w.manifests_on(w.dir_a) == 2 && w.intact(fid, 5, *w.da) &&
+              w.intact(fid, 6, *w.db) && !w.listed(*w.da, fid, 4));
         CHECK(w.L->fsck().empty());
     }
 
@@ -398,31 +443,39 @@ int main(int argc, char** argv) {
         printf("== a device that is away keeps owing its deletions; one that comes back with a forgotten manifest is not trusted with it\n");
         World w;
         std::string fid = w.add("away.bin", 10);
-        for (uint8_t s = 20; s < 23; s++) w.edit(fid, "away.bin", s);   // v1..v4
+        for (uint8_t s = 20; s < 23; s++) w.edit(fid, "away.bin", s);  // v1..v4
         w.later();
         // device B is down when the Mac wants to prove the newer version is safe: nothing may be decided with only one device vouching
         w.sb.stop();
         GcReport blind = w.G->run(w.devs);
-        CHECK(blind.candidates == 2 && blind.decided == 0 && blind.refused.size() == 2 && has(blind.refused[0].c_str(), "recent audit") && w.L->pruned_count() == 0);
+        CHECK(blind.candidates == 2 && blind.decided == 0 && blind.refused.size() == 2 && has(blind.refused[0].c_str(), "recent audit") &&
+              w.L->pruned_count() == 0);
         CHECK(w.manifests_on(w.dir_a) == 4 && w.chunks_on(w.dir_a) == 1 + 2 * 4);
         w.sb.start(w.dir_b);
         // the Mac decides, then B goes away before it is asked to delete
         int stops = 0;
-        w.G->on_step = [&](const char* step) { if (std::string(step) == "decided") { stops++; w.sb.stop(); } };
+        w.G->on_step = [&](const char* step) {
+            if (std::string(step) == "decided") {
+                stops++;
+                w.sb.stop();
+            }
+        };
         GcReport half = w.G->run(w.devs);
         w.G->on_step = nullptr;
-        CHECK(stops == 1 && half.decided == 2 && half.manifests_deleted() == 2 && half.owed_total == 2);   // A's two; B still owes two
+        CHECK(stops == 1 && half.decided == 2 && half.manifests_deleted() == 2 && half.owed_total == 2);  // A's two; B still owes two
         CHECK(w.L->pending_prunes(100).size() == 2 && w.L->pending_prunes(100)[0].device_id == w.idb);
         CHECK(w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 4 && w.chunks_on(w.dir_a) == 5 && w.chunks_on(w.dir_b) == 9);
-        GcReport mid = w.G->plan(w.devs);   // B is still away: the plan says who owes what
+        GcReport mid = w.G->plan(w.devs);  // B is still away: the plan says who owes what
         bool plan_a = false, plan_b = false;
         for (auto& d : mid.devices) {
             if (d.device_id == w.ida) plan_a = d.reachable && d.owed == 0;
             if (d.device_id == w.idb) plan_b = !d.reachable && d.owed == 2 && has(d.note.c_str(), "cannot reach it");
         }
-        CHECK(mid.owed_total == 2 && plan_a && plan_b && has(format_gc_report(mid).c_str(), "not reachable") && has(format_gc_report(half).c_str(), "deletions still owed by devices: 2"));
+        CHECK(mid.owed_total == 2 && plan_a && plan_b && has(format_gc_report(mid).c_str(), "not reachable") &&
+              has(format_gc_report(half).c_str(), "deletions still owed by devices: 2"));
         bool b_unreachable = false;
-        for (auto& d : half.devices) if (d.device_id == w.idb) b_unreachable = !d.reachable && d.owed == 2 && has(d.note.c_str(), "cannot reach it") && d.chunks_swept == 0;
+        for (auto& d : half.devices)
+            if (d.device_id == w.idb) b_unreachable = !d.reachable && d.owed == 2 && has(d.note.c_str(), "cannot reach it") && d.chunks_swept == 0;
         CHECK(b_unreachable);
         // B is back, with the manifests it should have lost: reconcile does not adopt them; the next run finishes the job
         w.sb.start(w.dir_b);
@@ -440,41 +493,58 @@ int main(int argc, char** argv) {
         for (uint8_t s = 20; s < 23; s++) w.edit(fid, "crashy.bin", s);
         w.later();
         struct Stop {};
-        w.G->on_step = [](const char* step) { if (std::string(step) == "decided") throw Stop(); };
+        w.G->on_step = [](const char* step) {
+            if (std::string(step) == "decided") throw Stop();
+        };
         bool stopped = false;
-        try { w.G->run(w.devs); } catch (const Stop&) { stopped = true; }
-        CHECK(stopped && w.L->pruned_count() == 2 && w.L->pending_prunes(100).size() == 4 && w.manifests_on(w.dir_a) == 4 && w.manifests_on(w.dir_b) == 4);   // decided, nothing deleted yet
+        try {
+            w.G->run(w.devs);
+        } catch (const Stop&) {
+            stopped = true;
+        }
+        CHECK(stopped && w.L->pruned_count() == 2 && w.L->pending_prunes(100).size() == 4 && w.manifests_on(w.dir_a) == 4 &&
+              w.manifests_on(w.dir_b) == 4);  // decided, nothing deleted yet
         int done = 0;
-        w.G->on_step = [&](const char* step) { if (std::string(step) == "device_done" && ++done == 1) throw Stop(); };
+        w.G->on_step = [&](const char* step) {
+            if (std::string(step) == "device_done" && ++done == 1) throw Stop();
+        };
         stopped = false;
-        try { w.G->run(w.devs); } catch (const Stop&) { stopped = true; }
-        CHECK(stopped && w.L->pending_prunes(100).size() == 2);   // the first device was fully served, the second not at all
+        try {
+            w.G->run(w.devs);
+        } catch (const Stop&) {
+            stopped = true;
+        }
+        CHECK(stopped && w.L->pending_prunes(100).size() == 2);  // the first device was fully served, the second not at all
         size_t served = (w.manifests_on(w.dir_a) == 2) + (w.manifests_on(w.dir_b) == 2);
         CHECK(served == 1);
         w.G->on_step = nullptr;
         GcReport fin = w.G->run(w.devs);
-        CHECK(fin.decided == 0 && fin.manifests_deleted() == 2 && fin.owed_total == 0 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2);
+        CHECK(fin.decided == 0 && fin.manifests_deleted() == 2 && fin.owed_total == 0 && w.manifests_on(w.dir_a) == 2 &&
+              w.manifests_on(w.dir_b) == 2);
         CHECK(w.chunks_on(w.dir_a) == 5 && w.chunks_on(w.dir_b) == 5 && w.intact(fid, 3, *w.da) && w.intact(fid, 4, *w.db) && w.L->fsck().empty());
     }
 
     {
         printf("== a deleted file goes after its retention period; chunks other files share stay\n");
         World w;
-        std::string gone = w.add("gone.bin", 10), keep = w.add("keep.bin", 30);   // the first chunk is shared by both
+        std::string gone = w.add("gone.bin", 10), keep = w.add("keep.bin", 30);  // the first chunk is shared by both
         w.edit(gone, "gone.bin", 11);
-        CHECK(w.chunks_on(w.dir_a) == 1 + 2 * 3);   // shared + gone v1 + gone v2 + keep v1
+        CHECK(w.chunks_on(w.dir_a) == 1 + 2 * 3);  // shared + gone v1 + gone v2 + keep v1
         CHECK(w.L->retire_file(gone, "the user deleted it").ok);
         w.later(10 * 86400);
         GcReport early = w.G->run(w.devs);
-        CHECK(early.candidates == 0 && early.decided == 0 && w.manifests_on(w.dir_a) == 3);   // still inside the undelete window
+        CHECK(early.candidates == 0 && early.decided == 0 && w.manifests_on(w.dir_a) == 3);  // still inside the undelete window
         w.later(25 * 86400);
         GcReport r = w.G->run(w.devs);
         CHECK(r.candidates == 2 && r.decided == 2 && r.manifests_deleted() == 4 && r.chunks_swept() == 8);
-        CHECK(has(w.event_detail("version.pruned").c_str(), "the file was deleted and its retention period is over") && has(w.event_detail("version.pruned").c_str(), "(file deleted: /testdata/gone.bin)"));
-        CHECK(w.manifests_on(w.dir_a) == 1 && w.manifests_on(w.dir_b) == 1 && w.chunks_on(w.dir_a) == 3 && w.chunks_on(w.dir_b) == 3);   // shared chunk + keep's two
+        CHECK(has(w.event_detail("version.pruned").c_str(), "the file was deleted and its retention period is over") &&
+              has(w.event_detail("version.pruned").c_str(), "(file deleted: /testdata/gone.bin)"));
+        CHECK(w.manifests_on(w.dir_a) == 1 && w.manifests_on(w.dir_b) == 1 && w.chunks_on(w.dir_a) == 3 &&
+              w.chunks_on(w.dir_b) == 3);  // shared chunk + keep's two
         CHECK(w.intact(keep, 1, *w.da) && w.intact(keep, 1, *w.db));
         Res un = w.L->undelete_file(gone);
-        CHECK(!un.ok && w.L->fsck().empty());   // (it still has its local bytes, so undelete refuses for that reason; the pruned case is in ledger_test)
+        CHECK(!un.ok &&
+              w.L->fsck().empty());  // (it still has its local bytes, so undelete refuses for that reason; the pruned case is in ledger_test)
         GcReport again = w.G->run(w.devs);
         CHECK(again.candidates == 0 && again.manifests_deleted() == 0);
     }
@@ -485,12 +555,13 @@ int main(int argc, char** argv) {
         w.cfg.keep_versions = 1;
         w.make_gc();
         std::string fid = w.add("thin.bin", 10);
-        w.edit(fid, "thin.bin", 20, /*a=*/true, /*b=*/false);   // v2 reaches only device A
+        w.edit(fid, "thin.bin", 20, /*a=*/true, /*b=*/false);  // v2 reaches only device A
         w.later();
         GcReport r = w.G->run(w.devs);
-        CHECK(r.candidates == 0 && r.decided == 0 && r.manifests_deleted() == 0 && w.L->pruned_count() == 0 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 1);
+        CHECK(r.candidates == 0 && r.decided == 0 && r.manifests_deleted() == 0 && w.L->pruned_count() == 0 && w.manifests_on(w.dir_a) == 2 &&
+              w.manifests_on(w.dir_b) == 1);
         CHECK(w.intact(fid, 1, *w.db) && w.intact(fid, 1, *w.da));
-        w.R->replicate(*w.db, w.idb, fid, w.path("thin.bin"));   // now both have v2
+        w.R->replicate(*w.db, w.idb, fid, w.path("thin.bin"));  // now both have v2
         w.later();
         GcReport ok = w.G->run(w.devs);
         CHECK(ok.candidates == 1 && ok.decided == 1 && ok.manifests_deleted() == 2 && w.manifests_on(w.dir_a) == 1 && w.manifests_on(w.dir_b) == 1);
@@ -503,10 +574,16 @@ int main(int argc, char** argv) {
         std::string blob = w.dir_b + "/chunks/" + cid.substr(0, 2) + "/" + cid + ".blob";
         int fd = ::open(blob.c_str(), O_RDWR);
         uint8_t byte = 0;
-        if (fd >= 0) { pread(fd, &byte, 1, 100); byte ^= 0x40; pwrite(fd, &byte, 1, 100); close(fd); }
+        if (fd >= 0) {
+            pread(fd, &byte, 1, 100);
+            byte ^= 0x40;
+            pwrite(fd, &byte, 1, 100);
+            close(fd);
+        }
         GcReport rot = w.G->run(w.devs);
         bool refused_rot = false;
-        for (auto& x : rot.refused) if (has(x.c_str(), fid2.substr(0, 8).c_str())) refused_rot = true;
+        for (auto& x : rot.refused)
+            if (has(x.c_str(), fid2.substr(0, 8).c_str())) refused_rot = true;
         CHECK(rot.decided == 0 && refused_rot && !w.L->is_version_pruned(fid2, 1) && w.listed(*w.da, fid2, 1) && w.listed(*w.db, fid2, 1));
     }
 
@@ -517,11 +594,14 @@ int main(int argc, char** argv) {
         for (uint8_t s = 20; s < 23; s++) w.edit(fid, "refuse.bin", s);
         w.later();
         GcReport r = w.G->run(w.devs);
-        CHECK(r.decided == 2 && r.manifests_deleted() == 2 && r.owed_total == 2 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 4 && w.chunks_on(w.dir_b) == 9);
+        CHECK(r.decided == 2 && r.manifests_deleted() == 2 && r.owed_total == 2 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 4 &&
+              w.chunks_on(w.dir_b) == 9);
         bool noted = false;
-        for (auto& d : r.devices) if (d.device_id == w.idb) noted = d.note.compare(0, 27, "it does not accept deletion") == 0 && d.manifests_deleted == 0 && d.chunks_swept == 0;
+        for (auto& d : r.devices)
+            if (d.device_id == w.idb)
+                noted = d.note.compare(0, 27, "it does not accept deletion") == 0 && d.manifests_deleted == 0 && d.chunks_swept == 0;
         CHECK(noted && has(format_gc_report(r).c_str(), "does not accept deletions"));
-        w.sb.start(w.dir_b);   // restarted with --allow-delete
+        w.sb.start(w.dir_b);  // restarted with --allow-delete
         GcReport fin = w.G->run(w.devs);
         CHECK(fin.decided == 0 && fin.manifests_deleted() == 2 && fin.owed_total == 0 && w.manifests_on(w.dir_b) == 2 && w.chunks_on(w.dir_b) == 5);
     }
@@ -534,7 +614,7 @@ int main(int argc, char** argv) {
         w.later();
         int swapped = 0;
         w.G->on_step = [&](const char* step) {
-            if (std::string(step) == "decided" && !swapped++) {   // after the decision, device B is replaced by a different (empty) one
+            if (std::string(step) == "decided" && !swapped++) {  // after the decision, device B is replaced by a different (empty) one
                 w.sb.stop();
                 w.sb.start(w.root + "/other-device");
             }
@@ -542,11 +622,13 @@ int main(int argc, char** argv) {
         GcReport r = w.G->run(w.devs);
         w.G->on_step = nullptr;
         bool refused = false;
-        for (auto& d : r.devices) if (d.device_id == w.idb) refused = !d.reachable && has(d.note.c_str(), "not the device the ledger expects") && d.manifests_deleted == 0;
+        for (auto& d : r.devices)
+            if (d.device_id == w.idb) refused = !d.reachable && has(d.note.c_str(), "not the device the ledger expects") && d.manifests_deleted == 0;
         CHECK(swapped == 1 && refused && r.owed_total == 2 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 4);
         GcReport plan = w.G->plan(w.devs);
         bool plan_refused = false;
-        for (auto& d : plan.devices) if (d.device_id == w.idb) plan_refused = !d.reachable && has(d.note.c_str(), "not the device the ledger expects");
+        for (auto& d : plan.devices)
+            if (d.device_id == w.idb) plan_refused = !d.reachable && has(d.note.c_str(), "not the device the ledger expects");
         CHECK(plan_refused);
     }
 
@@ -557,7 +639,7 @@ int main(int argc, char** argv) {
         for (uint8_t s = 20; s < 23; s++) w.edit(fid, "old.bin", s);
         w.later();
         w.sa.stop();
-        {   // make device A look like a version 1 store: manifests without their lists
+        {  // make device A look like a version 1 store: manifests without their lists
             sqlite3* db = nullptr;
             sqlite3_open((w.dir_a + "/device.db").c_str(), &db);
             CHECK(sqlite3_exec(db, "DELETE FROM manifest_refs; DELETE FROM refs_done;", nullptr, nullptr, nullptr) == SQLITE_OK);
@@ -568,12 +650,16 @@ int main(int argc, char** argv) {
         CHECK(w.da->gc_status(st).ok() && st.manifests == 4 && st.manifests_without_refs == 4);
         GcReport plan = w.G->plan(w.devs);
         bool planned = false;
-        for (auto& d : plan.devices) if (d.device_id == w.ida) planned = has(d.note.c_str(), "need their chunk lists re-sent") && d.chunks_swept == 0;
-        CHECK(planned && w.manifests_on(w.dir_a) == 4);   // a plan changes nothing, even there
+        for (auto& d : plan.devices)
+            if (d.device_id == w.ida) planned = has(d.note.c_str(), "need their chunk lists re-sent") && d.chunks_swept == 0;
+        CHECK(planned && w.manifests_on(w.dir_a) == 4);  // a plan changes nothing, even there
         GcReport r = w.G->run(w.devs);
         uint32_t sent = 0;
-        for (auto& d : r.devices) if (d.device_id == w.ida) sent = d.chunk_lists_sent;
-        CHECK(sent == 2 && r.decided == 2 && r.manifests_deleted() == 4 && r.chunks_swept() == 8);   // the two manifests that remain get their lists (the deleted ones need none); 2 versions x 2 private chunks x 2 devices
+        for (auto& d : r.devices)
+            if (d.device_id == w.ida) sent = d.chunk_lists_sent;
+        CHECK(sent == 2 && r.decided == 2 && r.manifests_deleted() == 4 &&
+              r.chunks_swept() ==
+                  8);  // the two manifests that remain get their lists (the deleted ones need none); 2 versions x 2 private chunks x 2 devices
         CHECK(w.manifests_on(w.dir_a) == 2 && w.chunks_on(w.dir_a) == 5 && w.intact(fid, 3, *w.da) && w.intact(fid, 4, *w.da) && w.L->fsck().empty());
         GcStatus st2;
         CHECK(w.da->gc_status(st2).ok() && st2.manifests_without_refs == 0);
@@ -597,8 +683,9 @@ int main(int argc, char** argv) {
         w.sa.start(w.dir_a);
         GcReport r = w.G->run(w.devs);
         bool noted = false;
-        for (auto& d : r.devices) if (d.device_id == w.ida) noted = has(d.note.c_str(), "need their chunk lists") && d.chunks_swept == 0 && d.chunk_lists_sent == 0;
-        CHECK(noted && r.chunks_swept() == 4 && w.chunks_on(w.dir_a) == 9);   // only B was swept
+        for (auto& d : r.devices)
+            if (d.device_id == w.ida) noted = has(d.note.c_str(), "need their chunk lists") && d.chunks_swept == 0 && d.chunk_lists_sent == 0;
+        CHECK(noted && r.chunks_swept() == 4 && w.chunks_on(w.dir_a) == 9);  // only B was swept
     }
 
     {
@@ -625,7 +712,7 @@ int main(int argc, char** argv) {
             w.edit_small(fid, name, static_cast<uint8_t>(100 + i));
         }
         w.later();
-        w.sb.stop();   // only one device can vouch for anything: every decision is refused
+        w.sb.stop();  // only one device can vouch for anything: every decision is refused
         GcReport r = w.G->run(w.devs);
         CHECK(r.candidates == 25 && r.decided == 0 && r.refused.size() == 20 && w.L->pruned_count() == 0);
         CHECK(has(format_gc_report(r).c_str(), "refused: ") && has(r.refused[0].c_str(), "recent audit"));
@@ -644,7 +731,7 @@ int main(int argc, char** argv) {
         PutManifestReply pr;
         CHECK(w.da->put_manifest(alien, 1, junk, {shared_chunk}, pr).ok());
         w.sa.stop();
-        {   // and every manifest on A loses its list (an old store)
+        {  // and every manifest on A loses its list (an old store)
             sqlite3* db = nullptr;
             sqlite3_open((w.dir_a + "/device.db").c_str(), &db);
             CHECK(sqlite3_exec(db, "DELETE FROM manifest_refs; DELETE FROM refs_done;", nullptr, nullptr, nullptr) == SQLITE_OK);
@@ -654,8 +741,10 @@ int main(int argc, char** argv) {
         size_t chunks_before = w.chunks_on(w.dir_a);
         GcReport r = w.G->run(w.devs);
         GcDeviceReport a;
-        for (auto& d : r.devices) if (d.device_id == w.ida) a = d;
-        CHECK(a.chunk_lists_sent == 2 && a.manifests_deleted == 2 && a.chunks_swept == 0 && has(a.note.c_str(), "could not be given a chunk list"));   // v3, v4 re-listed; the alien one cannot be
+        for (auto& d : r.devices)
+            if (d.device_id == w.ida) a = d;
+        CHECK(a.chunk_lists_sent == 2 && a.manifests_deleted == 2 && a.chunks_swept == 0 &&
+              has(a.note.c_str(), "could not be given a chunk list"));  // v3, v4 re-listed; the alien one cannot be
         CHECK(w.chunks_on(w.dir_a) == chunks_before && w.listed(*w.da, alien, 1));
         GcStatus st;
         CHECK(w.da->gc_status(st).ok() && st.manifests_without_refs == 1);
@@ -667,7 +756,7 @@ int main(int argc, char** argv) {
         printf("== a device that cannot or will not delete is reported, and the others carry on\n");
         World w;
         std::string fid = w.add_small("odd.bin", 1);
-        for (int i = 2; i <= 4; i++) w.edit_small(fid, "odd.bin", static_cast<uint8_t>(i));   // v1..v4
+        for (int i = 2; i <= 4; i++) w.edit_small(fid, "odd.bin", static_cast<uint8_t>(i));  // v1..v4
         FakeDevice old_dev(PORT + 2, ENOSYS, "11111111111111111111111111111111", w.L->volume_id());
         FakeDevice sick_dev(PORT + 3, EIO, "22222222222222222222222222222222", w.L->volume_id());
         DeviceClient old_c("127.0.0.1", PORT + 2, 1500), sick_c("127.0.0.1", PORT + 3, 1500);
@@ -693,21 +782,28 @@ int main(int argc, char** argv) {
         GcReport r = w.G->run(devs);
         bool o = false, k = false;
         for (auto& d : r.devices) {
-            if (d.device_id == old_dev.device_id) o = d.reachable && d.owed == 2 && d.manifests_deleted == 0 && d.chunks_swept == 0 && has(d.note.c_str(), "too old to delete");
-            if (d.device_id == sick_dev.device_id) k = d.reachable && d.owed == 2 && d.manifests_deleted == 0 && d.chunks_swept == 0 && has(d.note.c_str(), "deleting failed: disk on fire");
+            if (d.device_id == old_dev.device_id)
+                o = d.reachable && d.owed == 2 && d.manifests_deleted == 0 && d.chunks_swept == 0 && has(d.note.c_str(), "too old to delete");
+            if (d.device_id == sick_dev.device_id)
+                k = d.reachable && d.owed == 2 && d.manifests_deleted == 0 && d.chunks_swept == 0 &&
+                    has(d.note.c_str(), "deleting failed: disk on fire");
         }
-        CHECK(o && k && r.decided == 2 && r.owed_total == 4 && old_dev.count(MSG_DEV_DELETE_MANIFESTS) >= 1 && sick_dev.count(MSG_DEV_DELETE_MANIFESTS) >= 1);
-        CHECK(r.manifests_deleted() == 4 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2 && w.L->pending_prunes(100).size() == 4);   // A and B were served regardless
+        CHECK(o && k && r.decided == 2 && r.owed_total == 4 && old_dev.count(MSG_DEV_DELETE_MANIFESTS) >= 1 &&
+              sick_dev.count(MSG_DEV_DELETE_MANIFESTS) >= 1);
+        CHECK(r.manifests_deleted() == 4 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2 &&
+              w.L->pending_prunes(100).size() == 4);  // A and B were served regardless
         // a device that is not connected at all is a note, not a crash
         DeviceMap with_null = devs;
         with_null[old_dev.device_id] = nullptr;
         GcReport nul = w.G->run(with_null);
         bool absent = false;
-        for (auto& d : nul.devices) if (d.device_id == old_dev.device_id) absent = !d.reachable && d.note == "not connected";
+        for (auto& d : nul.devices)
+            if (d.device_id == old_dev.device_id) absent = !d.reachable && d.note == "not connected";
         CHECK(absent);
         GcReport nulplan = w.G->plan(with_null);
         absent = false;
-        for (auto& d : nulplan.devices) if (d.device_id == old_dev.device_id) absent = !d.reachable && d.note == "not connected";
+        for (auto& d : nulplan.devices)
+            if (d.device_id == old_dev.device_id) absent = !d.reachable && d.note == "not connected";
         CHECK(absent);
     }
 
@@ -727,15 +823,24 @@ int main(int argc, char** argv) {
             wr.u64(0);
             wr.u64(0);
         };
-        auto sweep_ok = [](Writer& wr) { wr.u64(1); wr.u64(10); wr.u64(5); wr.u64(2); };   // one chunk, 10 bytes, 5 left, 2 strays: every round
+        auto sweep_ok = [](Writer& wr) {
+            wr.u64(1);
+            wr.u64(10);
+            wr.u64(5);
+            wr.u64(2);
+        };  // one chunk, 10 bytes, 5 left, 2 strays: every round
         auto run_against = [&](FakeDevice& fk, bool plan, GcDeviceReport* out) {
             DeviceClient c("127.0.0.1", fk.port, 1500);
             DeviceMap m = {{FAKE_ID, &c}};
             GcReport r = plan ? w.G->plan(m) : w.G->run(m);
-            for (auto& d : r.devices) if (d.device_id == FAKE_ID) *out = d;
+            for (auto& d : r.devices)
+                if (d.device_id == FAKE_ID) *out = d;
             return r;
         };
-        auto be_gc = [&](GcConfig c) { w.cfg = c; w.make_gc(); };
+        auto be_gc = [&](GcConfig c) {
+            w.cfg = c;
+            w.make_gc();
+        };
         GcConfig base = w.cfg;
         base.sweep_min_age = 777;
         base.sweep_chunks = 555;
@@ -743,54 +848,78 @@ int main(int argc, char** argv) {
         be_gc(base);
         const uint16_t FP = PORT + 2;
 
-        {   // a device that does not allow deletions is not swept, and says so
+        {  // a device that does not allow deletions is not swept, and says so
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { status(wr, false, 0, 9); return true; }
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    status(wr, false, 0, 9);
+                    return true;
+                }
                 return false;
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
-            CHECK(d.reachable && !d.deletions_allowed && d.note.compare(0, 27, "it does not accept deletion") == 0 && fk.count(MSG_DEV_SWEEP) == 0 && d.status.unreferenced_chunks == 9);
+            CHECK(d.reachable && !d.deletions_allowed && d.note.compare(0, 27, "it does not accept deletion") == 0 && fk.count(MSG_DEV_SWEEP) == 0 &&
+                  d.status.unreferenced_chunks == 9);
             CHECK(!d.status.deletions_allowed && d.chunks_swept == 0);
         }
-        {   // a device that needs its chunk lists but cannot list its manifests
+        {  // a device that needs its chunk lists but cannot list its manifests
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { status(wr, true, 3, 9); return true; }
-                return false;   // LIST_MANIFESTS fails
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    status(wr, true, 3, 9);
+                    return true;
+                }
+                return false;  // LIST_MANIFESTS fails
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
             CHECK(d.note == "cannot list its manifests: disk on fire" && d.chunk_lists_sent == 0 && fk.count(MSG_DEV_SWEEP) == 0);
             GcDeviceReport dp;
-            run_against(fk, true, &dp);   // a plan does not try
-            CHECK(has(dp.note.c_str(), "need their chunk lists re-sent") && has(dp.note.c_str(), "a real run does that") && fk.count(MSG_DEV_LIST_MANIFESTS) == 1 && fk.count(MSG_DEV_SWEEP) == 0);
+            run_against(fk, true, &dp);  // a plan does not try
+            CHECK(has(dp.note.c_str(), "need their chunk lists re-sent") && has(dp.note.c_str(), "a real run does that") &&
+                  fk.count(MSG_DEV_LIST_MANIFESTS) == 1 && fk.count(MSG_DEV_SWEEP) == 0);
         }
-        {   // chunk lists switched off
+        {  // chunk lists switched off
             GcConfig c = base;
             c.prepare = false;
             be_gc(c);
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { status(wr, true, 3, 9); return true; }
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    status(wr, true, 3, 9);
+                    return true;
+                }
                 return false;
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
-            CHECK(d.note == "3 manifest(s) need their chunk lists re-sent before it can be swept" && fk.count(MSG_DEV_LIST_MANIFESTS) == 0 && fk.count(MSG_DEV_SWEEP) == 0);
+            CHECK(d.note == "3 manifest(s) need their chunk lists re-sent before it can be swept" && fk.count(MSG_DEV_LIST_MANIFESTS) == 0 &&
+                  fk.count(MSG_DEV_SWEEP) == 0);
             be_gc(base);
         }
-        {   // the lists are sent (there is nothing to send), the device is happy at the second look, and the sweep runs for as many rounds as allowed
+        {  // the lists are sent (there is nothing to send), the device is happy at the second look, and the sweep runs for as many rounds as allowed
             std::atomic<int> statuses{0};
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { status(wr, true, statuses++ == 0 ? 3 : 0, 9); return true; }
-                if (f.type == MSG_DEV_LIST_MANIFESTS) { wr.u64(7); wr.u64(0); wr.u32(0); return true; }
-                if (f.type == MSG_DEV_SWEEP) { sweep_ok(wr); return true; }
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    status(wr, true, statuses++ == 0 ? 3 : 0, 9);
+                    return true;
+                }
+                if (f.type == MSG_DEV_LIST_MANIFESTS) {
+                    wr.u64(7);
+                    wr.u64(0);
+                    wr.u32(0);
+                    return true;
+                }
+                if (f.type == MSG_DEV_SWEEP) {
+                    sweep_ok(wr);
+                    return true;
+                }
                 return false;
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
             auto reqs = fk.payloads(MSG_DEV_SWEEP);
-            CHECK(d.note.empty() && d.deletions_allowed && d.status.manifests_without_refs == 0 && d.status.unreferenced_chunks == 9 && d.chunk_lists_sent == 0);   // the second look is the one kept
-            CHECK(reqs.size() == 3 && d.chunks_swept == 3 && d.bytes_swept == 30 && d.strays_removed == 6);                                    // 3 rounds, summed
+            CHECK(d.note.empty() && d.deletions_allowed && d.status.manifests_without_refs == 0 && d.status.unreferenced_chunks == 9 &&
+                  d.chunk_lists_sent == 0);                                                                  // the second look is the one kept
+            CHECK(reqs.size() == 3 && d.chunks_swept == 3 && d.bytes_swept == 30 && d.strays_removed == 6);  // 3 rounds, summed
             std::vector<uint8_t> first_req = reqs.empty() ? std::vector<uint8_t>(13, 0) : reqs[0];
             Reader rd(first_req);
             uint64_t age = rd.u64();
@@ -804,7 +933,8 @@ int main(int argc, char** argv) {
             GcReport rp = run_against(fk, true, &dp);
             auto reqs2 = fk.payloads(MSG_DEV_SWEEP);
             Reader rd2(reqs2.back());
-            rd2.u64(); rd2.u32();
+            rd2.u64();
+            rd2.u32();
             CHECK(fk.count(MSG_DEV_SWEEP) == before + 1 && rd2.u8() == 1 && dp.chunks_swept == 1);
             CHECK(has(format_gc_report(rp).c_str(), "that a sweep would take 1") && !has(format_gc_report(rp).c_str(), "decided now"));
             // with no rounds allowed at all, one is still made
@@ -817,37 +947,59 @@ int main(int argc, char** argv) {
             CHECK(fk.count(MSG_DEV_SWEEP) == before + 1 && d0.chunks_swept == 1);
             be_gc(base);
         }
-        {   // the second look fails
+        {  // the second look fails
             std::atomic<int> statuses{0};
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { if (statuses++ == 0) { status(wr, true, 2, 9); return true; } return false; }
-                if (f.type == MSG_DEV_LIST_MANIFESTS) { wr.u64(7); wr.u64(0); wr.u32(0); return true; }
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    if (statuses++ == 0) {
+                        status(wr, true, 2, 9);
+                        return true;
+                    }
+                    return false;
+                }
+                if (f.type == MSG_DEV_LIST_MANIFESTS) {
+                    wr.u64(7);
+                    wr.u64(0);
+                    wr.u32(0);
+                    return true;
+                }
                 return false;
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
             CHECK(d.note == "cannot ask its status again" && fk.count(MSG_DEV_SWEEP) == 0);
         }
-        {   // lists could not be given to every manifest
+        {  // lists could not be given to every manifest
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { status(wr, true, 1, 9); return true; }
-                if (f.type == MSG_DEV_LIST_MANIFESTS) { wr.u64(7); wr.u64(0); wr.u32(0); return true; }
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    status(wr, true, 1, 9);
+                    return true;
+                }
+                if (f.type == MSG_DEV_LIST_MANIFESTS) {
+                    wr.u64(7);
+                    wr.u64(0);
+                    wr.u32(0);
+                    return true;
+                }
                 return false;
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
             CHECK(has(d.note.c_str(), "1 manifest(s) could not be given a chunk list") && fk.count(MSG_DEV_SWEEP) == 0);
         }
-        {   // a sweep that fails
+        {  // a sweep that fails
             FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                if (f.type == MSG_DEV_GC_STATUS) { status(wr, true, 0, 9); return true; }
+                if (f.type == MSG_DEV_GC_STATUS) {
+                    status(wr, true, 0, 9);
+                    return true;
+                }
                 return false;
             });
             GcDeviceReport d;
             run_against(fk, false, &d);
             CHECK(d.note == "sweep failed: disk on fire" && d.chunks_swept == 0 && fk.count(MSG_DEV_SWEEP) == 1);
         }
-        {   // chunk lists are counted only for manifests the device really already holds and accepted
+        {  // chunk lists are counted only for manifests the device really already holds and accepted
             crypto::Manifest m;
             m.file_id = "44444444444444444444444444444444";
             m.version = 1;
@@ -855,25 +1007,36 @@ int main(int argc, char** argv) {
             m.size = 0;
             Bytes blob = crypto::seal_manifest(*w.keys, w.L->volume_id(), m);
             std::string sha = crypto::sha256_hex(blob.data(), blob.size());
-            for (int mode = 0; mode < 2; mode++) {   // 0: the device says "new" (not existed); 1: it refuses
+            for (int mode = 0; mode < 2; mode++) {  // 0: the device says "new" (not existed); 1: it refuses
                 std::atomic<int> statuses{0};
                 FakeDevice fk(FP, EIO, FAKE_ID, w.L->volume_id(), [&](const Frame& f, Writer& wr, uint8_t& type) {
-                    if (f.type == MSG_DEV_GC_STATUS) { status(wr, true, 1, 9); return true; }
+                    if (f.type == MSG_DEV_GC_STATUS) {
+                        status(wr, true, 1, 9);
+                        return true;
+                    }
                     if (f.type == MSG_DEV_LIST_MANIFESTS) {
-                        wr.u64(7); wr.u64(1); wr.u32(1);
-                        wr.u64(1); wr.str(m.file_id); wr.i64(1);
+                        wr.u64(7);
+                        wr.u64(1);
+                        wr.u32(1);
+                        wr.u64(1);
+                        wr.str(m.file_id);
+                        wr.i64(1);
                         auto raw = *crypto::from_hex(sha);
                         wr.bytes(raw.data(), raw.size());
                         return true;
                     }
-                    if (f.type == MSG_DEV_GET_MANIFEST) { wr.blob(blob.data(), blob.size()); return true; }
+                    if (f.type == MSG_DEV_GET_MANIFEST) {
+                        wr.blob(blob.data(), blob.size());
+                        return true;
+                    }
                     if (f.type == MSG_DEV_PUT_MANIFEST && mode == 0) {
-                        wr.u8(0); wr.u64(1);
+                        wr.u8(0);
+                        wr.u64(1);
                         auto raw = *crypto::from_hex(sha);
                         wr.bytes(raw.data(), raw.size());
                         return true;
                     }
-                    return false;   // mode 1: an error
+                    return false;  // mode 1: an error
                 });
                 GcDeviceReport d;
                 run_against(fk, false, &d);
@@ -895,9 +1058,11 @@ int main(int argc, char** argv) {
         w.G->on_step = [&](const char* step) { steps.push_back(step); };
         GcReport r = w.G->run(w.devs);
         CHECK(steps == std::vector<std::string>({"decided", "device_done", "device_done", "deleted"}));
-        CHECK(r.decided == 2 && r.manifests_deleted() == 4 && r.chunks_swept() == 0 && w.manifests_on(w.dir_a) == 2 && w.chunks_on(w.dir_a) == 9 && w.chunks_on(w.dir_b) == 9);   // nothing swept
-        GcReport plan = w.G->plan(w.devs);   // the plan sees what a sweep would take
-        CHECK(plan.chunks_swept() == 8 && plan.bytes_swept() > 0 && has(format_gc_report(plan).c_str(), "that a sweep would take 4") && !has(format_gc_report(plan).c_str(), "decided now"));
+        CHECK(r.decided == 2 && r.manifests_deleted() == 4 && r.chunks_swept() == 0 && w.manifests_on(w.dir_a) == 2 && w.chunks_on(w.dir_a) == 9 &&
+              w.chunks_on(w.dir_b) == 9);   // nothing swept
+        GcReport plan = w.G->plan(w.devs);  // the plan sees what a sweep would take
+        CHECK(plan.chunks_swept() == 8 && plan.bytes_swept() > 0 && has(format_gc_report(plan).c_str(), "that a sweep would take 4") &&
+              !has(format_gc_report(plan).c_str(), "decided now"));
         CHECK(w.chunks_on(w.dir_a) == 9);
         w.cfg.sweep = true;
         w.make_gc();
@@ -912,9 +1077,9 @@ int main(int argc, char** argv) {
         w.cfg.keep_versions = 1;
         w.make_gc();
         w.add_device_c();
-        std::string fid = w.add_small("sel.bin", 1);   // v1 on A and B
-        w.edit_small(fid, "sel.bin", 2, /*a=*/false, /*b=*/true);   // v2 on B ...
-        w.R->replicate(*w.dc, w.idc, fid, w.path("sel.bin"));       // ... and C
+        std::string fid = w.add_small("sel.bin", 1);               // v1 on A and B
+        w.edit_small(fid, "sel.bin", 2, /*a=*/false, /*b=*/true);  // v2 on B ...
+        w.R->replicate(*w.dc, w.idc, fid, w.path("sel.bin"));      // ... and C
         // two more records of v2: a device the Mac is not connected to, and one whose copy is gone
         w.L->register_device("ghost1", "ghost1", "B");
         w.L->register_device("ghost2", "ghost2", "B");
@@ -924,10 +1089,10 @@ int main(int argc, char** argv) {
         w.L->set_replica(fid, 2, "ghost2", ReplicaState::PENDING);
         w.L->set_replica(fid, 2, "ghost2", ReplicaState::MISSING);
         DeviceMap devs = w.devs;
-        devs["ghost2"] = w.da.get();   // connected (to something), but its replica is not COMMITTED
+        devs["ghost2"] = w.da.get();  // connected (to something), but its replica is not COMMITTED
         w.later();
         GcReport r = w.G->run(devs);
-        CHECK(r.candidates == 1 && r.decided == 1 && r.audited == 2 && r.refused.empty());   // B and C, nothing else
+        CHECK(r.candidates == 1 && r.decided == 1 && r.audited == 2 && r.refused.empty());  // B and C, nothing else
         CHECK(w.L->is_version_pruned(fid, 1));
         // a deleted file never needs an audit: when it is refused (here: not deleted long enough) nothing is audited
         std::string gone = w.add_small("gone2.bin", 9);
@@ -945,7 +1110,7 @@ int main(int argc, char** argv) {
         for (int i = 2; i <= 70; i++) w.edit_small(fid, "batchy.bin", static_cast<uint8_t>(i));
         const std::string FAKE_ID = "66666666666666666666666666666666";
         w.L->register_device(FAKE_ID, "fake", "B");
-        for (int64_t v = 1; v <= 70; v++) {   // the scripted device holds a copy of every version (as far as the ledger knows)
+        for (int64_t v = 1; v <= 70; v++) {  // the scripted device holds a copy of every version (as far as the ledger knows)
             w.L->set_replica(fid, v, FAKE_ID, ReplicaState::PENDING);
             w.L->set_replica(fid, v, FAKE_ID, ReplicaState::UPLOADED);
             w.L->set_replica(fid, v, FAKE_ID, ReplicaState::COMMITTED, 1000 + v);
@@ -959,7 +1124,18 @@ int main(int argc, char** argv) {
                 for (uint32_t i = 0; i < n; i++) wr.u8(1);
                 return true;
             }
-            if (f.type == MSG_DEV_GC_STATUS) { wr.u8(1); wr.u32(2); wr.u32(0); wr.u64(2); wr.u64(200); wr.u64(0); wr.u64(0); wr.u64(0); wr.u64(0); return true; }
+            if (f.type == MSG_DEV_GC_STATUS) {
+                wr.u8(1);
+                wr.u32(2);
+                wr.u32(0);
+                wr.u64(2);
+                wr.u64(200);
+                wr.u64(0);
+                wr.u64(0);
+                wr.u64(0);
+                wr.u64(0);
+                return true;
+            }
             return false;
         });
         DeviceClient fc("127.0.0.1", PORT + 2, 1500);
@@ -974,7 +1150,10 @@ int main(int argc, char** argv) {
             Reader rd(pl);
             uint32_t n = rd.u32();
             sizes.push_back(n);
-            for (uint32_t i = 0; i < n; i++) { rd.str(); versions.push_back(rd.i64()); }
+            for (uint32_t i = 0; i < n; i++) {
+                rd.str();
+                versions.push_back(rd.i64());
+            }
         }
         CHECK(sizes == std::vector<uint32_t>({64, 4}) && versions.size() == 68);
         bool each_once = true;
@@ -999,7 +1178,8 @@ int main(int argc, char** argv) {
             std::vector<char*> envp;
             for (auto& x : env) envp.push_back(const_cast<char*>(x.c_str()));
             envp.push_back(nullptr);
-            std::string hex = crypto::to_hex(w.master.data(), 32), ledger = w.root + "/ledger", pa = std::to_string(PA), pb = std::to_string(PB), nowstr = std::to_string(now_at_crash);
+            std::string hex = crypto::to_hex(w.master.data(), 32), ledger = w.root + "/ledger", pa = std::to_string(PA), pb = std::to_string(PB),
+                        nowstr = std::to_string(now_at_crash);
             std::vector<std::string> a = {"gc_test", "--child", hex, ledger, pa, w.ida, pb, w.idb, nowstr};
             std::vector<char*> av;
             for (auto& x : a) av.push_back(const_cast<char*>(x.c_str()));
@@ -1011,13 +1191,17 @@ int main(int argc, char** argv) {
             int rc = posix_spawn(&pid, self, nullptr, nullptr, av.data(), envp.data());
             int st = 0;
             if (rc == 0) waitpid(pid, &st, 0);
-            CHECK(rc == 0 && WIFEXITED(st) && WEXITSTATUS(st) == 137);   // it died where it was told to
+            CHECK(rc == 0 && WIFEXITED(st) && WEXITSTATUS(st) == 137);  // it died where it was told to
             w.open_ledger();
             size_t left = w.manifests_on(w.dir_a) + w.manifests_on(w.dir_b);
-            if (std::string(point) == "gc.after_decide") CHECK(w.L->pruned_count() == 2 && left == 8 && w.L->pending_prunes(100).size() == 4);   // decided; nothing deleted yet
-            else CHECK(w.L->pruned_count() == 2 && left == 6 && w.L->pending_prunes(100).size() == 2);                                           // the first device's batch was deleted and recorded; the second device's was not
+            if (std::string(point) == "gc.after_decide")
+                CHECK(w.L->pruned_count() == 2 && left == 8 && w.L->pending_prunes(100).size() == 4);  // decided; nothing deleted yet
+            else
+                CHECK(w.L->pruned_count() == 2 && left == 6 &&
+                      w.L->pending_prunes(100).size() == 2);  // the first device's batch was deleted and recorded; the second device's was not
             GcReport r = w.G->run(w.devs);
-            CHECK(r.decided == 0 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2 && w.chunks_on(w.dir_a) == 5 && w.chunks_on(w.dir_b) == 5);
+            CHECK(r.decided == 0 && w.manifests_on(w.dir_a) == 2 && w.manifests_on(w.dir_b) == 2 && w.chunks_on(w.dir_a) == 5 &&
+                  w.chunks_on(w.dir_b) == 5);
             CHECK(w.intact(fid, 3, *w.da) && w.intact(fid, 4, *w.db) && w.L->fsck().empty());
         }
     }
@@ -1033,21 +1217,44 @@ int main(int argc, char** argv) {
                 Reader rd(f.payload);
                 uint32_t n = rd.u32();
                 wr.u64(99);
-                if (mode == 1) { wr.u32(n + 1); for (uint32_t i = 0; i <= n; i++) wr.u8(1); }          // one answer too many
-                else if (mode == 2) { wr.u32(n); for (uint32_t i = 0; i < n; i++) wr.u8(2); }          // an answer that is neither 0 nor 1
-                else if (mode == 3) { wr.u32(n); }                                                      // the answers are missing
-                else if (mode == 4) { wr.u32(n); for (uint32_t i = 0; i + 1 < n; i++) wr.u8(1); }      // all but the last answer are there
-                else { wr.u32(n); for (uint32_t i = 0; i < n; i++) wr.u8(i % 2); }
+                if (mode == 1) {
+                    wr.u32(n + 1);
+                    for (uint32_t i = 0; i <= n; i++) wr.u8(1);
+                }  // one answer too many
+                else if (mode == 2) {
+                    wr.u32(n);
+                    for (uint32_t i = 0; i < n; i++) wr.u8(2);
+                }  // an answer that is neither 0 nor 1
+                else if (mode == 3) {
+                    wr.u32(n);
+                }  // the answers are missing
+                else if (mode == 4) {
+                    wr.u32(n);
+                    for (uint32_t i = 0; i + 1 < n; i++) wr.u8(1);
+                }  // all but the last answer are there
+                else {
+                    wr.u32(n);
+                    for (uint32_t i = 0; i < n; i++) wr.u8(i % 2);
+                }
                 return true;
             }
             if (f.type == MSG_DEV_GC_STATUS) {
                 wr.u8(mode == 2 ? 2 : 1);
-                wr.u32(11); wr.u32(12); wr.u64(13); wr.u64(14); wr.u64(15); wr.u64(16); wr.u64(17); wr.u64(18);
-                if (mode == 3) wr.b.resize(wr.b.size() - 4);                                            // cut short
+                wr.u32(11);
+                wr.u32(12);
+                wr.u64(13);
+                wr.u64(14);
+                wr.u64(15);
+                wr.u64(16);
+                wr.u64(17);
+                wr.u64(18);
+                if (mode == 3) wr.b.resize(wr.b.size() - 4);  // cut short
                 return true;
             }
             if (f.type == MSG_DEV_SWEEP) {
-                wr.u64(21); wr.u64(22); wr.u64(23);
+                wr.u64(21);
+                wr.u64(22);
+                wr.u64(23);
                 if (mode != 3) wr.u64(24);
                 return true;
             }
@@ -1059,8 +1266,8 @@ int main(int argc, char** argv) {
         mode = 0;
         DevRes r = c.delete_manifests({{F1, 3}, {F2, 4}, {F1, 5}}, del, &seq);
         CHECK(r.ok() && del == std::vector<uint8_t>({0, 1, 0}) && seq == 99);
-        CHECK(c.delete_manifests({{F1, 3}}, del).ok() && del == std::vector<uint8_t>({0}));   // the sequence is optional
-        {   // what went out, in order
+        CHECK(c.delete_manifests({{F1, 3}}, del).ok() && del == std::vector<uint8_t>({0}));  // the sequence is optional
+        {                                                                                    // what went out, in order
             auto reqs = fk.payloads(MSG_DEV_DELETE_MANIFESTS);
             Reader rd(reqs[0]);
             uint32_t n = rd.u32();
@@ -1083,15 +1290,17 @@ int main(int argc, char** argv) {
         CHECK(!r.ok() && r.err == EPROTO && r.msg == "malformed reply" && del.empty());
         mode = 4;
         r = c.delete_manifests({{F1, 3}, {F2, 4}, {F1, 5}}, del, &seq);
-        CHECK(!r.ok() && r.err == EPROTO && r.msg == "malformed reply" && del.empty());   // what had been read is not left behind
+        CHECK(!r.ok() && r.err == EPROTO && r.msg == "malformed reply" && del.empty());  // what had been read is not left behind
         mode = 0;
-        CHECK(c.delete_manifests({}, del).err == EMSGSIZE && c.delete_manifests(std::vector<std::pair<std::string, int64_t>>(64, {F1, 1}), del).ok() &&
+        CHECK(c.delete_manifests({}, del).err == EMSGSIZE &&
+              c.delete_manifests(std::vector<std::pair<std::string, int64_t>>(64, {F1, 1}), del).ok() &&
               c.delete_manifests(std::vector<std::pair<std::string, int64_t>>(65, {F1, 1}), del).err == EMSGSIZE);
         // the status: every field lands in its own place
         mode = 0;
         GcStatus g;
-        CHECK(c.gc_status(g).ok() && g.deletions_allowed && g.manifests == 11 && g.manifests_without_refs == 12 && g.chunks == 13 && g.chunk_bytes == 14 && g.unreferenced_chunks == 15 &&
-              g.unreferenced_bytes == 16 && g.manifests_deleted == 17 && g.chunks_deleted == 18);
+        CHECK(c.gc_status(g).ok() && g.deletions_allowed && g.manifests == 11 && g.manifests_without_refs == 12 && g.chunks == 13 &&
+              g.chunk_bytes == 14 && g.unreferenced_chunks == 15 && g.unreferenced_bytes == 16 && g.manifests_deleted == 17 &&
+              g.chunks_deleted == 18);
         mode = 2;
         r = c.gc_status(g);
         CHECK(!r.ok() && r.err == EPROTO && r.msg == "bad status");
@@ -1101,13 +1310,18 @@ int main(int argc, char** argv) {
         // the sweep: what is asked, and what comes back
         mode = 0;
         SweepOut so;
-        CHECK(c.sweep(111, 222, true, so).ok() && so.chunks_deleted == 21 && so.bytes_deleted == 22 && so.chunks_left == 23 && so.strays_removed == 24);
+        CHECK(c.sweep(111, 222, true, so).ok() && so.chunks_deleted == 21 && so.bytes_deleted == 22 && so.chunks_left == 23 &&
+              so.strays_removed == 24);
         CHECK(c.sweep(333, 444, false, so).ok());
         {
             auto reqs = fk.payloads(MSG_DEV_SWEEP);
             Reader r1(reqs[0]), r2(reqs[1]);
-            uint64_t a1 = r1.u64(); uint32_t m1 = r1.u32(); uint8_t d1 = r1.u8();
-            uint64_t a2 = r2.u64(); uint32_t m2 = r2.u32(); uint8_t d2 = r2.u8();
+            uint64_t a1 = r1.u64();
+            uint32_t m1 = r1.u32();
+            uint8_t d1 = r1.u8();
+            uint64_t a2 = r2.u64();
+            uint32_t m2 = r2.u32();
+            uint8_t d2 = r2.u8();
             CHECK(a1 == 111 && m1 == 222 && d1 == 1 && a2 == 333 && m2 == 444 && d2 == 0);
         }
         mode = 3;
@@ -1123,10 +1337,11 @@ int main(int argc, char** argv) {
         w.cfg.sweep_rounds = 1;
         w.make_gc();
         std::string fid = w.add("lim.bin", 10);
-        for (uint8_t s = 20; s < 24; s++) w.edit(fid, "lim.bin", s);   // v1..v5
+        for (uint8_t s = 20; s < 24; s++) w.edit(fid, "lim.bin", s);  // v1..v5
         w.later();
         GcReport r1 = w.G->run(w.devs);
-        CHECK(r1.candidates == 1 && r1.decided == 1 && r1.manifests_deleted() == 2 && r1.chunks_swept() == 2 && w.chunks_on(w.dir_a) == 1 + 2 * 4 + 1);   // one chunk per device and round
+        CHECK(r1.candidates == 1 && r1.decided == 1 && r1.manifests_deleted() == 2 && r1.chunks_swept() == 2 &&
+              w.chunks_on(w.dir_a) == 1 + 2 * 4 + 1);  // one chunk per device and round
         int runs = 1;
         for (; runs < 20; runs++) {
             w.later();

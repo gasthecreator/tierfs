@@ -94,7 +94,7 @@ struct Server {
     pid_t pid = 0;
     uint16_t port;
     std::string faults;   // TIERFS_DEVICE_FAULTS for the next start
-    std::vector<std::string> args;   // extra command-line arguments for the next start
+    std::vector<std::string> args;  // extra command-line arguments for the next start
     explicit Server(uint16_t p) : port(p) {}
     bool start(const std::string& store) {
         stop();
@@ -281,7 +281,7 @@ static Bytes read_through(Overlay& ov, const std::string& path, size_t size) {
 
 int main() {
     signal(SIGPIPE, SIG_IGN);
-    setenv("TIERFS_DEVICE_MIN_SWEEP_AGE", "0", 1);   // (devices started with --allow-delete have no age floor in these tests)
+    setenv("TIERFS_DEVICE_MIN_SWEEP_AGE", "0", 1);  // (devices started with --allow-delete have no age floor in these tests)
 
     {
         printf("== configuration problems are reported, not papered over\n");
@@ -593,16 +593,19 @@ int main() {
         spit(e.path("w.bin"), w);
         auto d = make(e, nullptr, &cfg);
         CHECK(d && d->start(nullptr));
-        CHECK(has(d->control("replicate /v.bin"), "replicated /Users/me/proj/v.bin") && has(d->control("replicate /w.bin"), "replicated /Users/me/proj/w.bin"));
+        CHECK(has(d->control("replicate /v.bin"), "replicated /Users/me/proj/v.bin") &&
+              has(d->control("replicate /w.bin"), "replicated /Users/me/proj/w.bin"));
         spit(e.path("v.bin"), v2);
         struct utimbuf tb = {time(nullptr) + 5, time(nullptr) + 5};
         utime(e.path("v.bin").c_str(), &tb);
         CHECK(ends_ok(d->control("scan")) && has(d->control("replicate /v.bin"), "replicated /Users/me/proj/v.bin"));
         auto fid = d->ledger().get_file_by_path("/Users/me/proj/v.bin")->file_id;
-        CHECK(d->ledger().get_file(fid)->current_version == 2 && count_files_under(e.root + "/devA/manifests") == 3);   // v1 and v2 of v.bin, v1 of w.bin
+        CHECK(d->ledger().get_file(fid)->current_version == 2 &&
+              count_files_under(e.root + "/devA/manifests") == 3);  // v1 and v2 of v.bin, v1 of w.bin
         uint64_t events = d->ledger().event_count();
         std::string plan = d->control("gc-plan");
-        CHECK(ends_ok(plan) && has(plan, "plan only") && has(plan, "versions the rules would let go of: 1") && d->ledger().event_count() == events && d->ledger().pruned_count() == 0);
+        CHECK(ends_ok(plan) && has(plan, "plan only") && has(plan, "versions the rules would let go of: 1") && d->ledger().event_count() == events &&
+              d->ledger().pruned_count() == 0);
         std::string run = d->control("gc-run");
         CHECK(ends_ok(run) && has(run, "decided now: 1") && has(run, "manifests deleted 1") && has(run, "deletions still owed by devices: 0"));
         CHECK(d->ledger().pruned_count() == 1 && d->ledger().is_version_pruned(fid, 1) && d->ledger().get_meta("gc_last_run").has_value());
@@ -613,7 +616,8 @@ int main() {
         // delete a file: it goes after its retention period (here: at once)
         CHECK(d->overlay().unlink("/w.bin") == 0);
         std::string run2 = d->control("gc-run");
-        CHECK(ends_ok(run2) && has(run2, "decided now: 1") && count_files_under(e.root + "/devA/manifests") == 1 && count_files_under(e.root + "/devB/manifests") == 1);
+        CHECK(ends_ok(run2) && has(run2, "decided now: 1") && count_files_under(e.root + "/devA/manifests") == 1 &&
+              count_files_under(e.root + "/devB/manifests") == 1);
         CHECK(d->ledger().fsck().empty() && has(d->control("gc-run"), "decided now: 0"));
     }
 
@@ -645,8 +649,11 @@ int main() {
             d->control("replicate /m.bin");
             CHECK(count_files_under(e.root + "/devA/manifests") == 2);
             for (int i = 0; i < 60 && count_files_under(e.root + "/devA/manifests") == 2; i++) usleep(200000);
-            if (on) CHECK(count_files_under(e.root + "/devA/manifests") == 1 && count_files_under(e.root + "/devB/manifests") == 1 && d->ledger().pruned_count() == 1);
-            else CHECK(count_files_under(e.root + "/devA/manifests") == 2 && d->ledger().pruned_count() == 0);
+            if (on)
+                CHECK(count_files_under(e.root + "/devA/manifests") == 1 && count_files_under(e.root + "/devB/manifests") == 1 &&
+                      d->ledger().pruned_count() == 1);
+            else
+                CHECK(count_files_under(e.root + "/devA/manifests") == 2 && d->ledger().pruned_count() == 0);
             d->stop();
         }
     }

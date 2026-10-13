@@ -82,7 +82,7 @@ M = [
  ('sweep: nothing allowed accepted', P, 'if (max_chunks == 0) return fail(EINVAL, "a sweep must be allowed to delete at least one chunk");', ''),
  ('[bounded by the number of rows anyway] sweep: the request is not clamped', P, 'if (max_chunks > MAX_SWEEP_CHUNKS) max_chunks = MAX_SWEEP_CHUNKS;', ''),
  ('sweep: refused lists ignored', P, 'if (refless > 0)\n        return fail(EPERM,', 'if (refless > 1000000)\n        return fail(EPERM,'),
- ('sweep: refusal does not say how to fix it', P, '(a garbage-collection run from the Mac does that)', '(later)'),
+ ('sweep: refusal does not say how to fix it', P, 'garbage-collection run from the Mac does that)', 'later)'),
  ('sweep: the floor is ignored', P, 'uint64_t age = std::max(min_age_s, min_sweep_age_);', 'uint64_t age = min_age_s;'),
  ('sweep: the floor replaces the request', P, 'uint64_t age = std::max(min_age_s, min_sweep_age_);', 'uint64_t age = std::min(min_age_s, min_sweep_age_);'),
  ('sweep: only the floor counts', P, 'uint64_t age = std::max(min_age_s, min_sweep_age_);', 'uint64_t age = min_sweep_age_;'),

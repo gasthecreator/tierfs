@@ -578,7 +578,8 @@ ReconcileReport Replicator::reconcile(DeviceClient& dev, const std::string& devi
         const ManifestEntry& e = kv.second;
         std::string label = e.file_id + ":" + std::to_string(e.version);
         if (!ledger_.has_version(e.file_id, e.version)) { rep.unknown_manifests.push_back(label); continue; }
-        if (ledger_.is_version_pruned(e.file_id, e.version)) {   // it was deleted on purpose; a device that was away still has it: it is not a copy to adopt
+        if (ledger_.is_version_pruned(e.file_id,
+                                      e.version)) {  // it was deleted on purpose; a device that was away still has it: it is not a copy to adopt
             if (ledger_.queue_prune(e.file_id, e.version, device_id)) rep.pruned_leftovers.push_back(label);
             continue;
         }

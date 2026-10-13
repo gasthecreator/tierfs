@@ -92,31 +92,31 @@ constexpr size_t MAX_MANIFEST_CHUNKS = 1u << 20;
 constexpr size_t MAX_AUDIT_ITEMS = 64;
 constexpr size_t MAX_DELETE_ITEMS = 64;
 constexpr size_t MAX_SWEEP_CHUNKS = 100000;
-constexpr uint64_t DEFAULT_MIN_SWEEP_AGE = 3600;   // seconds a chunk must be unreferenced and untouched before it may be swept
+constexpr uint64_t DEFAULT_MIN_SWEEP_AGE = 3600;  // seconds a chunk must be unreferenced and untouched before it may be swept
 constexpr size_t MAX_LIST_ENTRIES = 1000;
 constexpr uint64_t MIN_FREE_RESERVE = 16u << 20;  // never fill the disk to the last byte
 
 struct DeleteManifestsOut {
     int err = 0;
     std::string msg;
-    uint64_t seq = 0;                 // the device's commit sequence after the call (deleting bumps it, so rollbacks stay visible)
-    std::vector<uint8_t> deleted;     // per item: 1 deleted now, 0 it was not there
+    uint64_t seq = 0;              // the device's commit sequence after the call (deleting bumps it, so rollbacks stay visible)
+    std::vector<uint8_t> deleted;  // per item: 1 deleted now, 0 it was not there
 };
 
 struct GcStatus {
     bool deletions_allowed = false;
-    uint32_t manifests = 0, manifests_without_refs = 0;   // the latter: stored before reference lists existed; sweep is refused while any remain
+    uint32_t manifests = 0, manifests_without_refs = 0;  // the latter: stored before reference lists existed; sweep is refused while any remain
     uint64_t chunks = 0, chunk_bytes = 0;
-    uint64_t unreferenced_chunks = 0, unreferenced_bytes = 0;   // listed by no manifest, whatever their age
-    uint64_t manifests_deleted = 0, chunks_deleted = 0;          // lifetime totals, from the device's own log
+    uint64_t unreferenced_chunks = 0, unreferenced_bytes = 0;  // listed by no manifest, whatever their age
+    uint64_t manifests_deleted = 0, chunks_deleted = 0;        // lifetime totals, from the device's own log
 };
 
 struct SweepOut {
     int err = 0;
     std::string msg;
     uint64_t chunks_deleted = 0, bytes_deleted = 0;
-    uint64_t chunks_left = 0;         // unreferenced chunks still on the device (too young, or over the limit)
-    uint64_t strays_removed = 0;      // files with no index row, older than the age (leftovers of a crash)
+    uint64_t chunks_left = 0;     // unreferenced chunks still on the device (too young, or over the limit)
+    uint64_t strays_removed = 0;  // files with no index row, older than the age (leftovers of a crash)
 };
 
 bool valid_chunk_id(const std::string& s);   // 64 lowercase hex

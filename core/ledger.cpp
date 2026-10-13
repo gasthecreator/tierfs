@@ -540,22 +540,37 @@ bool Ledger::migrate_2_to_3(std::string* err) {
     bool has_col = false;
     {
         Stmt t(db_, "PRAGMA table_info(versions)");
-        while (t.row()) if (t.col_text(1) == "pruned_at") has_col = true;
+        while (t.row())
+            if (t.col_text(1) == "pruned_at") has_col = true;
     }
     Txn t(db_);
-    if (!t.began()) { *err = "cannot begin"; return false; }
+    if (!t.began()) {
+        *err = "cannot begin";
+        return false;
+    }
     const char* ddl[] = {
-        "CREATE TABLE IF NOT EXISTS prune_state(file_id TEXT NOT NULL, version INTEGER NOT NULL, device_id TEXT NOT NULL REFERENCES devices(device_id),"
+        "CREATE TABLE IF NOT EXISTS prune_state(file_id TEXT NOT NULL, version INTEGER NOT NULL, device_id TEXT NOT NULL REFERENCES "
+        "devices(device_id),"
         " state TEXT NOT NULL CHECK(state IN('owed','done')), updated_at INTEGER NOT NULL, PRIMARY KEY(file_id,version,device_id),"
         " FOREIGN KEY(file_id,version) REFERENCES versions(file_id,version)) WITHOUT ROWID",
-        "CREATE TRIGGER IF NOT EXISTS prune_state_no_delete BEFORE DELETE ON prune_state BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); END",
+        "CREATE TRIGGER IF NOT EXISTS prune_state_no_delete BEFORE DELETE ON prune_state BEGIN SELECT RAISE(ABORT,'ledger rows are never deleted'); "
+        "END",
         "CREATE TRIGGER IF NOT EXISTS prune_is_final BEFORE UPDATE ON versions WHEN OLD.pruned_at!=0 AND NEW.pruned_at!=OLD.pruned_at"
         " BEGIN SELECT RAISE(ABORT,'a pruned version stays pruned'); END",
     };
-    if (!has_col && !exec("ALTER TABLE versions ADD COLUMN pruned_at INTEGER NOT NULL DEFAULT 0")) { *err = "cannot add the column"; return false; }
+    if (!has_col && !exec("ALTER TABLE versions ADD COLUMN pruned_at INTEGER NOT NULL DEFAULT 0")) {
+        *err = "cannot add the column";
+        return false;
+    }
     for (const char* q : ddl)
-        if (!exec(q)) { *err = q; return false; }
-    if (!exec("PRAGMA user_version=3")) { *err = "cannot record the version"; return false; }
+        if (!exec(q)) {
+            *err = q;
+            return false;
+        }
+    if (!exec("PRAGMA user_version=3")) {
+        *err = "cannot record the version";
+        return false;
+    }
     append_event("ledger.upgraded", "", 0, "", "schema 2 -> 3");
     return t.commit();
 }
@@ -677,7 +692,8 @@ Res Ledger::undelete_file(const std::string& file_id) {
     {
         Stmt p(db_, "SELECT pruned_at FROM versions WHERE file_id=?1 AND version=?2");
         p.text(1, file_id).num(2, f->current_version);
-        if (p.row() && p.col_num(0) != 0) return fail("its bytes were removed from the devices after the retention period; they can no longer be recovered");
+        if (p.row() && p.col_num(0) != 0)
+            return fail("its bytes were removed from the devices after the retention period; they can no longer be recovered");
     }
     std::string back = former_path(*f);
     if (back.empty() || back[0] != '/') return fail("the former path is unknown");
@@ -695,7 +711,7 @@ bool quarantine_pending(sqlite3* db, const std::string& file_id, int64_t version
                            : "SELECT COUNT(*) FROM quarantine WHERE file_id=?1 AND state IN('held','purging','restoring') AND version=?2");
     q.text(1, file_id);
     if (version >= 0) q.num(2, version);
-    return !q.row() || q.col_num(0) > 0;   // unreadable counts as pending: fail closed
+    return !q.row() || q.col_num(0) > 0;  // unreadable counts as pending: fail closed
 }
 }  // namespace
 
@@ -716,7 +732,8 @@ std::string Ledger::prune_blocker(const FileRec& f, int64_t version, const Prune
             if (e.row() && !e.col_null(0)) when = e.col_num(0);
         }
         if (when <= 0) return "there is no record of when it was deleted";
-        if (t - when < r.deleted_retention_seconds) return "a deleted file is kept for " + std::to_string(r.deleted_retention_seconds) + " seconds in case it is undeleted";
+        if (t - when < r.deleted_retention_seconds)
+            return "a deleted file is kept for " + std::to_string(r.deleted_retention_seconds) + " seconds in case it is undeleted";
         if (quarantine_pending(db_, f.file_id, -1)) return "local bytes of this file are still held in quarantine";
         return "";
     }
@@ -745,27 +762,33 @@ std::vector<PruneCandidate> Ledger::prune_candidates(int keep_versions, const Pr
     std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<PruneCandidate> out;
     if (keep_versions < 1) keep_versions = 1;
-    struct F { std::string id; bool deleted; };
+    struct F {
+        std::string id;
+        bool deleted;
+    };
     std::vector<F> files;
     {
-        Stmt q(db_, "SELECT file_id, path FROM files f WHERE EXISTS(SELECT 1 FROM versions v WHERE v.file_id=f.file_id AND v.pruned_at=0) ORDER BY file_id");
+        Stmt q(
+            db_,
+            "SELECT file_id, path FROM files f WHERE EXISTS(SELECT 1 FROM versions v WHERE v.file_id=f.file_id AND v.pruned_at=0) ORDER BY file_id");
         while (q.row()) files.push_back({q.col_text(0), is_retired_path(q.col_text(1))});
     }
     for (const F& file : files) {
         if (out.size() >= limit) break;
         auto f = load_file(db_, file.id);
         if (!f) continue;
-        std::vector<int64_t> versions;   // not yet pruned, oldest first
+        std::vector<int64_t> versions;  // not yet pruned, oldest first
         {
             Stmt q(db_, "SELECT version FROM versions WHERE file_id=?1 AND pruned_at=0 ORDER BY version");
             q.text(1, file.id);
             while (q.row()) versions.push_back(q.col_num(0));
         }
-        int64_t floor_version = 0;   // live file: everything older than the keep_versions-th newest COMMITTED version may go
+        int64_t floor_version = 0;  // live file: everything older than the keep_versions-th newest COMMITTED version may go
         if (!file.deleted) {
             std::vector<int64_t> committed;
-            Stmt q(db_, "SELECT version FROM versions v WHERE file_id=?1 AND pruned_at=0 AND EXISTS(SELECT 1 FROM replicas r WHERE r.file_id=v.file_id AND"
-                        " r.version=v.version AND r.state='COMMITTED') ORDER BY version DESC");
+            Stmt q(db_,
+                   "SELECT version FROM versions v WHERE file_id=?1 AND pruned_at=0 AND EXISTS(SELECT 1 FROM replicas r WHERE r.file_id=v.file_id AND"
+                   " r.version=v.version AND r.state='COMMITTED') ORDER BY version DESC");
             q.text(1, file.id);
             while (q.row()) committed.push_back(q.col_num(0));
             if (committed.size() < static_cast<size_t>(keep_versions)) continue;
@@ -790,14 +813,16 @@ Res Ledger::prune_version(const std::string& file_id, int64_t version, const std
     {
         Stmt pv(db_, "SELECT pruned_at FROM versions WHERE file_id=?1 AND version=?2");
         pv.text(1, file_id).num(2, version);
-        if (pv.row() && pv.col_num(0) != 0) return ok();   // decided before: nothing to do
+        if (pv.row() && pv.col_num(0) != 0) return ok();  // decided before: nothing to do
     }
     std::string why = prune_blocker(*f, version, rules, false);
     if (!why.empty()) return fail(why);
     Stmt u(db_, "UPDATE versions SET pruned_at=?3 WHERE file_id=?1 AND version=?2 AND pruned_at=0");
     if (!u.text(1, file_id).num(2, version).num(3, now()).run() || sqlite3_changes(db_) != 1) return fail("version changed concurrently");
     // Every device that has (or may have) a replica now owes the deletion.
-    Stmt owed(db_, "INSERT OR IGNORE INTO prune_state(file_id,version,device_id,state,updated_at) SELECT file_id,version,device_id,'owed',?3 FROM replicas WHERE file_id=?1 AND version=?2");
+    Stmt owed(db_,
+              "INSERT OR IGNORE INTO prune_state(file_id,version,device_id,state,updated_at) SELECT file_id,version,device_id,'owed',?3 FROM "
+              "replicas WHERE file_id=?1 AND version=?2");
     if (!owed.text(1, file_id).num(2, version).num(3, now()).run()) return fail("cannot record what the devices owe");
     append_event("version.pruned", file_id, version, "", reason + (is_retired_path(f->path) ? " (file deleted: " + former_path(*f) + ")" : ""));
     return t.commit() ? ok() : fail("commit failed");
@@ -824,9 +849,10 @@ int64_t Ledger::safe_successor(const std::string& file_id, int64_t version, cons
 std::vector<PruneWork> Ledger::pending_prunes(size_t limit) {
     std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<PruneWork> out;
-    Stmt q(db_, "SELECT p.file_id, p.version, p.device_id FROM prune_state p JOIN versions v ON v.file_id=p.file_id AND v.version=p.version"
-                " JOIN devices d ON d.device_id=p.device_id WHERE p.state='owed' AND v.pruned_at!=0 AND d.state='active'"
-                " ORDER BY v.pruned_at, p.file_id, p.version, p.device_id LIMIT ?1");
+    Stmt q(db_,
+           "SELECT p.file_id, p.version, p.device_id FROM prune_state p JOIN versions v ON v.file_id=p.file_id AND v.version=p.version"
+           " JOIN devices d ON d.device_id=p.device_id WHERE p.state='owed' AND v.pruned_at!=0 AND d.state='active'"
+           " ORDER BY v.pruned_at, p.file_id, p.version, p.device_id LIMIT ?1");
     q.num(1, static_cast<int64_t>(limit));
     while (q.row()) out.push_back({q.col_text(0), q.col_num(1), q.col_text(2)});
     return out;
@@ -852,10 +878,12 @@ Res Ledger::queue_prune(const std::string& file_id, int64_t version, const std::
     Stmt dv(db_, "SELECT 1 FROM devices WHERE device_id=?1");
     dv.text(1, device_id);
     if (!dv.row()) return fail("unknown device");
-    Stmt r(db_, "INSERT OR IGNORE INTO replicas(file_id,version,device_id,state) VALUES(?1,?2,?3,'MISSING')");   // a record that it is there, though not a usable copy
+    Stmt r(db_, "INSERT OR IGNORE INTO replicas(file_id,version,device_id,state) VALUES(?1,?2,?3,'MISSING')");  // a record that it is there, though
+                                                                                                                // not a usable copy
     if (!r.text(1, file_id).num(2, version).text(3, device_id).run()) return fail("cannot record it");
-    Stmt p(db_, "INSERT INTO prune_state(file_id,version,device_id,state,updated_at) VALUES(?1,?2,?3,'owed',?4)"
-                " ON CONFLICT(file_id,version,device_id) DO UPDATE SET state='owed', updated_at=?4 WHERE state!='owed'");
+    Stmt p(db_,
+           "INSERT INTO prune_state(file_id,version,device_id,state,updated_at) VALUES(?1,?2,?3,'owed',?4)"
+           " ON CONFLICT(file_id,version,device_id) DO UPDATE SET state='owed', updated_at=?4 WHERE state!='owed'");
     if (!p.text(1, file_id).num(2, version).text(3, device_id).num(4, now()).run()) return fail("cannot record it");
     if (sqlite3_changes(db_) == 1) append_event("version.prune_owed", file_id, version, device_id, "the device still holds a pruned manifest");
     return t.commit() ? ok() : fail("commit failed");
@@ -1236,8 +1264,9 @@ Res Ledger::clear_device_suspect(const std::string& device_id, uint64_t seq) {
 std::vector<DeviceReplica> Ledger::replicas_on_device(const std::string& device_id) {
     std::lock_guard<std::recursive_mutex> lock_(mu_);
     std::vector<DeviceReplica> out;
-    Stmt s(db_, "SELECT r.file_id, r.version, r.state FROM replicas r JOIN versions v ON v.file_id=r.file_id AND v.version=r.version"
-                " WHERE r.device_id=?1 AND v.pruned_at=0 ORDER BY r.file_id, r.version");
+    Stmt s(db_,
+           "SELECT r.file_id, r.version, r.state FROM replicas r JOIN versions v ON v.file_id=r.file_id AND v.version=r.version"
+           " WHERE r.device_id=?1 AND v.pruned_at=0 ORDER BY r.file_id, r.version");
     s.text(1, device_id);
     while (s.row()) out.push_back({s.col_text(0), s.col_num(1), parse_replica_state(s.col_text(2))});
     return out;
@@ -1764,8 +1793,10 @@ std::vector<std::string> Ledger::fsck() {
          "version size does not match its chunk lengths");
     each("SELECT f.path FROM replicas r JOIN files f USING(file_id) WHERE r.state='COMMITTED' AND r.device_seq<=0",
          "COMMITTED replica without a device sequence number");
-    {   // a live file must still have its current version
-        Stmt q(db_, "SELECT f.path FROM files f JOIN versions v ON v.file_id=f.file_id AND v.version=f.current_version WHERE v.pruned_at!=0 AND substr(f.path,1,?1)!=?2");
+    {  // a live file must still have its current version
+        Stmt q(db_,
+               "SELECT f.path FROM files f JOIN versions v ON v.file_id=f.file_id AND v.version=f.current_version WHERE v.pruned_at!=0 AND "
+               "substr(f.path,1,?1)!=?2");
         q.num(1, static_cast<int64_t>(RETIRED_PREFIX_LEN)).text(2, std::string(RETIRED_PREFIX));
         while (q.row()) bad.push_back("current version of a live file was pruned: " + q.col_text(0));
     }

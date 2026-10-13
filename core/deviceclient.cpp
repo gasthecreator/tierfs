@@ -345,7 +345,9 @@ DevRes DeviceClient::gc_status(GcStatus& out) {
         g.manifests_deleted = rd.u64();
         g.chunks_deleted = rd.u64();
         out = g;
-    } catch (...) { return {EPROTO, "malformed reply"}; }
+    } catch (...) {
+        return {EPROTO, "malformed reply"};
+    }
     return r;
 }
 
@@ -366,7 +368,9 @@ DevRes DeviceClient::sweep(uint64_t min_age_s, uint32_t max_chunks, bool dry_run
         o.chunks_left = rd.u64();
         o.strays_removed = rd.u64();
         out = o;
-    } catch (...) { return {EPROTO, "malformed reply"}; }
+    } catch (...) {
+        return {EPROTO, "malformed reply"};
+    }
     return r;
 }
 

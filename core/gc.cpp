@@ -7,9 +7,21 @@
 
 namespace tierfs {
 
-uint64_t GcReport::manifests_deleted() const { uint64_t n = 0; for (auto& d : devices) n += d.manifests_deleted; return n; }
-uint64_t GcReport::chunks_swept() const { uint64_t n = 0; for (auto& d : devices) n += d.chunks_swept; return n; }
-uint64_t GcReport::bytes_swept() const { uint64_t n = 0; for (auto& d : devices) n += d.bytes_swept; return n; }
+uint64_t GcReport::manifests_deleted() const {
+    uint64_t n = 0;
+    for (auto& d : devices) n += d.manifests_deleted;
+    return n;
+}
+uint64_t GcReport::chunks_swept() const {
+    uint64_t n = 0;
+    for (auto& d : devices) n += d.chunks_swept;
+    return n;
+}
+uint64_t GcReport::bytes_swept() const {
+    uint64_t n = 0;
+    for (auto& d : devices) n += d.bytes_swept;
+    return n;
+}
 
 namespace {
 constexpr size_t MAX_REFUSALS_LISTED = 20;
@@ -25,9 +37,18 @@ GarbageCollector::GarbageCollector(Ledger& ledger, Replicator& replicator, const
 bool GarbageCollector::check_device(DeviceClient& dev, const std::string& device_id, std::string* why) {
     DevInfo info;
     DevRes r = dev.info(info);
-    if (!r.ok()) { *why = "cannot reach it: " + r.msg; return false; }
-    if (info.device_id != device_id) { *why = "this is not the device the ledger expects"; return false; }
-    if (info.volume_id != volume_) { *why = "it is not bound to this volume"; return false; }
+    if (!r.ok()) {
+        *why = "cannot reach it: " + r.msg;
+        return false;
+    }
+    if (info.device_id != device_id) {
+        *why = "this is not the device the ledger expects";
+        return false;
+    }
+    if (info.volume_id != volume_) {
+        *why = "it is not bound to this volume";
+        return false;
+    }
     return true;
 }
 
@@ -39,7 +60,10 @@ uint32_t GarbageCollector::send_chunk_lists(DeviceClient& dev, std::string* why)
     for (;;) {
         ListReply lr;
         DevRes r = dev.list_manifests(since, 1000, lr);
-        if (!r.ok()) { *why = "cannot list its manifests: " + r.msg; return sent; }
+        if (!r.ok()) {
+            *why = "cannot list its manifests: " + r.msg;
+            return sent;
+        }
         for (const auto& e : lr.entries) {
             since = std::max(since, e.seq);
             std::vector<uint8_t> blob;
@@ -59,29 +83,51 @@ uint32_t GarbageCollector::send_chunk_lists(DeviceClient& dev, std::string* why)
 void GarbageCollector::sweep_device(DeviceClient& dev, GcDeviceReport& dr, bool dry_run) {
     GcStatus st;
     DevRes r = dev.gc_status(st);
-    if (!r.ok()) { dr.note = r.err == ENOSYS ? "this device is too old to collect garbage" : "cannot ask its status: " + r.msg; return; }
+    if (!r.ok()) {
+        dr.note = r.err == ENOSYS ? "this device is too old to collect garbage" : "cannot ask its status: " + r.msg;
+        return;
+    }
     dr.status = st;
     dr.deletions_allowed = st.deletions_allowed;
-    if (!st.deletions_allowed) { dr.note = "it does not accept deletions (pair it, or start it with --allow-delete)"; return; }
+    if (!st.deletions_allowed) {
+        dr.note = "it does not accept deletions (pair it, or start it with --allow-delete)";
+        return;
+    }
     if (st.manifests_without_refs > 0) {
         std::string n = std::to_string(st.manifests_without_refs) + " manifest(s) need their chunk lists re-sent before it can be swept";
-        if (dry_run) { dr.note = n + " (a real run does that)"; return; }
-        if (!cfg_.prepare) { dr.note = n; return; }
+        if (dry_run) {
+            dr.note = n + " (a real run does that)";
+            return;
+        }
+        if (!cfg_.prepare) {
+            dr.note = n;
+            return;
+        }
         std::string why;
         dr.chunk_lists_sent = send_chunk_lists(dev, &why);
-        if (!why.empty()) { dr.note = why; return; }
-        if (!dev.gc_status(st).ok()) { dr.note = "cannot ask its status again"; return; }
+        if (!why.empty()) {
+            dr.note = why;
+            return;
+        }
+        if (!dev.gc_status(st).ok()) {
+            dr.note = "cannot ask its status again";
+            return;
+        }
         dr.status = st;
         if (st.manifests_without_refs > 0) {
-            dr.note = std::to_string(st.manifests_without_refs) + " manifest(s) could not be given a chunk list (not readable with this volume's keys?); no sweep";
+            dr.note = std::to_string(st.manifests_without_refs) +
+                      " manifest(s) could not be given a chunk list (not readable with this volume's keys?); no sweep";
             return;
         }
     }
-    if (st.unreferenced_chunks == 0) return;   // nothing to take, and no reason to walk the disk
+    if (st.unreferenced_chunks == 0) return;  // nothing to take, and no reason to walk the disk
     for (int round = 0; round < std::max(1, cfg_.sweep_rounds); round++) {
         SweepOut so;
         DevRes sr = dev.sweep(cfg_.sweep_min_age, static_cast<uint32_t>(cfg_.sweep_chunks), dry_run, so);
-        if (!sr.ok()) { dr.note = "sweep failed: " + sr.msg; return; }
+        if (!sr.ok()) {
+            dr.note = "sweep failed: " + sr.msg;
+            return;
+        }
         dr.chunks_swept += so.chunks_deleted;
         dr.bytes_swept += so.bytes_deleted;
         dr.strays_removed += so.strays_removed;
@@ -102,7 +148,11 @@ GcReport GarbageCollector::plan(const DeviceMap& devices) {
         dr.device_id = kv.first;
         dr.owed = owed[kv.first];
         std::string why;
-        if (!kv.second || !check_device(*kv.second, kv.first, &why)) { dr.note = kv.second ? why : "not connected"; rep.devices.push_back(dr); continue; }
+        if (!kv.second || !check_device(*kv.second, kv.first, &why)) {
+            dr.note = kv.second ? why : "not connected";
+            rep.devices.push_back(dr);
+            continue;
+        }
         dr.reachable = true;
         sweep_device(*kv.second, dr, true);
         rep.devices.push_back(dr);
@@ -134,8 +184,10 @@ GcReport GarbageCollector::run(const DeviceMap& devices) {
                 r = ledger_.prune_version(c.file_id, c.version, reason, cfg_.rules);
             }
         }
-        if (r) rep.decided++;
-        else if (rep.refused.size() < MAX_REFUSALS_LISTED) rep.refused.push_back(label(c.file_id, c.version) + ": " + r.why);
+        if (r)
+            rep.decided++;
+        else if (rep.refused.size() < MAX_REFUSALS_LISTED)
+            rep.refused.push_back(label(c.file_id, c.version) + ": " + r.why);
     }
     if (on_step) on_step("decided");
     crash_point("gc.after_decide");
@@ -150,8 +202,14 @@ GcReport GarbageCollector::run(const DeviceMap& devices) {
         auto work = by_device.find(kv.first);
         dr.owed = work == by_device.end() ? 0 : work->second.size();
         std::string why;
-        if (!kv.second) { dr.note = "not connected"; continue; }
-        if (!check_device(*kv.second, kv.first, &why)) { dr.note = why; continue; }
+        if (!kv.second) {
+            dr.note = "not connected";
+            continue;
+        }
+        if (!check_device(*kv.second, kv.first, &why)) {
+            dr.note = why;
+            continue;
+        }
         dr.reachable = true;
         if (work == by_device.end()) continue;
         const auto& items = work->second;
@@ -162,8 +220,9 @@ GcReport GarbageCollector::run(const DeviceMap& devices) {
             std::vector<uint8_t> deleted;
             DevRes r = kv.second->delete_manifests(batch, deleted);
             if (!r.ok()) {
-                dr.note = r.err == EPERM ? "it does not accept deletions (pair it, or start it with --allow-delete)"
-                          : r.err == ENOSYS ? "this device is too old to delete" : "deleting failed: " + r.msg;
+                dr.note = r.err == EPERM    ? "it does not accept deletions (pair it, or start it with --allow-delete)"
+                          : r.err == ENOSYS ? "this device is too old to delete"
+                                            : "deleting failed: " + r.msg;
                 break;
             }
             for (size_t i = at; i < end; i++) {
@@ -171,7 +230,7 @@ GcReport GarbageCollector::run(const DeviceMap& devices) {
             }
             crash_point("gc.after_delete_batch");
         }
-        DevInfo info;   // deleting moved the device's commit sequence; keep our high-water mark in step so a later rollback still shows
+        DevInfo info;  // deleting moved the device's commit sequence; keep our high-water mark in step so a later rollback still shows
         if (kv.second->info(info).ok()) ledger_.observe_device(kv.first, info.epoch, info.seq);
         if (on_step) on_step("device_done");
     }
@@ -180,7 +239,7 @@ GcReport GarbageCollector::run(const DeviceMap& devices) {
     // 3. sweep
     for (auto& kv : reports) {
         GcDeviceReport& dr = kv.second;
-        if (!dr.reachable || !cfg_.sweep || !dr.note.empty()) continue;   // (a device that refused the deletions is not swept either)
+        if (!dr.reachable || !cfg_.sweep || !dr.note.empty()) continue;  // (a device that refused the deletions is not swept either)
         sweep_device(*devices.at(kv.first), dr, false);
     }
     for (auto& kv : reports) rep.devices.push_back(kv.second);
@@ -196,9 +255,12 @@ std::string format_gc_report(const GcReport& r) {
     s += "  deletions still owed by devices: " + std::to_string(r.owed_total) + "\n";
     for (const auto& d : r.devices) {
         s += "  device " + d.device_id.substr(0, 8) + ": ";
-        if (!d.reachable) s += "not reachable";
-        else s += "owed " + std::to_string(d.owed) + ", manifests deleted " + std::to_string(d.manifests_deleted) + ", chunks " + (r.dry_run ? "that a sweep would take " : "swept ") +
-                  std::to_string(d.chunks_swept) + " (" + std::to_string(d.bytes_swept) + " bytes)" + (d.strays_removed ? ", " + std::to_string(d.strays_removed) + " stray files" : "");
+        if (!d.reachable)
+            s += "not reachable";
+        else
+            s += "owed " + std::to_string(d.owed) + ", manifests deleted " + std::to_string(d.manifests_deleted) + ", chunks " +
+                 (r.dry_run ? "that a sweep would take " : "swept ") + std::to_string(d.chunks_swept) + " (" + std::to_string(d.bytes_swept) +
+                 " bytes)" + (d.strays_removed ? ", " + std::to_string(d.strays_removed) + " stray files" : "");
         if (!d.note.empty()) s += " -- " + d.note;
         s += "\n";
     }

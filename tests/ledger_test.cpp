@@ -22,17 +22,21 @@ using namespace tierfs;
 namespace fs = std::filesystem;
 
 static int failures = 0;
-static bool failfast() {   // the mutation runner stops a test at its first failure
+static bool failfast() {  // the mutation runner stops a test at its first failure
     static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr;
     return f;
 }
-#define CHECK(cond)                                                                \
-    do {                                                                           \
-        if (!(cond)) {                                                             \
-            printf("FAIL  line %d: %s\n", __LINE__, #cond);                        \
-            failures++;                                                            \
-            if (failfast()) { fflush(stdout); _exit(1); }                          \
-        } else printf("PASS  %s\n", #cond);                                        \
+#define CHECK(cond)                                         \
+    do {                                                    \
+        if (!(cond)) {                                      \
+            printf("FAIL  line %d: %s\n", __LINE__, #cond); \
+            failures++;                                     \
+            if (failfast()) {                               \
+                fflush(stdout);                             \
+                _exit(1);                                   \
+            }                                               \
+        } else                                              \
+            printf("PASS  %s\n", #cond);                    \
     } while (0)
 
 static bool has(const std::string& s, const char* needle) { return s.find(needle) != std::string::npos; }
@@ -1193,7 +1197,11 @@ int main() {
         { auto L = open_ledger(d); L->track_file("/testdata/One", 1, 1, 0644); L->track_file("/testdata/two", 1, 1, 0644); }
         { sqlite3* db = raw_open(d); raw_exec(db, "PRAGMA user_version=1"); raw_exec(db, "UPDATE files SET pkey='old-'||file_id"); sqlite3_close(db); }
         { auto L = open_ledger(d); CHECK(L && L->get_file_by_path("/testdata/ONE") && L->get_file_by_path("/TESTDATA/Two") && L->fsck().empty()); }
-        { sqlite3* db = raw_open(d); CHECK(raw_text(db, "PRAGMA user_version") == "3"); sqlite3_close(db); }
+        {
+            sqlite3* db = raw_open(d);
+            CHECK(raw_text(db, "PRAGMA user_version") == "3");
+            sqlite3_close(db);
+        }
         // a v1 ledger whose two paths differ only in case cannot be upgraded; it is left exactly as it was
         std::string d2 = tmpdir();
         { auto L = open_ledger(d2); L->set_case_sensitive(true); L->track_file("/x/File", 1, 1, 0644); L->track_file("/x/file", 1, 1, 0644); }
@@ -1325,7 +1333,7 @@ int main() {
         printf("== pruning old versions: the ledger decides, under hard rules, and remembers what each device owes\n");
         Fixture fx;
         const int64_t DAY = 86400, HOUR = 3600;
-        PruneRules rules;   // weight 2.0 from audits no older than 300 s; one hour of grace; 30 days for deleted files
+        PruneRules rules;  // weight 2.0 from audits no older than 300 s; one hour of grace; 30 days for deleted files
         rules.max_audit_age = 600;
         rules.grace_seconds = HOUR;
         rules.deleted_retention_seconds = 30 * DAY;
@@ -1340,7 +1348,8 @@ int main() {
                 fx.L->set_replica(id, v, d, ReplicaState::COMMITTED, 7 + v);
             }
             fx.L->finish_replication(id, v);
-            if (audit) for (auto& d : devices) fx.L->record_audit(id, v, d, true, "ok");
+            if (audit)
+                for (auto& d : devices) fx.L->record_audit(id, v, d, true, "ok");
             return v;
         };
         g_time = 2'000'000;
@@ -1358,21 +1367,26 @@ int main() {
         // two hours on: the audits are stale, so planning sees candidates but pruning refuses until the newer version is audited again
         g_time += 2 * HOUR;
         auto cands = fx.L->prune_candidates(2, rules, 100);
-        CHECK(cands.size() == 2 && cands[0].version == 1 && cands[1].version == 2 && !cands[0].file_deleted && cands[0].file_id == id);   // keeps v3 and v4
-        CHECK(fx.L->prune_candidates(2, rules, 1).size() == 1 && fx.L->prune_candidates(0, rules, 100).size() == 3);                       // limit; keep < 1 counts as 1
-        CHECK(fx.L->prune_candidates(4, rules, 100).empty() && fx.L->prune_candidates(5, rules, 100).empty());                            // not enough committed versions to keep that many
+        CHECK(cands.size() == 2 && cands[0].version == 1 && cands[1].version == 2 && !cands[0].file_deleted &&
+              cands[0].file_id == id);                                                                                // keeps v3 and v4
+        CHECK(fx.L->prune_candidates(2, rules, 1).size() == 1 && fx.L->prune_candidates(0, rules, 100).size() == 3);  // limit; keep < 1 counts as 1
+        CHECK(fx.L->prune_candidates(4, rules, 100).empty() &&
+              fx.L->prune_candidates(5, rules, 100).empty());  // not enough committed versions to keep that many
         Res stale = fx.L->prune_version(id, 1, "test", rules);
         CHECK(!stale.ok && has(stale.why.c_str(), "recent audit") && !fx.L->is_version_pruned(id, 1) && fx.L->pending_prunes(100).empty());
         uint64_t ev0 = fx.L->event_count();
         for (const char* d : {"devA", "devB1"}) fx.L->record_audit(id, 4, d, true, "ok");
-        CHECK(!fx.L->prune_version(id, 4, "test", rules).ok && has(fx.L->prune_version(id, 4, "test", rules).why.c_str(), "current version is never pruned"));
+        CHECK(!fx.L->prune_version(id, 4, "test", rules).ok &&
+              has(fx.L->prune_version(id, 4, "test", rules).why.c_str(), "current version is never pruned"));
         CHECK(!fx.L->prune_version(id, 5, "test", rules).ok && has(fx.L->prune_version(id, 5, "test", rules).why.c_str(), "unknown version"));
-        CHECK(!fx.L->prune_version("nosuchfile", 1, "test", rules).ok && has(fx.L->prune_version("nosuchfile", 1, "test", rules).why.c_str(), "unknown file"));
-        CHECK(fx.L->event_count() == ev0 + 2);   // (the two audits; refusals leave no trace)
+        CHECK(!fx.L->prune_version("nosuchfile", 1, "test", rules).ok &&
+              has(fx.L->prune_version("nosuchfile", 1, "test", rules).why.c_str(), "unknown file"));
+        CHECK(fx.L->event_count() == ev0 + 2);  // (the two audits; refusals leave no trace)
         Res p1 = fx.L->prune_version(id, 1, "kept 2 versions", rules);
-        CHECK(p1.ok && fx.L->is_version_pruned(id, 1) && !fx.L->is_version_pruned(id, 2) && fx.L->pruned_count() == 1 && fx.L->event_count() == ev0 + 3);   // two audits and the decision
-        CHECK(fx.L->prune_version(id, 1, "again", rules).ok && fx.L->event_count() == ev0 + 3);                                              // deciding twice changes nothing
-        CHECK(fx.L->has_version(id, 1) && fx.L->get_chunks(id, 1).size() == 1);                                                          // the record of it stays
+        CHECK(p1.ok && fx.L->is_version_pruned(id, 1) && !fx.L->is_version_pruned(id, 2) && fx.L->pruned_count() == 1 &&
+              fx.L->event_count() == ev0 + 3);                                                   // two audits and the decision
+        CHECK(fx.L->prune_version(id, 1, "again", rules).ok && fx.L->event_count() == ev0 + 3);  // deciding twice changes nothing
+        CHECK(fx.L->has_version(id, 1) && fx.L->get_chunks(id, 1).size() == 1);                  // the record of it stays
         auto work = fx.L->pending_prunes(100);
         CHECK(work.size() == 2 && work[0].file_id == id && work[0].version == 1 && work[0].device_id == "devA" && work[1].device_id == "devB1");
         CHECK(fx.L->pending_prunes(1).size() == 1);
@@ -1383,20 +1397,29 @@ int main() {
         CHECK(!fx.L->record_pruned(id, 2, "devA").ok && has(fx.L->record_pruned(id, 2, "devA").why.c_str(), "not pruned"));
         CHECK(!fx.L->record_pruned(id, 1, "devC").ok && has(fx.L->record_pruned(id, 1, "devC").why.c_str(), "owed no deletion"));
         CHECK(fx.L->record_pruned(id, 1, "devA").ok && fx.L->pending_prunes(100).size() == 1 && fx.L->pending_prunes(100)[0].device_id == "devB1");
-        CHECK(!fx.L->record_pruned(id, 1, "devA").ok);                                                                                      // only once
+        CHECK(!fx.L->record_pruned(id, 1, "devA").ok);  // only once
         CHECK(fx.L->record_pruned(id, 1, "devB1").ok && fx.L->pending_prunes(100).empty());
         // a device that was away holds a pruned manifest again (it came back from a restore): the deletion is owed once more, and only logged once
         uint64_t ev1 = fx.L->event_count();
         CHECK(fx.L->queue_prune(id, 1, "devA").ok && fx.L->pending_prunes(100).size() == 1 && fx.L->event_count() == ev1 + 1);
         CHECK(fx.L->queue_prune(id, 1, "devA").ok && fx.L->event_count() == ev1 + 1);
         CHECK(fx.L->record_pruned(id, 1, "devA").ok);
-        CHECK(fx.L->queue_prune(id, 1, "devC").ok && fx.L->pending_prunes(100).size() == 1 && fx.L->pending_prunes(100)[0].device_id == "devC");   // a device with no record of it gets one
+        CHECK(fx.L->queue_prune(id, 1, "devC").ok && fx.L->pending_prunes(100).size() == 1 &&
+              fx.L->pending_prunes(100)[0].device_id == "devC");  // a device with no record of it gets one
         CHECK(!fx.L->queue_prune(id, 2, "devA").ok && !fx.L->queue_prune(id, 1, "nodevice").ok);
         // only active devices are asked
-        { sqlite3* db = raw_open(fx.dir); raw_exec(db, "UPDATE devices SET state='suspect' WHERE device_id='devC'"); sqlite3_close(db); }
+        {
+            sqlite3* db = raw_open(fx.dir);
+            raw_exec(db, "UPDATE devices SET state='suspect' WHERE device_id='devC'");
+            sqlite3_close(db);
+        }
         // (the ledger holds the file lock; the update above went through a second connection to the same file)
         CHECK(fx.L->pending_prunes(100).empty());
-        { sqlite3* db = raw_open(fx.dir); raw_exec(db, "UPDATE devices SET state='active' WHERE device_id='devC'"); sqlite3_close(db); }
+        {
+            sqlite3* db = raw_open(fx.dir);
+            raw_exec(db, "UPDATE devices SET state='active' WHERE device_id='devC'");
+            sqlite3_close(db);
+        }
         CHECK(fx.L->record_pruned(id, 1, "devC").ok);
         // a device whose copy failed its audit may still hold the manifest: it owes the deletion too
         {
@@ -1405,32 +1428,41 @@ int main() {
             g_time += 10;
             new_version(bad, {"devA", "devB1"});
             g_time += 2 * HOUR;
-            fx.L->record_audit(bad, 1, "devA", false, "rotten");                                // devA's replica of v1 is AUDIT_FAILED now
+            fx.L->record_audit(bad, 1, "devA", false, "rotten");  // devA's replica of v1 is AUDIT_FAILED now
             for (const char* d : {"devA", "devB1"}) fx.L->record_audit(bad, 2, d, true, "ok");
             CHECK(fx.L->prune_version(bad, 1, "test", rules).ok);
             bool a = false, b = false;
-            for (auto& w : fx.L->pending_prunes(100)) if (w.file_id == bad) { a = a || w.device_id == "devA"; b = b || w.device_id == "devB1"; }
+            for (auto& w : fx.L->pending_prunes(100))
+                if (w.file_id == bad) {
+                    a = a || w.device_id == "devA";
+                    b = b || w.device_id == "devB1";
+                }
             CHECK(a && b);
             uint64_t evc = fx.L->event_count();
-            CHECK(fx.L->record_pruned(bad, 1, "devA").ok && fx.L->event_count() == evc + 1);          // the confirmation is logged
+            CHECK(fx.L->record_pruned(bad, 1, "devA").ok && fx.L->event_count() == evc + 1);  // the confirmation is logged
             CHECK(!fx.L->queue_prune(bad, 1, "nodevice").ok && has(fx.L->queue_prune(bad, 1, "nodevice").why.c_str(), "unknown device"));
             // a device with no record at all of the version gets one (it holds the manifest, though not as a usable copy)
             CHECK(fx.L->queue_prune(bad, 1, "devC").ok);
             bool rec = false;
-            for (auto& r : fx.L->get_replicas(bad, 1)) if (r.device_id == "devC" && r.state == ReplicaState::MISSING) rec = true;
+            for (auto& r : fx.L->get_replicas(bad, 1))
+                if (r.device_id == "devC" && r.state == ReplicaState::MISSING) rec = true;
             CHECK(rec);
             CHECK(fx.L->record_pruned(bad, 1, "devB1").ok && fx.L->record_pruned(bad, 1, "devC").ok);
         }
         // work is handed out in the order the decisions were made, not in the order of the ids
         {
             g_time += DAY;
-            std::string f1 = fx.replicated("/testdata/ord1.bin", {"devA", "devB1"}, 1000), f2 = fx.replicated("/testdata/ord2.bin", {"devA", "devB1"}, 1000);
+            std::string f1 = fx.replicated("/testdata/ord1.bin", {"devA", "devB1"}, 1000),
+                        f2 = fx.replicated("/testdata/ord2.bin", {"devA", "devB1"}, 1000);
             g_time += 10;
             new_version(f1, {"devA", "devB1"});
             new_version(f2, {"devA", "devB1"});
             g_time += 2 * HOUR;
-            for (const char* d : {"devA", "devB1"}) { fx.L->record_audit(f1, 2, d, true, "ok"); fx.L->record_audit(f2, 2, d, true, "ok"); }
-            std::string first = f1 > f2 ? f1 : f2, second = f1 > f2 ? f2 : f1;   // decide the one with the LARGER id first
+            for (const char* d : {"devA", "devB1"}) {
+                fx.L->record_audit(f1, 2, d, true, "ok");
+                fx.L->record_audit(f2, 2, d, true, "ok");
+            }
+            std::string first = f1 > f2 ? f1 : f2, second = f1 > f2 ? f2 : f1;  // decide the one with the LARGER id first
             CHECK(fx.L->prune_version(first, 1, "test", rules).ok);
             g_time += 5;
             CHECK(fx.L->prune_version(second, 1, "test", rules).ok);
@@ -1440,7 +1472,8 @@ int main() {
             for (auto& x : w) CHECK(fx.L->record_pruned(x.file_id, x.version, x.device_id).ok);
         }
         // the next one: v2 goes too (v3 and v4 are kept), then nothing more
-        for (const char* d : {"devA", "devB1"}) fx.L->record_audit(id, 4, d, true, "ok");   // (time has passed since: the newer version is audited again)
+        for (const char* d : {"devA", "devB1"})
+            fx.L->record_audit(id, 4, d, true, "ok");  // (time has passed since: the newer version is audited again)
         CHECK(fx.L->prune_version(id, 2, "kept 2 versions", rules).ok);
         for (auto& c : fx.L->prune_candidates(2, rules, 100)) CHECK(c.file_id != id);
         CHECK(fx.L->fsck().empty());
@@ -1449,24 +1482,29 @@ int main() {
         g_time += DAY;
         std::string thin = fx.replicated("/testdata/thin.bin", {"devA", "devB1"}, 1000);
         g_time += 10;
-        new_version(thin, {"devC"});                                       // v2 on a 0.5-weight device only
+        new_version(thin, {"devC"});  // v2 on a 0.5-weight device only
         g_time += 2 * HOUR;
         fx.L->record_audit(thin, 2, "devC", true, "ok");
         Res weak = fx.L->prune_version(thin, 1, "test", rules);
         CHECK(!weak.ok && has(weak.why.c_str(), "enough copies") && !fx.L->is_version_pruned(thin, 1));
-        for (auto& c : fx.L->prune_candidates(1, rules, 100)) CHECK(c.file_id != thin);   // planning agrees: v2 is not safely held
+        for (auto& c : fx.L->prune_candidates(1, rules, 100)) CHECK(c.file_id != thin);  // planning agrees: v2 is not safely held
         std::string lonely = fx.replicated("/testdata/lonely.bin", {"devA", "devB1"}, 1000);
         g_time += 10;
-        new_version(lonely, {"devA"});                                     // v2 on one full-weight device
+        new_version(lonely, {"devA"});  // v2 on one full-weight device
         g_time += 2 * HOUR;
         fx.L->record_audit(lonely, 2, "devA", true, "ok");
         CHECK(!fx.L->prune_version(lonely, 1, "test", rules).ok);
         g_time += 10;
-        std::string pend = fx.replicated("/testdata/pending.bin", {"devA", "devB1"}, 1000);   // v2 is still being replicated (no committed replica)
+        std::string pend = fx.replicated("/testdata/pending.bin", {"devA", "devB1"}, 1000);  // v2 is still being replicated (no committed replica)
         g_time += 10;
-        { auto f = fx.L->get_file(pend); fx.L->note_local_modified(pend, f->size, g_time); fx.L->begin_replication(pend, Fixture::chunks(f->size), f->size, g_time); }
+        {
+            auto f = fx.L->get_file(pend);
+            fx.L->note_local_modified(pend, f->size, g_time);
+            fx.L->begin_replication(pend, Fixture::chunks(f->size), f->size, g_time);
+        }
         g_time += 2 * HOUR;
-        CHECK(!fx.L->prune_version(pend, 1, "test", rules).ok && has(fx.L->prune_version(pend, 1, "test", rules).why.c_str(), "enough copies"));   // v2 has no committed copy at all
+        CHECK(!fx.L->prune_version(pend, 1, "test", rules).ok &&
+              has(fx.L->prune_version(pend, 1, "test", rules).why.c_str(), "enough copies"));  // v2 has no committed copy at all
         CHECK(fx.L->fsck().empty());
 
         // the weight rule also holds with a second newer version
@@ -1475,18 +1513,19 @@ int main() {
         g_time += 10;
         new_version(two, {"devC"}, false);
         g_time += 10;
-        new_version(two, {"devA", "devB1"}, false);                         // v3 is good, but not audited recently
+        new_version(two, {"devA", "devB1"}, false);  // v3 is good, but not audited recently
         g_time += 2 * HOUR;
         CHECK(!fx.L->prune_version(two, 1, "test", rules).ok);
         for (const char* d : {"devA", "devB1"}) fx.L->record_audit(two, 3, d, true, "ok");
-        CHECK(fx.L->prune_version(two, 1, "test", rules).ok && fx.L->prune_version(two, 2, "test", rules).ok);   // v2 may go too: v3 is the newer, safe one
+        CHECK(fx.L->prune_version(two, 1, "test", rules).ok &&
+              fx.L->prune_version(two, 2, "test", rules).ok);  // v2 may go too: v3 is the newer, safe one
 
         // a drop's quarantine keeps the version it holds the bytes of
         g_time += DAY;
         fx.consent = fx.L->create_consent("/testdata/", 100 * DAY, "test");
         std::string held = fx.replicated("/testdata/held.bin", {"devA", "devB1"}, 1000);
         Res dr = fx.drop(held);
-        CHECK(dr.ok && fx.L->complete_drop(dr.id).ok);                      // v1 offloaded, its bytes in quarantine
+        CHECK(dr.ok && fx.L->complete_drop(dr.id).ok);  // v1 offloaded, its bytes in quarantine
         // (an offloaded file cannot get a new version, so ask about it as a deleted file below)
         CHECK(fx.L->retire_file(held, "test").ok);
         g_time += 31 * DAY;
@@ -1495,7 +1534,7 @@ int main() {
         CHECK(!blocked.ok && has(blocked.why.c_str(), "quarantine") && !fx.L->is_version_pruned(held, 1));
         for (const char* d : {"devA", "devB1"}) fx.L->record_audit(held, 1, d, true, "ok");
         CHECK(fx.L->begin_purge(dr.id, 7 * DAY, false, 2.0, 600).ok && fx.L->complete_purge(dr.id).ok);
-        CHECK(fx.L->prune_version(held, 1, "test", rules).ok);              // the quarantine is resolved, the retention is over
+        CHECK(fx.L->prune_version(held, 1, "test", rules).ok);  // the quarantine is resolved, the retention is over
         CHECK(fx.L->fsck().empty());
     }
 
@@ -1508,7 +1547,7 @@ int main() {
         rules.grace_seconds = HOUR;
         rules.deleted_retention_seconds = 30 * DAY;
         g_time = 5'000'000;
-        fx.consent = fx.L->create_consent("/", 400 * DAY, "test");   // (scope "/" also covers a deleted file's parked path)
+        fx.consent = fx.L->create_consent("/", 400 * DAY, "test");  // (scope "/" also covers a deleted file's parked path)
         auto new_version = [&](const std::string& id, std::vector<std::string> devices, bool audit = true) {
             auto f = fx.L->get_file(id);
             fx.L->note_local_modified(id, f->size, g_time);
@@ -1520,10 +1559,13 @@ int main() {
                 fx.L->set_replica(id, v, d, ReplicaState::COMMITTED, 7 + v);
             }
             fx.L->finish_replication(id, v);
-            if (audit) for (auto& d : devices) fx.L->record_audit(id, v, d, true, "ok");
+            if (audit)
+                for (auto& d : devices) fx.L->record_audit(id, v, d, true, "ok");
             return v;
         };
-        auto audit_all = [&](const std::string& id, int64_t v) { for (const char* d : {"devA", "devB1"}) fx.L->record_audit(id, v, d, true, "ok"); };
+        auto audit_all = [&](const std::string& id, int64_t v) {
+            for (const char* d : {"devA", "devB1"}) fx.L->record_audit(id, v, d, true, "ok");
+        };
 
         // a deleted file whose bytes are being purged, or being brought back, is not pruned until that is over
         for (int round = 0; round < 2; round++) {
@@ -1534,11 +1576,13 @@ int main() {
             audit_all(id, 1);
             if (round == 0) {
                 CHECK(fx.L->begin_purge(d.id, 0, true, 2.0, 600).ok);
-                CHECK(!fx.L->prune_version(id, 1, "test", rules).ok && has(fx.L->prune_version(id, 1, "test", rules).why.c_str(), "quarantine"));   // PURGING
+                CHECK(!fx.L->prune_version(id, 1, "test", rules).ok &&
+                      has(fx.L->prune_version(id, 1, "test", rules).why.c_str(), "quarantine"));  // PURGING
                 CHECK(fx.L->complete_purge(d.id).ok && fx.L->prune_version(id, 1, "test", rules).ok);
             } else {
                 CHECK(fx.L->begin_restore(d.id, "test").ok);
-                CHECK(!fx.L->prune_version(id, 1, "test", rules).ok && has(fx.L->prune_version(id, 1, "test", rules).why.c_str(), "quarantine"));   // RESTORING
+                CHECK(!fx.L->prune_version(id, 1, "test", rules).ok &&
+                      has(fx.L->prune_version(id, 1, "test", rules).why.c_str(), "quarantine"));  // RESTORING
                 CHECK(fx.L->complete_restore(d.id, true).ok && fx.L->prune_version(id, 1, "test", rules).ok);
             }
         }
@@ -1556,7 +1600,7 @@ int main() {
             CHECK(fx.L->retire_file(id2, "test").ok);
             g_time += 31 * DAY;
             audit_all(id2, 1);
-            Res d2 = fx.drop(id2);   // (the scope "/" covers the parked path)
+            Res d2 = fx.drop(id2);  // (the scope "/" covers the parked path)
             if (d2.ok) {
                 Res b2 = fx.L->prune_version(id2, 1, "test", rules);
                 CHECK(!b2.ok && has(b2.why.c_str(), "DROPPING") && !fx.L->is_version_pruned(id2, 1));
@@ -1580,14 +1624,19 @@ int main() {
             CHECK(new_version(id, {"devA", "devB1"}) == 3);
             g_time += 2 * HOUR;
             audit_all(id, 3);
-            CHECK(fx.L->prune_version(id, 2, "test", rules).ok);   // v1's quarantined bytes keep v1 only; v2 has none
+            CHECK(fx.L->prune_version(id, 2, "test", rules).ok);  // v1's quarantined bytes keep v1 only; v2 has none
             CHECK(!fx.L->prune_version(id, 1, "test", rules).ok);
         }
 
         // no record of a deletion: not pruned
         {
             std::string id = fx.replicated("/testdata/norec.bin", {"devA", "devB1"}, 1000);
-            { sqlite3* db = raw_open(fx.dir); raw_exec(db, ("UPDATE files SET path='/'||char(1)||'deleted/'||file_id||'/zz', pkey='x'||file_id WHERE file_id='" + id + "'").c_str()); sqlite3_close(db); }
+            {
+                sqlite3* db = raw_open(fx.dir);
+                raw_exec(db,
+                         ("UPDATE files SET path='/'||char(1)||'deleted/'||file_id||'/zz', pkey='x'||file_id WHERE file_id='" + id + "'").c_str());
+                sqlite3_close(db);
+            }
             g_time += 100 * DAY;
             Res nr = fx.L->prune_version(id, 1, "test", rules);
             CHECK(!nr.ok && has(nr.why.c_str(), "no record of when") && !fx.L->is_version_pruned(id, 1));
@@ -1602,7 +1651,8 @@ int main() {
             CHECK(!fx.L->prune_version(id, 1, "test", rules).ok && fx.L->prune_candidates(1, rules, 100).empty());
             g_time = at + rules.deleted_retention_seconds;
             bool listed = false;
-            for (auto& c : fx.L->prune_candidates(1, rules, 100)) if (c.file_id == id) listed = true;
+            for (auto& c : fx.L->prune_candidates(1, rules, 100))
+                if (c.file_id == id) listed = true;
             CHECK(listed && fx.L->prune_version(id, 1, "test", rules).ok);
         }
 
@@ -1621,12 +1671,12 @@ int main() {
             // with a third version much later, the age of the NEXT version (v2) decides for v2's predecessor, not the newest's
             std::string id3 = fx.replicated("/testdata/grace3.bin", {"devA", "devB1"}, 1000);
             g_time += 1000;
-            new_version(id3, {"devA", "devB1"});                                  // v2
+            new_version(id3, {"devA", "devB1"});  // v2
             int64_t v2_at = g_time;
             g_time += 10 * loose.grace_seconds;
-            new_version(id3, {"devA", "devB1"});                                  // v3, just now
+            new_version(id3, {"devA", "devB1"});  // v3, just now
             CHECK(g_time - v2_at > loose.grace_seconds && fx.L->prune_version(id3, 1, "test", loose).ok);
-            CHECK(!fx.L->prune_version(id3, 2, "test", loose).ok);               // v3 is brand new
+            CHECK(!fx.L->prune_version(id3, 2, "test", loose).ok);  // v3 is brand new
         }
 
         // an OLDER version that is held well never vouches for a newer one that is not
@@ -1634,11 +1684,11 @@ int main() {
             PruneRules loose = rules;
             loose.max_audit_age = 1'000'000'000;
             loose.grace_seconds = 0;
-            std::string id = fx.replicated("/testdata/older.bin", {"devA", "devB1"}, 1000);   // v1 (good)
+            std::string id = fx.replicated("/testdata/older.bin", {"devA", "devB1"}, 1000);  // v1 (good)
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                // v2 (good)
+            new_version(id, {"devA", "devB1"});  // v2 (good)
             g_time += 10;
-            new_version(id, {"devC"});                                                         // v3, current, thin
+            new_version(id, {"devC"});  // v3, current, thin
             Res r = fx.L->prune_version(id, 2, "test", loose);
             CHECK(!r.ok && has(r.why.c_str(), "enough copies") && !fx.L->is_version_pruned(id, 2));
         }
@@ -1648,19 +1698,20 @@ int main() {
             PruneRules loose = rules;
             loose.max_audit_age = 1'000'000'000;
             loose.grace_seconds = 0;
-            std::string id = fx.replicated("/testdata/chain.bin", {"devA", "devB1"}, 1000);   // v1
+            std::string id = fx.replicated("/testdata/chain.bin", {"devA", "devB1"}, 1000);  // v1
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                // v2 (good)
+            new_version(id, {"devA", "devB1"});  // v2 (good)
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                // v3 (good)
+            new_version(id, {"devA", "devB1"});  // v3 (good)
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                // v4 (current)
-            CHECK(fx.L->prune_version(id, 2, "test", loose).ok);                              // v3 and v4 are safe
+            new_version(id, {"devA", "devB1"});                   // v4 (current)
+            CHECK(fx.L->prune_version(id, 2, "test", loose).ok);  // v3 and v4 are safe
             // v3 and v4 lose their copies on devA (an audit failure each): neither is safe any more
             fx.L->record_audit(id, 3, "devA", false, "gone");
             fx.L->record_audit(id, 4, "devA", false, "gone");
             Res r1 = fx.L->prune_version(id, 1, "test", loose);
-            CHECK(!r1.ok && has(r1.why.c_str(), "enough copies") && !fx.L->is_version_pruned(id, 1));   // v2 (pruned) would count if pruned versions were consulted
+            CHECK(!r1.ok && has(r1.why.c_str(), "enough copies") &&
+                  !fx.L->is_version_pruned(id, 1));  // v2 (pruned) would count if pruned versions were consulted
             CHECK(fx.L->safe_successor(id, 1, loose) == 0);
         }
 
@@ -1668,35 +1719,41 @@ int main() {
         {
             PruneRules loose = rules;
             loose.grace_seconds = 0;
-            std::string id = fx.replicated("/testdata/unfinished.bin", {"devA", "devB1"}, 1000);   // v1
+            std::string id = fx.replicated("/testdata/unfinished.bin", {"devA", "devB1"}, 1000);  // v1
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                      // v2
+            new_version(id, {"devA", "devB1"});  // v2
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                      // v3
+            new_version(id, {"devA", "devB1"});  // v3
             g_time += 10;
-            { auto f = fx.L->get_file(id); fx.L->note_local_modified(id, f->size, g_time); fx.L->begin_replication(id, Fixture::chunks(f->size), f->size, g_time); }   // v4: no committed copy
+            {
+                auto f = fx.L->get_file(id);
+                fx.L->note_local_modified(id, f->size, g_time);
+                fx.L->begin_replication(id, Fixture::chunks(f->size), f->size, g_time);
+            }  // v4: no committed copy
             g_time += 10;
             std::vector<int64_t> got;
-            for (auto& c : fx.L->prune_candidates(2, loose, 100)) if (c.file_id == id) got.push_back(c.version);
-            CHECK(got == std::vector<int64_t>({1}));   // v2 and v3 are the two newest committed versions
+            for (auto& c : fx.L->prune_candidates(2, loose, 100))
+                if (c.file_id == id) got.push_back(c.version);
+            CHECK(got == std::vector<int64_t>({1}));  // v2 and v3 are the two newest committed versions
         }
 
         // safe_successor: the nearest newer version that is held well enough
         {
             PruneRules loose = rules;
             loose.grace_seconds = 0;
-            std::string id = fx.replicated("/testdata/succ.bin", {"devA", "devB1"}, 1000);   // v1
+            std::string id = fx.replicated("/testdata/succ.bin", {"devA", "devB1"}, 1000);  // v1
             g_time += 10;
-            new_version(id, {"devC"});                                                         // v2: too thin
+            new_version(id, {"devC"});  // v2: too thin
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                // v3: fine
+            new_version(id, {"devA", "devB1"});  // v3: fine
             g_time += 10;
-            new_version(id, {"devA", "devB1"});                                                // v4: fine, and current
-            CHECK(fx.L->safe_successor(id, 1, loose) == 3 && fx.L->safe_successor(id, 2, loose) == 3 && fx.L->safe_successor(id, 3, loose) == 4 && fx.L->safe_successor(id, 4, loose) == 0);
-            CHECK(fx.L->prune_version(id, 3, "test", loose).ok && fx.L->safe_successor(id, 1, loose) == 4);   // a pruned version is skipped
+            new_version(id, {"devA", "devB1"});  // v4: fine, and current
+            CHECK(fx.L->safe_successor(id, 1, loose) == 3 && fx.L->safe_successor(id, 2, loose) == 3 && fx.L->safe_successor(id, 3, loose) == 4 &&
+                  fx.L->safe_successor(id, 4, loose) == 0);
+            CHECK(fx.L->prune_version(id, 3, "test", loose).ok && fx.L->safe_successor(id, 1, loose) == 4);  // a pruned version is skipped
             CHECK(fx.L->safe_successor("nofile", 1, loose) == 0);
         }
-        {   // (the only complaint is about the path this test rewrote behind the ledger's back)
+        {  // (the only complaint is about the path this test rewrote behind the ledger's back)
             auto bad = fx.L->fsck();
             CHECK(bad.size() == 1 && has(bad[0].c_str(), "path key does not match"));
         }
@@ -1714,10 +1771,11 @@ int main() {
         Res d = fx.drop(id);
         CHECK(d.ok && fx.L->complete_drop(d.id).ok);
         for (const char* dev : {"devA", "devB1"}) fx.L->record_audit(id, 1, dev, true, "ok");
-        CHECK(fx.L->begin_purge(d.id, 0, true, 2.0, 600).ok && fx.L->complete_purge(d.id).ok);   // no local bytes held any more
+        CHECK(fx.L->begin_purge(d.id, 0, true, 2.0, 600).ok && fx.L->complete_purge(d.id).ok);  // no local bytes held any more
         // a live file is never pruned this way, whatever its age
         g_time += 100 * DAY;
-        CHECK(!fx.L->prune_version(id, 1, "test", rules).ok && has(fx.L->prune_version(id, 1, "test", rules).why.c_str(), "current version is never pruned"));
+        CHECK(!fx.L->prune_version(id, 1, "test", rules).ok &&
+              has(fx.L->prune_version(id, 1, "test", rules).why.c_str(), "current version is never pruned"));
         CHECK(fx.L->retire_file(id, "user deleted it").ok);
         g_time += 29 * DAY;
         CHECK(fx.L->prune_candidates(1, rules, 100).empty());
@@ -1737,7 +1795,12 @@ int main() {
         CHECK(fx.L->fsck().empty());
         // the event history says what happened and why
         bool saw = false;
-        { sqlite3* db = raw_open(fx.dir); saw = has(raw_text(db, "SELECT detail FROM events WHERE kind='version.pruned'").c_str(), "deleted 31 days ago (file deleted: /testdata/gone.bin)"); sqlite3_close(db); }
+        {
+            sqlite3* db = raw_open(fx.dir);
+            saw = has(raw_text(db, "SELECT detail FROM events WHERE kind='version.pruned'").c_str(),
+                      "deleted 31 days ago (file deleted: /testdata/gone.bin)");
+            sqlite3_close(db);
+        }
         CHECK(saw);
     }
 
@@ -1749,26 +1812,46 @@ int main() {
         g_time = 4'000'000;
         std::string id = fx.replicated("/testdata/t.bin", {"devA", "devB1"}, 1000);
         g_time += 10;
-        { auto f = fx.L->get_file(id); fx.L->note_local_modified(id, f->size, g_time); auto r = fx.L->begin_replication(id, Fixture::chunks(f->size), f->size, g_time);
-          int64_t v = std::atoll(r.id.c_str());
-          for (const char* d : {"devA", "devB1"}) { fx.L->set_replica(id, v, d, ReplicaState::PENDING); fx.L->set_replica(id, v, d, ReplicaState::UPLOADED); fx.L->set_replica(id, v, d, ReplicaState::COMMITTED, 9); }
-          fx.L->finish_replication(id, v);
-          for (const char* d : {"devA", "devB1"}) fx.L->record_audit(id, v, d, true, "ok"); }
+        {
+            auto f = fx.L->get_file(id);
+            fx.L->note_local_modified(id, f->size, g_time);
+            auto r = fx.L->begin_replication(id, Fixture::chunks(f->size), f->size, g_time);
+            int64_t v = std::atoll(r.id.c_str());
+            for (const char* d : {"devA", "devB1"}) {
+                fx.L->set_replica(id, v, d, ReplicaState::PENDING);
+                fx.L->set_replica(id, v, d, ReplicaState::UPLOADED);
+                fx.L->set_replica(id, v, d, ReplicaState::COMMITTED, 9);
+            }
+            fx.L->finish_replication(id, v);
+            for (const char* d : {"devA", "devB1"}) fx.L->record_audit(id, v, d, true, "ok");
+        }
         CHECK(fx.L->prune_version(id, 1, "test", rules).ok);
         sqlite3* db = raw_open(fx.dir);
         CHECK(!raw_exec(db, "UPDATE versions SET pruned_at=0 WHERE version=1"));
         CHECK(!raw_exec(db, "UPDATE versions SET pruned_at=5 WHERE version=1"));
         CHECK(raw_exec(db, "UPDATE versions SET pruned_at=pruned_at WHERE version=1"));
         CHECK(!raw_exec(db, "DELETE FROM prune_state"));
-        CHECK(raw_exec(db, "UPDATE prune_state SET state='owed' WHERE version=1"));   // (allowed: a device can owe a deletion again)
+        CHECK(raw_exec(db, "UPDATE prune_state SET state='owed' WHERE version=1"));  // (allowed: a device can owe a deletion again)
         CHECK(!raw_exec(db, "UPDATE prune_state SET state='sort of' WHERE version=1"));
         CHECK(fx.L->fsck().empty());
-        CHECK(raw_exec(db, "UPDATE versions SET pruned_at=1 WHERE version=2"));         // the live file's current version, marked pruned behind the ledger's back
-        { auto bad = fx.L->fsck(); CHECK(bad.size() == 1 && has(bad[0].c_str(), "current version of a live file was pruned") && has(bad[0].c_str(), "/testdata/t.bin")); }
-        CHECK(raw_exec(db, "UPDATE versions SET pruned_at=pruned_at") && !raw_exec(db, "UPDATE versions SET pruned_at=0 WHERE version=2"));   // and it cannot be undone either
-        CHECK(raw_exec(db, ("INSERT INTO versions(file_id,version,generation,size,mtime,chunk_count,created_at) VALUES('" + id + "',3,1,0,0,0,1)").c_str()));
-        CHECK(raw_exec(db, ("INSERT INTO prune_state(file_id,version,device_id,state,updated_at) VALUES('" + id + "',3,'devC','owed',1)").c_str()));   // a debt for a version that was never pruned
-        { bool seen = false; for (auto& b : fx.L->fsck()) if (has(b.c_str(), "a deletion is recorded for a version that was not pruned")) seen = true; CHECK(seen); }
+        CHECK(raw_exec(
+            db, "UPDATE versions SET pruned_at=1 WHERE version=2"));  // the live file's current version, marked pruned behind the ledger's back
+        {
+            auto bad = fx.L->fsck();
+            CHECK(bad.size() == 1 && has(bad[0].c_str(), "current version of a live file was pruned") && has(bad[0].c_str(), "/testdata/t.bin"));
+        }
+        CHECK(raw_exec(db, "UPDATE versions SET pruned_at=pruned_at") &&
+              !raw_exec(db, "UPDATE versions SET pruned_at=0 WHERE version=2"));  // and it cannot be undone either
+        CHECK(raw_exec(
+            db, ("INSERT INTO versions(file_id,version,generation,size,mtime,chunk_count,created_at) VALUES('" + id + "',3,1,0,0,0,1)").c_str()));
+        CHECK(raw_exec(db, ("INSERT INTO prune_state(file_id,version,device_id,state,updated_at) VALUES('" + id + "',3,'devC','owed',1)")
+                               .c_str()));  // a debt for a version that was never pruned
+        {
+            bool seen = false;
+            for (auto& b : fx.L->fsck())
+                if (has(b.c_str(), "a deletion is recorded for a version that was not pruned")) seen = true;
+            CHECK(seen);
+        }
         sqlite3_close(db);
     }
 
@@ -1781,30 +1864,41 @@ int main() {
             L->register_device("devA", "devA", "A");
             id = L->track_file("/testdata/Old", 1, 1, 0644);
         }
-        {   // turn it back into version 2
+        {  // turn it back into version 2
             sqlite3* db = raw_open(d);
-            for (const char* q : {"DROP TRIGGER prune_is_final", "DROP TRIGGER prune_state_no_delete", "DROP TABLE prune_state", "ALTER TABLE versions DROP COLUMN pruned_at", "PRAGMA user_version=2"})
+            for (const char* q : {"DROP TRIGGER prune_is_final", "DROP TRIGGER prune_state_no_delete", "DROP TABLE prune_state",
+                                  "ALTER TABLE versions DROP COLUMN pruned_at", "PRAGMA user_version=2"})
                 CHECK(raw_exec(db, q));
             sqlite3_close(db);
         }
         uint64_t events_before = 0;
-        { sqlite3* db = raw_open(d); events_before = std::atoll(raw_text(db, "SELECT COUNT(*) FROM events").c_str()); sqlite3_close(db); }
+        {
+            sqlite3* db = raw_open(d);
+            events_before = std::atoll(raw_text(db, "SELECT COUNT(*) FROM events").c_str());
+            sqlite3_close(db);
+        }
         {
             std::string err;
             auto L = open_ledger(d, &err);
             CHECK(L != nullptr);
             if (L) {
-                CHECK(L->get_file(id) && L->fsck().empty() && L->event_count() == events_before + 1 && L->pruned_count() == 0 && L->pending_prunes(10).empty());
+                CHECK(L->get_file(id) && L->fsck().empty() && L->event_count() == events_before + 1 && L->pruned_count() == 0 &&
+                      L->pending_prunes(10).empty());
             }
         }
         {
             sqlite3* db = raw_open(d);
-            CHECK(raw_text(db, "PRAGMA user_version") == "3" && has(raw_text(db, "SELECT detail FROM events WHERE kind='ledger.upgraded' ORDER BY seq DESC LIMIT 1").c_str(), "schema 2 -> 3"));
+            CHECK(raw_text(db, "PRAGMA user_version") == "3" &&
+                  has(raw_text(db, "SELECT detail FROM events WHERE kind='ledger.upgraded' ORDER BY seq DESC LIMIT 1").c_str(), "schema 2 -> 3"));
             CHECK(raw_exec(db, "SELECT pruned_at FROM versions") && raw_exec(db, "SELECT state FROM prune_state"));
-            CHECK(raw_text(db, "SELECT COUNT(*) FROM sqlite_master WHERE name IN('prune_state_no_delete','prune_is_final')") == "2");   // the guards came with it
+            CHECK(raw_text(db, "SELECT COUNT(*) FROM sqlite_master WHERE name IN('prune_state_no_delete','prune_is_final')") ==
+                  "2");  // the guards came with it
             sqlite3_close(db);
         }
-        { auto L = open_ledger(d); CHECK(L && L->fsck().empty() && L->event_count() == events_before + 1); }   // reopening upgrades nothing again
+        {
+            auto L = open_ledger(d);
+            CHECK(L && L->fsck().empty() && L->event_count() == events_before + 1);
+        }  // reopening upgrades nothing again
         fs::remove_all(d);
     }
 

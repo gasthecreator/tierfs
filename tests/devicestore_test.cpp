@@ -25,19 +25,22 @@ using crypto::Bytes;
 namespace fs = std::filesystem;
 
 static int failures = 0;
-static bool failfast() {   // the mutation runner stops a test at its first failure
+static bool failfast() {  // the mutation runner stops a test at its first failure
     static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr;
     return f;
 }
-#define CHECK(cond)                                                                \
-    do {                                                                           \
-        if (!(cond)) {                                                             \
-            printf("FAIL  line %d: %s\n", __LINE__, #cond);                        \
-            failures++;                                                            \
-            if (failfast()) { fflush(stdout); _exit(1); }                          \
-        } else printf("PASS  %s\n", #cond);                                        \
+#define CHECK(cond)                                         \
+    do {                                                    \
+        if (!(cond)) {                                      \
+            printf("FAIL  line %d: %s\n", __LINE__, #cond); \
+            failures++;                                     \
+            if (failfast()) {                               \
+                fflush(stdout);                             \
+                _exit(1);                                   \
+            }                                               \
+        } else                                              \
+            printf("PASS  %s\n", #cond);                    \
     } while (0)
-
 
 // Safe element access for assertions: a failed earlier check must not become a crash that hides it.
 template <class T> static const T& at(const std::vector<T>& v, size_t i) { static const T dummy{}; return i < v.size() ? v[i] : dummy; }
@@ -616,7 +619,8 @@ int main() {
         Sealed a = seal(pattern(1500, 21)), b = seal(pattern(1600, 22)), c = seal(pattern(1700, 23)), dd = seal(pattern(1800, 24));
         for (auto* x : {&a, &b, &c, &dd}) put(*d, *x);
         Bytes m1 = pattern(300, 31), m2 = pattern(310, 32), m3 = pattern(320, 33);
-        CHECK(put_man(*d, FID1, 1, m1, {a.id, b.id}).err == 0 && put_man(*d, FID1, 2, m2, {b.id, c.id}).err == 0 && put_man(*d, FID2, 1, m3, {c.id}).err == 0);
+        CHECK(put_man(*d, FID1, 1, m1, {a.id, b.id}).err == 0 && put_man(*d, FID1, 2, m2, {b.id, c.id}).err == 0 &&
+              put_man(*d, FID2, 1, m3, {c.id}).err == 0);
         // off by default
         DeleteManifestsOut denied = d->delete_manifests({{FID1, 1}});
         CHECK(denied.err == EPERM && has(denied.msg, "does not accept deletions"));
@@ -632,16 +636,17 @@ int main() {
         // bad requests
         CHECK(d->delete_manifests({}).err == EMSGSIZE);
         CHECK(d->delete_manifests(std::vector<std::pair<std::string, int64_t>>(MAX_DELETE_ITEMS + 1, {FID1, 1})).err == EMSGSIZE);
-        CHECK(d->delete_manifests(std::vector<std::pair<std::string, int64_t>>(MAX_DELETE_ITEMS, {FID1, 99})).err == 0);   // exactly the limit is fine
-        CHECK(d->delete_manifests({{"not-an-id", 1}}).err == EINVAL && d->delete_manifests({{FID1, 0}}).err == EINVAL && d->delete_manifests({{FID1, -3}}).err == EINVAL);
+        CHECK(d->delete_manifests(std::vector<std::pair<std::string, int64_t>>(MAX_DELETE_ITEMS, {FID1, 99})).err == 0);  // exactly the limit is fine
+        CHECK(d->delete_manifests({{"not-an-id", 1}}).err == EINVAL && d->delete_manifests({{FID1, 0}}).err == EINVAL &&
+              d->delete_manifests({{FID1, -3}}).err == EINVAL);
         CHECK(d->delete_manifests({{FID1, (1ll << 40) + 1}}).err == EINVAL && d->delete_manifests({{FID1, 1ll << 40}}).err == 0);
         CHECK(d->sweep(0, 0, false).err == EINVAL);
-        CHECK(d->info().seq == 3);   // nothing above deleted anything, so the sequence did not move
+        CHECK(d->info().seq == 3);  // nothing above deleted anything, so the sequence did not move
 
         // a dry run reports and changes nothing
         SweepOut dry = d->sweep(0, 100, true);
-        CHECK(dry.err == 0 && dry.chunks_deleted == 1 && dry.bytes_deleted == dd.blob.size() && dry.chunks_left == 0 && fs::exists(chunk_file(dir, dd.id)) &&
-              at(d->has_chunks({dd.id}), 0));
+        CHECK(dry.err == 0 && dry.chunks_deleted == 1 && dry.bytes_deleted == dd.blob.size() && dry.chunks_left == 0 &&
+              fs::exists(chunk_file(dir, dd.id)) && at(d->has_chunks({dd.id}), 0));
         // the real sweep takes the unreferenced chunk and nothing else
         SweepOut sw = d->sweep(0, 100, false);
         CHECK(sw.err == 0 && sw.chunks_deleted == 1 && sw.bytes_deleted == dd.blob.size() && sw.chunks_left == 0 && sw.strays_removed == 0);
@@ -651,7 +656,7 @@ int main() {
         std::string msg;
         CHECK(d->get_chunk(dd.id, got, &msg) == ENOENT);
         SweepOut again = d->sweep(0, 100, false);
-        CHECK(again.err == 0 && again.chunks_deleted == 0 && again.bytes_deleted == 0);   // idempotent
+        CHECK(again.err == 0 && again.chunks_deleted == 0 && again.bytes_deleted == 0);  // idempotent
 
         // deleting a manifest: it goes, its siblings stay, the commit sequence moves once, repeating it changes nothing
         uint64_t seq0 = d->info().seq;
@@ -668,17 +673,19 @@ int main() {
         CHECK(next.err == 0 && next.seq == seq0 + 2);
         // a's only manifest is gone, b and c are still listed by the others
         SweepOut s2 = d->sweep(0, 100, false);
-        CHECK(s2.err == 0 && s2.chunks_deleted == 1 && s2.bytes_deleted == a.blob.size() && !at(d->has_chunks({a.id}), 0) && at(d->has_chunks({b.id}), 0) &&
-              at(d->has_chunks({c.id}), 0));
+        CHECK(s2.err == 0 && s2.chunks_deleted == 1 && s2.bytes_deleted == a.blob.size() && !at(d->has_chunks({a.id}), 0) &&
+              at(d->has_chunks({b.id}), 0) && at(d->has_chunks({c.id}), 0));
         // the device's own log and totals
         GcStatus g1 = d->gc_status();
-        CHECK(g1.manifests == 3 && g1.manifests_deleted == 1 && g1.chunks_deleted == 2 && g1.chunks == 2 && g1.unreferenced_chunks == 0 && g1.chunk_bytes == b.blob.size() + c.blob.size());
+        CHECK(g1.manifests == 3 && g1.manifests_deleted == 1 && g1.chunks_deleted == 2 && g1.chunks == 2 && g1.unreferenced_chunks == 0 &&
+              g1.chunk_bytes == b.blob.size() + c.blob.size());
         // a manifest that was alone in its directory takes the directory with it, at once
         const std::string FID3 = "00112233445566778899aabbccddeeff";
         CHECK(put_man(*d, FID3, 1, pattern(340, 36), {b.id}).err == 0 && fs::exists(dir + "/manifests/" + FID3 + "/1.mf"));
         CHECK(d->delete_manifests({{FID3, 1}}).deleted[0] == 1 && !fs::exists(dir + "/manifests/" + FID3));
         // a deleted version can be stored again (the Mac does that if it has to rebuild it)
-        CHECK(put_man(*d, FID1, 1, m1, {b.id}).err == 0 && !put_man(*d, FID1, 1, m1, {b.id}).err && d->get_manifest(FID1, 1, got, &msg) == 0 && got == m1);
+        CHECK(put_man(*d, FID1, 1, m1, {b.id}).err == 0 && !put_man(*d, FID1, 1, m1, {b.id}).err && d->get_manifest(FID1, 1, got, &msg) == 0 &&
+              got == m1);
         CHECK(d->delete_manifests({{FID1, 1}}).deleted[0] == 1);
         // three manifests at once, then a limited sweep leaves the rest for later
         DeleteManifestsOut three = d->delete_manifests({{FID1, 2}, {FID2, 1}, {FID2, 2}});
@@ -686,26 +693,28 @@ int main() {
         SweepOut lim = d->sweep(0, 1, false);
         CHECK(lim.err == 0 && lim.chunks_deleted == 1 && lim.chunks_left == 1 && d->gc_status().chunks == 1);
         SweepOut rest = d->sweep(0, 1, false);
-        CHECK(rest.chunks_deleted == 1 && rest.chunks_left == 0 && d->gc_status().chunks == 0 && count_files(dir + "/chunks") == 0 && count_files(dir + "/manifests") == 0);
-        CHECK(!fs::exists(dir + "/manifests/" + FID1) && !fs::exists(dir + "/manifests/" + FID2));   // empty directories are removed too
+        CHECK(rest.chunks_deleted == 1 && rest.chunks_left == 0 && d->gc_status().chunks == 0 && count_files(dir + "/chunks") == 0 &&
+              count_files(dir + "/manifests") == 0);
+        CHECK(!fs::exists(dir + "/manifests/" + FID1) && !fs::exists(dir + "/manifests/" + FID2));  // empty directories are removed too
 
         // age: a chunk that was just uploaded, or just reported present to the Mac, is not swept
         Sealed e = seal(pattern(1900, 25));
         put(*d, e);
         d->set_min_sweep_age(3600);
-        CHECK(d->sweep(0, 10, false).chunks_deleted == 0 && at(d->has_chunks({e.id}), 0));   // the floor raises a request for 0
-        CHECK(d->sweep(7200, 10, false).chunks_deleted == 0);                                  // a larger request is honoured
-        CHECK(d->sweep(~0ull, 10, false).chunks_deleted == 0 && d->sweep(1ull << 62, 10, false).chunks_deleted == 0);   // so is an absurd one (no wrap-around)
+        CHECK(d->sweep(0, 10, false).chunks_deleted == 0 && at(d->has_chunks({e.id}), 0));  // the floor raises a request for 0
+        CHECK(d->sweep(7200, 10, false).chunks_deleted == 0);                               // a larger request is honoured
+        CHECK(d->sweep(~0ull, 10, false).chunks_deleted == 0 &&
+              d->sweep(1ull << 62, 10, false).chunks_deleted == 0);  // so is an absurd one (no wrap-around)
         d->set_min_sweep_age(0);
         std::this_thread::sleep_for(std::chrono::milliseconds(2200));
-        d->has_chunks({e.id});                                                                  // the Mac mentioned it: the clock restarts
+        d->has_chunks({e.id});  // the Mac mentioned it: the clock restarts
         CHECK(d->sweep(2, 10, false).chunks_deleted == 0 && at(d->has_chunks({e.id}), 0));
         std::this_thread::sleep_for(std::chrono::milliseconds(2200));
-        PutChunkOut dupe = put(*d, e);                                                          // uploading it again restarts it too
+        PutChunkOut dupe = put(*d, e);  // uploading it again restarts it too
         CHECK(dupe.existed && d->sweep(2, 10, false).chunks_deleted == 0);
         std::this_thread::sleep_for(std::chrono::milliseconds(2200));
         d->set_min_sweep_age(1);
-        CHECK(d->sweep(3600, 10, false).chunks_deleted == 0);                                   // the request wins over a smaller floor
+        CHECK(d->sweep(3600, 10, false).chunks_deleted == 0);  // the request wins over a smaller floor
         SweepOut aged = d->sweep(2, 10, false);
         CHECK(aged.chunks_deleted == 1 && !at(d->has_chunks({e.id}), 0));
         fs::remove_all(dir);
@@ -717,7 +726,7 @@ int main() {
         Sealed x = seal(pattern(1500, 41)), y = seal(pattern(1600, 42)), w = seal(pattern(1650, 44));
         {
             auto d = open_store(dir);
-            sqlite3* fresh = raw_open(dir);   // a brand-new store starts with the deletion window closed
+            sqlite3* fresh = raw_open(dir);  // a brand-new store starts with the deletion window closed
             sqlite3_stmt* st0 = nullptr;
             sqlite3_prepare_v2(fresh, "SELECT value FROM meta WHERE key='gc_open'", -1, &st0, nullptr);
             CHECK(sqlite3_step(st0) == SQLITE_ROW && std::string(reinterpret_cast<const char*>(sqlite3_column_text(st0, 0))) == "0");
@@ -730,12 +739,12 @@ int main() {
             CHECK(put_man(*d, FID2, 1, pattern(301, 45), {y.id}).err == 0);
             d->set_deletions_allowed(true);
             d->set_min_sweep_age(0);
-            CHECK(d->delete_manifests({{FID2, 1}}).deleted[0] == 1);   // y is unlisted now, and w always was
-            CHECK(window_value(dir) == "0");                           // closed again after a deletion...
-            CHECK(d->sweep(0, 1, false).chunks_deleted == 1);          // one of them goes
-            CHECK(window_value(dir) == "0");                           // ... and after a sweep
+            CHECK(d->delete_manifests({{FID2, 1}}).deleted[0] == 1);  // y is unlisted now, and w always was
+            CHECK(window_value(dir) == "0");                          // closed again after a deletion...
+            CHECK(d->sweep(0, 1, false).chunks_deleted == 1);         // one of them goes
+            CHECK(window_value(dir) == "0");                          // ... and after a sweep
         }
-        {   // a window left open by a crashed process is closed when the store is opened again
+        {  // a window left open by a crashed process is closed when the store is opened again
             sqlite3* db = raw_open(dir);
             CHECK(raw_exec(db, "UPDATE meta SET value='1' WHERE key='gc_open'"));
             sqlite3_close(db);
@@ -749,11 +758,11 @@ int main() {
             sqlite3_finalize(st);
             return n;
         };
-        CHECK(!raw_exec(db, "DELETE FROM chunks WHERE chunk_id NOT IN (SELECT chunk_id FROM manifest_refs)"));   // outside a sweep: refused
+        CHECK(!raw_exec(db, "DELETE FROM chunks WHERE chunk_id NOT IN (SELECT chunk_id FROM manifest_refs)"));  // outside a sweep: refused
         CHECK(!raw_exec(db, "DELETE FROM manifests"));
         CHECK(!raw_exec(db, "UPDATE chunks SET size=1") && !raw_exec(db, "UPDATE manifests SET size=1"));
         CHECK(raw_exec(db, "BEGIN") && raw_exec(db, "UPDATE meta SET value='1' WHERE key='gc_open'"));
-        CHECK(!raw_exec(db, ("DELETE FROM chunks WHERE chunk_id='" + x.id + "'").c_str()));   // listed by a manifest: refused even inside a sweep
+        CHECK(!raw_exec(db, ("DELETE FROM chunks WHERE chunk_id='" + x.id + "'").c_str()));  // listed by a manifest: refused even inside a sweep
         std::string unlisted;
         {
             sqlite3_stmt* st = nullptr;
@@ -761,13 +770,16 @@ int main() {
             if (sqlite3_step(st) == SQLITE_ROW) unlisted = reinterpret_cast<const char*>(sqlite3_column_text(st, 0));
             sqlite3_finalize(st);
         }
-        CHECK(unlisted.size() == 64 && raw_exec(db, ("DELETE FROM chunks WHERE chunk_id='" + unlisted + "'").c_str()));    // unlisted: allowed inside one
+        CHECK(unlisted.size() == 64 &&
+              raw_exec(db, ("DELETE FROM chunks WHERE chunk_id='" + unlisted + "'").c_str()));  // unlisted: allowed inside one
         CHECK(raw_exec(db, "ROLLBACK"));
-        CHECK(count("SELECT COUNT(*) FROM chunks") == 2 && count("SELECT COUNT(*) FROM meta WHERE key='gc_open' AND value='0'") == 1);   // (x, and the one the sweep left)
+        CHECK(count("SELECT COUNT(*) FROM chunks") == 2 &&
+              count("SELECT COUNT(*) FROM meta WHERE key='gc_open' AND value='0'") == 1);  // (x, and the one the sweep left)
         CHECK(raw_exec(db, "INSERT INTO gc_log(ts,kind,item,version,size) VALUES(1,'chunk','x',0,1)"));
         CHECK(!raw_exec(db, "UPDATE gc_log SET size=2") && !raw_exec(db, "DELETE FROM gc_log"));
         // the reference lists are real
-        CHECK(count("SELECT COUNT(*) FROM manifest_refs") == 1 && count("SELECT COUNT(*) FROM refs_done") == 1 && count("SELECT COUNT(*) FROM manifests") == 1);   // FID2 v1 is gone, with its list
+        CHECK(count("SELECT COUNT(*) FROM manifest_refs") == 1 && count("SELECT COUNT(*) FROM refs_done") == 1 &&
+              count("SELECT COUNT(*) FROM manifests") == 1);  // FID2 v1 is gone, with its list
         sqlite3_close(db);
         fs::remove_all(dir);
     }
@@ -780,13 +792,22 @@ int main() {
         {
             auto d = open_store(dir);
             for (auto* s : {&x, &y, &z}) put(*d, *s);
-            CHECK(put_man(*d, FID1, 1, m1, {x.id, y.id}).err == 0 && put_man(*d, FID2, 1, m2, {}).err == 0);   // the second lists no chunks (an empty file)
+            CHECK(put_man(*d, FID1, 1, m1, {x.id, y.id}).err == 0 &&
+                  put_man(*d, FID2, 1, m2, {}).err == 0);  // the second lists no chunks (an empty file)
         }
-        {   // turn it back into a version 1 store
+        {  // turn it back into a version 1 store
             sqlite3* db = raw_open(dir);
-            const char* undo[] = {"DROP TRIGGER chunks_delete_guard", "DROP TRIGGER chunks_delete_listed", "DROP TRIGGER manifests_delete_guard",
-                                  "DROP TRIGGER gc_log_no_update", "DROP TRIGGER gc_log_no_delete", "DROP TABLE manifest_refs", "DROP TABLE refs_done",
-                                  "DROP TABLE chunk_touch", "DROP TABLE gc_log", "DROP TRIGGER meta_no_delete", "DELETE FROM meta WHERE key='gc_open'",
+            const char* undo[] = {"DROP TRIGGER chunks_delete_guard",
+                                  "DROP TRIGGER chunks_delete_listed",
+                                  "DROP TRIGGER manifests_delete_guard",
+                                  "DROP TRIGGER gc_log_no_update",
+                                  "DROP TRIGGER gc_log_no_delete",
+                                  "DROP TABLE manifest_refs",
+                                  "DROP TABLE refs_done",
+                                  "DROP TABLE chunk_touch",
+                                  "DROP TABLE gc_log",
+                                  "DROP TRIGGER meta_no_delete",
+                                  "DELETE FROM meta WHERE key='gc_open'",
                                   "CREATE TRIGGER meta_no_delete BEFORE DELETE ON meta BEGIN SELECT RAISE(ABORT,'meta rows are never deleted'); END",
                                   "CREATE TRIGGER chunks_append_only_d BEFORE DELETE ON chunks BEGIN SELECT RAISE(ABORT,'append-only'); END",
                                   "CREATE TRIGGER manifests_append_only_d BEFORE DELETE ON manifests BEGIN SELECT RAISE(ABORT,'append-only'); END",
@@ -797,7 +818,10 @@ int main() {
         std::string err;
         auto d = DeviceStore::open(dir, &err);
         CHECK(d != nullptr);
-        if (!d) { fs::remove_all(dir); goto next_block; }
+        if (!d) {
+            fs::remove_all(dir);
+            goto next_block;
+        }
         {
             sqlite3* db = raw_open(dir);
             sqlite3_stmt* st = nullptr;
@@ -808,11 +832,13 @@ int main() {
         }
         d->set_deletions_allowed(true);
         d->set_min_sweep_age(0);
-        CHECK(d->info().seq == 2 && at(d->has_chunks({x.id, y.id, z.id}), 2));   // nothing was lost in the upgrade
+        CHECK(d->info().seq == 2 && at(d->has_chunks({x.id, y.id, z.id}), 2));  // nothing was lost in the upgrade
         GcStatus g = d->gc_status();
-        CHECK(g.manifests == 2 && g.manifests_without_refs == 2 && g.unreferenced_chunks == 3);   // everything looks unreferenced: so a sweep must refuse
+        CHECK(g.manifests == 2 && g.manifests_without_refs == 2 &&
+              g.unreferenced_chunks == 3);  // everything looks unreferenced: so a sweep must refuse
         SweepOut refused = d->sweep(0, 100, false);
-        CHECK(refused.err == EPERM && has(refused.msg, "2 stored manifest(s) have no chunk list") && has(refused.msg, "garbage-collection run") && count_files(dir + "/chunks") == 3);
+        CHECK(refused.err == EPERM && has(refused.msg, "2 stored manifest(s) have no chunk list") && has(refused.msg, "garbage-collection run") &&
+              count_files(dir + "/chunks") == 3);
         CHECK(d->sweep(0, 100, true).err == EPERM);
         // deleting a manifest needs no reference list
         // a different blob under the same version does not earn a list (the first one stays, the sender is told what is held)
@@ -824,7 +850,7 @@ int main() {
         // the very same manifest with its real list is accepted as the list
         PutManifestOut back = put_man(*d, FID1, 1, m1, {x.id, y.id});
         CHECK(back.err == 0 && back.existed && back.seq == 1 && d->info().seq == 2 && d->gc_status().manifests_without_refs == 1);
-        CHECK(d->sweep(0, 100, false).err == EPERM);   // one manifest still lacks its list
+        CHECK(d->sweep(0, 100, false).err == EPERM);  // one manifest still lacks its list
         PutManifestOut back2 = put_man(*d, FID2, 1, m2, {});
         CHECK(back2.err == 0 && back2.existed && d->gc_status().manifests_without_refs == 0 && d->info().seq == 2);
         SweepOut ok = d->sweep(0, 100, false);
@@ -835,7 +861,7 @@ int main() {
         d.reset();
         fs::remove_all(dir);
     }
-    next_block:
+next_block:
 
     {
         printf("== garbage collection: leftovers of a crash are removed, other files are not touched\n");
@@ -856,42 +882,59 @@ int main() {
         fs::create_directories(dir + "/chunks/bb");
         fs::create_directories(dir + "/chunks/cc");
         std::string stray_old = dir + "/chunks/bb/" + id_old + ".blob", stray_young = dir + "/chunks/cc/" + id_young + ".blob";
-        std::string other1 = dir + "/chunks/bb/" + "notachunk.blob", other2 = dir + "/chunks/bb/" + id_old + ".part", other3 = dir + "/chunks/readme.txt";
-        std::string other4 = dir + "/chunks/bb/" + std::string(64, 'g') + ".blob";   // the right length, but not hex
-        for (auto* p : {&stray_old, &stray_young, &other1, &other2, &other3, &other4}) { std::ofstream f(*p); f << "x"; }
+        std::string other1 = dir + "/chunks/bb/" + "notachunk.blob", other2 = dir + "/chunks/bb/" + id_old + ".part",
+                    other3 = dir + "/chunks/readme.txt";
+        std::string other4 = dir + "/chunks/bb/" + std::string(64, 'g') + ".blob";  // the right length, but not hex
+        for (auto* p : {&stray_old, &stray_young, &other1, &other2, &other3, &other4}) {
+            std::ofstream f(*p);
+            f << "x";
+        }
         for (auto* p : {&stray_old, &other1, &other2, &other3, &other4}) age(*p, 7200);
         std::string mdir = dir + "/manifests/" + FID2;
         fs::create_directories(mdir);
         std::string mstray_old = mdir + "/5.mf", mstray_young = mdir + "/6.mf", mother = mdir + "/7.txt", mother2 = mdir + "/05.mf";
-        for (auto* p : {&mstray_old, &mstray_young, &mother, &mother2}) { std::ofstream f(*p); f << "x"; }
+        for (auto* p : {&mstray_old, &mstray_young, &mother, &mother2}) {
+            std::ofstream f(*p);
+            f << "x";
+        }
         for (auto* p : {&mstray_old, &mother, &mother2}) age(*p, 7200);
         const std::string FID3 = "00112233445566778899aabbccddeeff", FID4 = "ffeeddccbbaa99887766554433221100";
         fs::create_directories(dir + "/manifests/" + FID3);
         std::string alone = dir + "/manifests/" + FID3 + "/9.mf";
-        { std::ofstream f(alone); f << "x"; }
+        {
+            std::ofstream f(alone);
+            f << "x";
+        }
         age(alone, 7200);
-        fs::create_directories(dir + "/manifests/" + FID4);   // an empty directory (nothing to remove but the directory itself)
+        fs::create_directories(dir + "/manifests/" + FID4);  // an empty directory (nothing to remove but the directory itself)
         std::string zero = mdir + "/0.mf", bak = mdir + "/8.mf.bak", foreign_dir = dir + "/manifests/not-an-id", foreign = foreign_dir + "/5.mf";
         fs::create_directories(foreign_dir);
-        for (auto* p : {&zero, &bak, &foreign}) { std::ofstream f(*p); f << "x"; }
+        for (auto* p : {&zero, &bak, &foreign}) {
+            std::ofstream f(*p);
+            f << "x";
+        }
         for (auto* p : {&zero, &bak, &foreign}) age(*p, 7200);
         std::string live_file = chunk_file(dir, live.id);
-        age(live_file, 7200);   // old, but it has a row and a manifest listing it
+        age(live_file, 7200);  // old, but it has a row and a manifest listing it
         std::vector<uint8_t> gm;
         SweepOut dry = d->sweep(0, 10, true);
-        CHECK(dry.err == 0 && dry.strays_removed == 3 && fs::exists(stray_old) && fs::exists(mstray_old) && fs::exists(alone) && fs::exists(dir + "/manifests/" + FID3) &&
-              fs::exists(dir + "/manifests/" + FID4));   // reported, not removed (not even an empty directory)
+        CHECK(dry.err == 0 && dry.strays_removed == 3 && fs::exists(stray_old) && fs::exists(mstray_old) && fs::exists(alone) &&
+              fs::exists(dir + "/manifests/" + FID3) &&
+              fs::exists(dir + "/manifests/" + FID4));  // reported, not removed (not even an empty directory)
         SweepOut s = d->sweep(0, 10, false);
         CHECK(s.err == 0 && s.strays_removed == 3 && s.chunks_deleted == 0);
         CHECK(!fs::exists(stray_old) && !fs::exists(mstray_old) && !fs::exists(alone) && fs::exists(stray_young) && fs::exists(mstray_young));
-        CHECK(!fs::exists(dir + "/manifests/" + FID3) && !fs::exists(dir + "/manifests/" + FID4));   // the directory that held only a stray goes with it, and an empty one goes
-        CHECK(fs::exists(zero) && fs::exists(bak) && fs::exists(foreign));   // version 0, another extension, a directory that is not a file id: not ours
-        CHECK(fs::exists(other1) && fs::exists(other2) && fs::exists(other3) && fs::exists(other4) && fs::exists(mother) && fs::exists(mother2) && fs::exists(live_file));
+        CHECK(!fs::exists(dir + "/manifests/" + FID3) &&
+              !fs::exists(dir + "/manifests/" + FID4));  // the directory that held only a stray goes with it, and an empty one goes
+        CHECK(fs::exists(zero) && fs::exists(bak) &&
+              fs::exists(foreign));  // version 0, another extension, a directory that is not a file id: not ours
+        CHECK(fs::exists(other1) && fs::exists(other2) && fs::exists(other3) && fs::exists(other4) && fs::exists(mother) && fs::exists(mother2) &&
+              fs::exists(live_file));
         CHECK(at(d->has_chunks({live.id}), 0) && d->get_manifest(FID1, 1, gm, nullptr) == 0);
         age(stray_young, 7200);
         age(mstray_young, 7200);
         CHECK(d->sweep(0, 10, false).strays_removed == 2 && !fs::exists(stray_young) && !fs::exists(mstray_young));
-        CHECK(fs::exists(mdir));   // not empty (the other files), so kept
+        CHECK(fs::exists(mdir));  // not empty (the other files), so kept
         fs::remove_all(dir);
     }
 
@@ -925,7 +968,8 @@ int main() {
             CHECK(d->get_manifest(FID1, 1, got, &msg) == ENOENT && d->info().seq == 2);
             CHECK(fs::exists(dir + "/manifests/" + FID1 + "/1.mf"));
             SweepOut s = d->sweep(0, 10, false);
-            CHECK(s.err == 0 && s.strays_removed == 1 && s.chunks_deleted == 2 && !fs::exists(dir + "/manifests/" + FID1 + "/1.mf"));   // x and y are unlisted now
+            CHECK(s.err == 0 && s.strays_removed == 1 && s.chunks_deleted == 2 &&
+                  !fs::exists(dir + "/manifests/" + FID1 + "/1.mf"));  // x and y are unlisted now
             CHECK(!at(d->has_chunks({x.id}), 0) && !at(d->has_chunks({y.id}), 0));
         }
         // sweep: dies before the commit
@@ -961,27 +1005,31 @@ int main() {
         std::string dir = tmpdir();
         auto d = open_store(dir);
         d->set_deletions_allowed(true);
-        d->set_min_sweep_age(0);   // the most aggressive sweep there is: no grace at all
+        d->set_min_sweep_age(0);  // the most aggressive sweep there is: no grace at all
         std::atomic<bool> stop{false};
         std::atomic<int> accepted{0}, refused_missing{0}, bad{0};
         std::thread sweeper([&] {
             while (!stop) {
                 d->sweep(0, 1000, false);
-                std::this_thread::sleep_for(std::chrono::milliseconds(2));   // (an unfair mutex would otherwise let this loop starve the uploaders)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));  // (an unfair mutex would otherwise let this loop starve the uploaders)
             }
         });
         std::vector<std::thread> uploaders;
         for (int t = 0; t < 3; t++)
             uploaders.emplace_back([&, t] {
                 for (int i = 0; i < 40; i++) {
-                    Sealed s1 = seal(pattern(1200, static_cast<uint8_t>(t * 50 + i))), s2 = seal(pattern(1300, static_cast<uint8_t>(t * 50 + i + 100)));
+                    Sealed s1 = seal(pattern(1200, static_cast<uint8_t>(t * 50 + i))),
+                           s2 = seal(pattern(1300, static_cast<uint8_t>(t * 50 + i + 100)));
                     put(*d, s1);
                     put(*d, s2);
                     std::string fid = crypto::to_hex(crypto::random_bytes(16).data(), 16);
                     PutManifestOut m = put_man(*d, fid, 1, pattern(200, static_cast<uint8_t>(i)), {s1.id, s2.id});
-                    if (m.err == 0) accepted++;
-                    else if (m.err == ENOENT) refused_missing++;   // the sweeper got a chunk first: the manifest was refused, which is safe
-                    else bad++;
+                    if (m.err == 0)
+                        accepted++;
+                    else if (m.err == ENOENT)
+                        refused_missing++;  // the sweeper got a chunk first: the manifest was refused, which is safe
+                    else
+                        bad++;
                 }
             });
         for (auto& u : uploaders) u.join();
@@ -994,10 +1042,12 @@ int main() {
         CHECK(l.size() == static_cast<size_t>(accepted.load()));
         d->set_deletions_allowed(false);
         GcStatus g = d->gc_status();
-        CHECK(g.manifests == static_cast<uint32_t>(accepted.load()) && g.chunks >= static_cast<uint64_t>(2 * accepted.load()) && g.manifests_without_refs == 0);
+        CHECK(g.manifests == static_cast<uint32_t>(accepted.load()) && g.chunks >= static_cast<uint64_t>(2 * accepted.load()) &&
+              g.manifests_without_refs == 0);
         sqlite3* db = raw_open(dir);
         sqlite3_stmt* st = nullptr;
-        sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM manifest_refs r WHERE NOT EXISTS(SELECT 1 FROM chunks c WHERE c.chunk_id=r.chunk_id)", -1, &st, nullptr);
+        sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM manifest_refs r WHERE NOT EXISTS(SELECT 1 FROM chunks c WHERE c.chunk_id=r.chunk_id)", -1, &st,
+                           nullptr);
         CHECK(sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 0);
         sqlite3_finalize(st);
         sqlite3_close(db);

@@ -372,7 +372,8 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a.compare(0, 9, "--faults=") == 0) faults_csv = a.substr(9);
         else if (a == "--insecure-allow-network") insecure = true;
-        else if (a == "--allow-delete") allow_delete = true;
+        else if (a == "--allow-delete")
+            allow_delete = true;
         else if (a == "--show-pairing-code")
             show_code = true;
         else if (a == "--new-pairing-code")
@@ -449,8 +450,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "tierfs-device %s on %s:%d (epoch %llu, seq %llu, %s%s%s%s)\n", i.device_id.c_str(), bind_addr.c_str(), port,
             (unsigned long long)i.epoch, (unsigned long long)i.seq,
             g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
-            (g_psk || allow_delete) ? ", deletions accepted" : "",
-            faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
+            (g_psk || allow_delete) ? ", deletions accepted" : "", faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
     for (;;) {
         int c = accept(ls, nullptr, nullptr);
         if (c < 0) continue;

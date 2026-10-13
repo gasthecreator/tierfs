@@ -31,19 +31,22 @@ using crypto::Bytes;
 namespace fs = std::filesystem;
 
 static int failures = 0;
-static bool failfast() {   // the mutation runner stops a test at its first failure
+static bool failfast() {  // the mutation runner stops a test at its first failure
     static const bool f = getenv("TIERFS_TEST_FAILFAST") != nullptr;
     return f;
 }
-#define CHECK(cond)                                                                \
-    do {                                                                           \
-        if (!(cond)) {                                                             \
-            printf("FAIL  line %d: %s\n", __LINE__, #cond);                        \
-            failures++;                                                            \
-            if (failfast()) { fflush(stdout); _exit(1); }                          \
-        } else printf("PASS  %s\n", #cond);                                        \
+#define CHECK(cond)                                         \
+    do {                                                    \
+        if (!(cond)) {                                      \
+            printf("FAIL  line %d: %s\n", __LINE__, #cond); \
+            failures++;                                     \
+            if (failfast()) {                               \
+                fflush(stdout);                             \
+                _exit(1);                                   \
+            }                                               \
+        } else                                              \
+            printf("PASS  %s\n", #cond);                    \
     } while (0)
-
 
 // Safe element access for assertions: a failed earlier check must not become a crash that hides it.
 template <class T> static const T& at(const std::vector<T>& v, size_t i) { static const T dummy{}; return i < v.size() ? v[i] : dummy; }
@@ -60,7 +63,8 @@ static Bytes pattern(size_t n, uint8_t seed) {
     for (size_t i = 0; i < n; i++) v[i] = static_cast<uint8_t>(seed + i * 41 + (i >> 8));
     return v;
 }
-static const uint16_t PORT = getenv("TIERFS_TEST_PORT") ? static_cast<uint16_t>(atoi(getenv("TIERFS_TEST_PORT"))) : 9301;   // (the other tests here use PORT + 1 .. + 3)
+static const uint16_t PORT =
+    getenv("TIERFS_TEST_PORT") ? static_cast<uint16_t>(atoi(getenv("TIERFS_TEST_PORT"))) : 9301;  // (the other tests here use PORT + 1 .. + 3)
 static const std::string VOL = "volume-net-test";
 static const std::string FID = "0123456789abcdef0123456789abcdef";
 
@@ -493,7 +497,7 @@ int main() {
     {
         printf("== the server refuses to listen where it has no authentication\n");
         Server s;
-        s.port = PORT + 1;   // its own port: the probe must not be answered by some other server
+        s.port = PORT + 1;                                               // its own port: the probe must not be answered by some other server
         CHECK(!s.start(root + "/s5", {}, "0.0.0.0", true));              // exits with an error instead of listening
         CHECK(s.start(root + "/s5", {"--insecure-allow-network"}, "0.0.0.0", false));
         usleep(500000);
@@ -533,15 +537,16 @@ int main() {
         Bytes mb1 = pattern(300, 84), mb2 = pattern(310, 85);
         const std::string F2 = "fedcba9876543210fedcba9876543210";
         {
-            CHECK(srv.start(store));   // an open device with no --allow-delete
+            CHECK(srv.start(store));  // an open device with no --allow-delete
             DeviceClient c("127.0.0.1", PORT, 2000);
             PutChunkReply pr;
             CHECK(c.put_chunk(a.id, a.blob, pr).ok() && c.put_chunk(b.id, b.blob, pr).ok() && c.put_chunk(c3.id, c3.blob, pr).ok());
             PutManifestReply mr;
             CHECK(c.put_manifest(FID, 1, mb1, {a.id, b.id}, mr).ok() && c.put_manifest(F2, 1, mb2, {b.id}, mr).ok());
             GcStatus g;
-            CHECK(c.gc_status(g).ok() && !g.deletions_allowed && g.manifests == 2 && g.chunks == 3 && g.unreferenced_chunks == 1 && g.manifests_without_refs == 0 &&
-                  g.chunk_bytes == a.blob.size() + b.blob.size() + c3.blob.size() && g.unreferenced_bytes == c3.blob.size() && g.manifests_deleted == 0 && g.chunks_deleted == 0);
+            CHECK(c.gc_status(g).ok() && !g.deletions_allowed && g.manifests == 2 && g.chunks == 3 && g.unreferenced_chunks == 1 &&
+                  g.manifests_without_refs == 0 && g.chunk_bytes == a.blob.size() + b.blob.size() + c3.blob.size() &&
+                  g.unreferenced_bytes == c3.blob.size() && g.manifests_deleted == 0 && g.chunks_deleted == 0);
             std::vector<uint8_t> del;
             DevRes r = c.delete_manifests({{FID, 1}}, del);
             CHECK(r.err == EPERM && has(r.msg, "does not accept deletions") && del.empty());
@@ -549,7 +554,7 @@ int main() {
             r = c.sweep(0, 100, false, so);
             CHECK(r.err == EPERM && has(r.msg, "does not accept deletions"));
             Bytes out;
-            CHECK(c.get_manifest(FID, 1, out).ok() && c.get_chunk(c3.id, out).ok());   // nothing happened
+            CHECK(c.get_manifest(FID, 1, out).ok() && c.get_chunk(c3.id, out).ok());  // nothing happened
         }
         {
             CHECK(srv.start(store, {"--allow-delete"}, "127.0.0.1", true, {"TIERFS_DEVICE_MIN_SWEEP_AGE=0"}));
@@ -561,7 +566,7 @@ int main() {
             SweepOut dry;
             CHECK(c.sweep(0, 100, true, dry).ok() && dry.chunks_deleted == 1 && dry.bytes_deleted == c3.blob.size() && dry.chunks_left == 0);
             Bytes out;
-            CHECK(c.get_chunk(c3.id, out).ok());                                       // a dry run deletes nothing
+            CHECK(c.get_chunk(c3.id, out).ok());  // a dry run deletes nothing
             std::vector<uint8_t> del;
             uint64_t seq = 0;
             CHECK(c.delete_manifests({{FID, 1}, {FID, 9}}, del, &seq).ok() && del == std::vector<uint8_t>({1, 0}) && seq == before.seq + 1);
@@ -569,56 +574,71 @@ int main() {
             CHECK(c.info(after).ok() && after.seq == before.seq + 1);
             CHECK(c.get_manifest(FID, 1, out).err == ENOENT && c.get_manifest(F2, 1, out).ok());
             SweepOut so;
-            CHECK(c.sweep(0, 100, false, so).ok() && so.chunks_deleted == 2 && so.bytes_deleted == a.blob.size() + c3.blob.size() && so.chunks_left == 0);
-            CHECK(c.get_chunk(a.id, out).err == ENOENT && c.get_chunk(c3.id, out).err == ENOENT && c.get_chunk(b.id, out).ok());   // b is still listed by F2 v1
-            CHECK(c.gc_status(g).ok() && g.manifests == 1 && g.chunks == 1 && g.manifests_deleted == 1 && g.chunks_deleted == 2 && g.chunk_bytes == b.blob.size() && g.unreferenced_bytes == 0 &&
-                  g.unreferenced_chunks == 0);
+            CHECK(c.sweep(0, 100, false, so).ok() && so.chunks_deleted == 2 && so.bytes_deleted == a.blob.size() + c3.blob.size() &&
+                  so.chunks_left == 0);
+            CHECK(c.get_chunk(a.id, out).err == ENOENT && c.get_chunk(c3.id, out).err == ENOENT &&
+                  c.get_chunk(b.id, out).ok());  // b is still listed by F2 v1
+            CHECK(c.gc_status(g).ok() && g.manifests == 1 && g.chunks == 1 && g.manifests_deleted == 1 && g.chunks_deleted == 2 &&
+                  g.chunk_bytes == b.blob.size() && g.unreferenced_bytes == 0 && g.unreferenced_chunks == 0);
             // limits
             CHECK(c.delete_manifests({}, del).err == EMSGSIZE);
             CHECK(c.delete_manifests(std::vector<std::pair<std::string, int64_t>>(65, {FID, 1}), del).err == EMSGSIZE);
-            CHECK(c.delete_manifests(std::vector<std::pair<std::string, int64_t>>(64, {FID, 7}), del).ok() && del.size() == 64);   // exactly the limit is fine
+            CHECK(c.delete_manifests(std::vector<std::pair<std::string, int64_t>>(64, {FID, 7}), del).ok() &&
+                  del.size() == 64);  // exactly the limit is fine
             CHECK(c.delete_manifests({{"short", 1}}, del).err == EINVAL && c.delete_manifests({{FID, 0}}, del).err == EINVAL);
             CHECK(c.sweep(0, 0, false, so).err == EINVAL);
             // hostile frames
-            {   Raw r(PORT);
+            {
+                Raw r(PORT);
                 CHECK(r.hello());
                 Writer w;
                 w.u32(0);
                 CHECK(r.send_recv(MSG_DEV_DELETE_MANIFESTS, w) == EMSGSIZE);
             }
-            {   Raw r(PORT);
+            {
+                Raw r(PORT);
                 CHECK(r.hello());
                 Writer w;
                 w.u32(65);
                 CHECK(r.send_recv(MSG_DEV_DELETE_MANIFESTS, w) == EMSGSIZE);
-            }            {   // a leftover file no row describes is removed by a sweep and counted in the answer
+            }
+            {  // a leftover file no row describes is removed by a sweep and counted in the answer
                 std::string stray_dir = store + "/chunks/ab";
                 fs::create_directories(stray_dir);
-                { std::ofstream f(stray_dir + "/" + std::string(64, 'c') + ".blob"); f << "x"; }
+                {
+                    std::ofstream f(stray_dir + "/" + std::string(64, 'c') + ".blob");
+                    f << "x";
+                }
                 SweepOut st;
-                CHECK(c.sweep(0, 10, false, st).ok() && st.strays_removed == 1 && st.chunks_deleted == 0 && !fs::exists(stray_dir + "/" + std::string(64, 'c') + ".blob"));
+                CHECK(c.sweep(0, 10, false, st).ok() && st.strays_removed == 1 && st.chunks_deleted == 0 &&
+                      !fs::exists(stray_dir + "/" + std::string(64, 'c') + ".blob"));
             }
-            {   Raw r(PORT);
+            {
+                Raw r(PORT);
                 CHECK(r.hello());
                 Writer w;
-                w.u32(3);                                                // claims three items, supplies none
+                w.u32(3);  // claims three items, supplies none
                 CHECK(r.send_recv(MSG_DEV_DELETE_MANIFESTS, w) == EPROTO);
             }
-            {   Raw r(PORT);
+            {
+                Raw r(PORT);
                 CHECK(r.hello());
                 Writer w;
-                w.u64(0); w.u32(10); w.u8(2);                            // a "dry run" flag that is neither 0 nor 1
+                w.u64(0);
+                w.u32(10);
+                w.u8(2);  // a "dry run" flag that is neither 0 nor 1
                 CHECK(r.send_recv(MSG_DEV_SWEEP, w) == EINVAL);
             }
-            {   Raw r(PORT);
+            {
+                Raw r(PORT);
                 CHECK(r.hello());
                 Writer w;
-                w.u64(0);                                                // a sweep request cut short
+                w.u64(0);  // a sweep request cut short
                 CHECK(r.send_recv(MSG_DEV_SWEEP, w) == EPROTO);
             }
-            CHECK(c.info(after).ok());                                   // still serving
+            CHECK(c.info(after).ok());  // still serving
         }
-        {   // the age floor is the operator's: a request for less is raised to it
+        {  // the age floor is the operator's: a request for less is raised to it
             CHECK(srv.start(store, {"--allow-delete"}, "127.0.0.1", true, {"TIERFS_DEVICE_MIN_SWEEP_AGE=3600"}));
             DeviceClient c("127.0.0.1", PORT, 2000);
             Sealed young = seal(pattern(4300, 86));

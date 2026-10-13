@@ -81,19 +81,19 @@ enum class DeviceObservation {
 
 // Dropping history on the devices (ADR-0010). The ledger decides, under rules it enforces itself; the devices only execute.
 struct PruneRules {
-    double min_weight = 2.0;                  // a live file's newer version must be held by at least this replica weight...
-    int64_t max_audit_age = 300;              // ...from audits no older than this many seconds
-    int64_t grace_seconds = 86400;            // an old version is kept this long after the next version appeared (open readers finish)
-    int64_t deleted_retention_seconds = 30 * 86400;   // a deleted file can be undeleted for this long
+    double min_weight = 2.0;                         // a live file's newer version must be held by at least this replica weight...
+    int64_t max_audit_age = 300;                     // ...from audits no older than this many seconds
+    int64_t grace_seconds = 86400;                   // an old version is kept this long after the next version appeared (open readers finish)
+    int64_t deleted_retention_seconds = 30 * 86400;  // a deleted file can be undeleted for this long
 };
 
 struct PruneCandidate {
     std::string file_id;
     int64_t version = 0;
-    bool file_deleted = false;                // the user deleted the file (all its versions go after the retention period)
+    bool file_deleted = false;  // the user deleted the file (all its versions go after the retention period)
 };
 
-struct PruneWork {                            // a device that may still hold a manifest the ledger has decided to forget
+struct PruneWork {  // a device that may still hold a manifest the ledger has decided to forget
     std::string file_id;
     int64_t version = 0;
     std::string device_id;
