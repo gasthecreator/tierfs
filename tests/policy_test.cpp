@@ -386,6 +386,21 @@ int main() {
     }
 
     {
+        printf("== a file with another hard link is never planned for offloading; it is again when the other name is gone\n");
+        World w;
+        FakeProbe probe;
+        std::string linked = put(w, "linked", 3 * MiB, 1), plain = put(w, "plain", 2 * MiB, 2);
+        w.now_ += 40 * 86400;
+        auto pe = make_pe(w, probe, base_policy());
+        CHECK(link(w.path("linked").c_str(), w.path("linked.again").c_str()) == 0);
+        TierPlan p = pe->plan(100 * MiB, false);
+        CHECK(p.entries.size() == 1 && at(p.entries, 0).file_id == plain && !find_entry(p, linked) && p.skipped["has other hard links"] == 1);
+        CHECK(unlink(w.path("linked.again").c_str()) == 0);
+        TierPlan q = pe->plan(100 * MiB, false);
+        CHECK(q.entries.size() == 2 && find_entry(q, linked) && q.skipped["has other hard links"] == 0);
+    }
+
+    {
         printf("== ranking is size x idle days, not either alone\n");
         World w;
         FakeProbe probe;

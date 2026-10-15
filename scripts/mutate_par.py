@@ -11,7 +11,7 @@ OS = os.environ.get('OPENSSL_DIR', '/opt/homebrew/opt/openssl@3')
 CRYPTO = f'{OS}/lib/libcrypto.a'
 BASE = ['c++', '-std=c++17', '-g', '-w', f'-I{OS}/include', '-Icore', '-Itests']
 COMMON = [('core/crypto.cpp', 'crypto'), ('core/ledger.cpp', 'ledger'), ('core/securechannel.cpp', 'securechannel'), ('core/deviceclient.cpp', 'deviceclient'),
-          ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine'), ('core/gc.cpp', 'gc')]
+          ('core/devicestore.cpp', 'devicestore'), ('core/replicator.cpp', 'replicator'), ('core/dropengine.cpp', 'dropengine'), ('core/gc.cpp', 'gc'), ('core/locks.cpp', 'locks')]
 TARGETS = {
     'recovery': dict(mutants='recovery_mutants', mutated='core/recovery.cpp', tests=['tests/recovery_test.cpp'],
                      extra_objs=[('core/chunkcache.cpp', 'chunkcache')], tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL')], libs=['-lsqlite3', '-framework', 'CoreFoundation']),
@@ -27,6 +27,7 @@ TARGETS = {
                           extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'deviceauth': dict(mutants='deviceauth_mutants', mutated='core/deviceclient.cpp', tests=['tests/deviceauth_test.cpp', 'tests/devicenet_test.cpp', 'tests/gc_test.cpp'], extra_objs=[],
                        tools=[('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'locks': dict(mutants='locks_mutants', mutated='core/locks.cpp', tests=['tests/locks_test.cpp'], extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'service': dict(mutants='service_mutants', mutated='core/service.cpp', tests=['tests/service_test.cpp'], extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'gc': dict(mutants='gc_mutants', mutated='core/gc.cpp', tests=['tests/gc_test.cpp'], extra_objs=[], tools=[],
                libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),

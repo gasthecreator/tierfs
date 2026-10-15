@@ -74,9 +74,19 @@ build/recovery.o: core/recovery.cpp core/recovery.hpp core/crypto.hpp core/devic
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
-build/overlay.o: core/overlay.cpp core/overlay.hpp core/ledger.hpp core/crypto.hpp core/dropengine.hpp
+build/overlay.o: core/overlay.cpp core/overlay.hpp core/locks.hpp core/ledger.hpp core/crypto.hpp core/dropengine.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
+
+build/locks.o: core/locks.cpp core/locks.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
+
+build/locks_test: tests/locks_test.cpp build/locks.o
+	$(CXX) $(CXXFLAGS) tests/locks_test.cpp build/locks.o -o $@ -pthread
+
+test-locks: build/locks_test
+	./build/locks_test
 
 build/service.o: core/service.cpp core/service.hpp
 	@mkdir -p build
@@ -138,17 +148,17 @@ build/recovery_test: tests/recovery_test.cpp build/recovery.o build/dropengine.o
 test-recovery: build/recovery_test build/tierfs-device build/tierctl build/drop_helper
 	./build/recovery_test
 
-build/overlay_test: tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+build/overlay_test: tests/overlay_test.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_test.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-overlay: build/overlay_test build/tierfs-device build/drop_helper
 	./build/overlay_test
 
-build/overlay_helper: tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_helper.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+build/overlay_helper: tests/overlay_helper.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_helper.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
-build/overlay_write_test: tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/overlay_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_write_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+build/overlay_write_test: tests/overlay_write_test.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/overlay_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_write_test.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-overlay-write: build/overlay_write_test build/tierfs-device
 	./build/overlay_write_test
@@ -161,7 +171,7 @@ build/tierfsd.o: mount/tierfsd.c core/tfs_c.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(FUSE_INC) $(DEPFLAGS) -c $< -o $@
 
-DAEMON_OBJS := build/keysource.o build/keychain_mac.o build/tfs_c.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+DAEMON_OBJS := build/keysource.o build/keychain_mac.o build/tfs_c.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
 build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
 	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security
 
@@ -169,8 +179,8 @@ build/daemon.o: core/daemon.cpp core/daemon.hpp core/gc.hpp core/overlay.hpp cor
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
-build/daemon_test: tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
+build/daemon_test: tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/daemon_test.cpp build/keysource.o build/keychain_mac.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
 
 test-daemon: build/daemon_test build/tierfs-device build/drop_helper
 	./build/daemon_test
@@ -197,8 +207,8 @@ build/scanner.o: core/scanner.cpp core/scanner.hpp core/overlay.hpp core/ledger.
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
 
-build/scanner_test: tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/scanner_test.cpp build/scanner.o build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+build/scanner_test: tests/scanner_test.cpp build/scanner.o build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/drop_helper
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/scanner_test.cpp build/scanner.o build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-init: build/tierctl
 	python3 -I tests/init_test.py
@@ -209,8 +219,8 @@ test-pairing: build/tierctl build/tierfs-device
 test-scanner: build/scanner_test build/tierfs-device build/drop_helper
 	./build/scanner_test
 
-build/overlay_ns_test: tests/overlay_ns_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_ns_test.cpp build/overlay.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+build/overlay_ns_test: tests/overlay_ns_test.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/overlay_ns_test.cpp build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 test-overlay-ns: build/overlay_ns_test build/tierfs-device build/drop_helper
 	./build/overlay_ns_test
@@ -262,13 +272,13 @@ test-ledger-tsan:
 
 test-overlay-tsan: build/tierfs-device build/overlay_helper
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_write_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_write_test
 	./build/tsan/overlay_write_test > build/tsan/overlay_write.log 2>&1; echo "exit $$?"; grep -c "ThreadSanitizer" build/tsan/overlay_write.log; grep -a "ALL PASSED\|FAILED" build/tsan/overlay_write.log
 
 test-ns-tsan: build/tierfs-device build/drop_helper
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_ns_test.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_ns_test
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/scanner_test.cpp core/scanner.cpp core/overlay.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/scanner_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_ns_test.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_ns_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/scanner_test.cpp core/scanner.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/scanner_test
 	@for t in overlay_ns_test scanner_test; do ./build/tsan/$$t > build/tsan/$$t.log 2>&1; echo "$$t exit $$?: $$(grep -ac ThreadSanitizer build/tsan/$$t.log) warnings; $$(grep -a 'ALL PASSED\|FAILED' build/tsan/$$t.log)"; done
 
 test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test build/devicestore_test
@@ -303,7 +313,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks
 test: $(NO_MOUNT_TESTS)
 
 .PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan

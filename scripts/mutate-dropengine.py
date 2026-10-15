@@ -2,7 +2,7 @@
 """Mutation test for core/dropengine.cpp. Each mutant removes one protection; tests/dropengine_test.cpp (with
 fail-fast) and its crash helper must notice. A mutant killed ONLY by a crash is rerun once (a flaky crash must
 not hide a survivor). Usage: mutate-dropengine.py [name filters ...]  (run in batches: each mutant takes a while)"""
-import subprocess, sys, os, shutil
+import subprocess, sys, os, shutil, re
 sys.path.insert(0, 'scripts')
 from dropengine_mutants import M
 OS = os.environ.get('OPENSSL_DIR', '/opt/homebrew/opt/openssl@3')
@@ -24,9 +24,11 @@ survivors, expected = [], []
 for name, path, frm, to in M:
     if filters and not any(f in name for f in filters): continue
     src = open(path).read()
-    if frm not in src:
+    # whitespace in a pattern matches any whitespace (including none), so reformatting the source does not stale the list
+    m = re.search(r'\s*'.join(re.escape(t) for t in frm.split()), src)
+    if not m:
         print(f'{name:<66} !! pattern not found (stale)'); survivors.append(name + ' (stale)'); continue
-    open(f'{D}/mut.cpp', 'w').write(src.replace(frm, to, 1))
+    open(f'{D}/mut.cpp', 'w').write(src[:m.start()] + to + src[m.end():])
     r = run(BASE + ['-c', f'{D}/mut.cpp', '-o', f'{D}/mut.o'])
     if r.returncode: print(f'{name:<66} (does not compile: {r.stderr.strip().splitlines()[-1][:60]})'); continue
     for out, first in [('mut_test', 'dropengine_test.o'), ('mut_helper', 'drop_helper.o')]:
