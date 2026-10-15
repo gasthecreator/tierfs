@@ -54,6 +54,19 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## Starting tierfsd automatically (LaunchAgent)
+```bash
+./build/tierctl service plist --name projects --mountpoint ~/Projects \
+    -o origin=$HOME/.tierfs/Projects-real -o prefix=$HOME/Projects/ -o ledger=$HOME/.tierfs/ledger -o keyfile=keychain \
+    -o devices=nas.local:9100@<keyid> -o namedattr -o noappledouble         # print it, change nothing
+./build/tierctl service install ... same arguments ...                      # write ~/Library/LaunchAgents/local.tierfs.projects.plist, start nothing
+./build/tierctl service status --name projects
+./build/tierctl service uninstall --name projects                           # stop it and remove the plist (only a plist that is this service's)
+```
+The checks refuse a mountpoint that is, contains or lies inside the origin folder, relative paths, a key typed into the plist, and option values that would smuggle in another option.
+The agent does not restart a crashed mount and does not start at login unless you add `--run-at-load`. Starting it (`install --load`, or `launchctl bootstrap gui/$UID <plist>`) mounts a
+filesystem; mounting is not proven on hardware yet (see the mount-safety note at the top), so `--load` is refused unless `TIERFS_I_ACCEPT_A_REBOOT=1` is set. Logs go to `~/Library/Logs/tierfs/<name>.log`.
+
 ## Reading offloaded files faster
 A program that reads an offloaded file from start to finish gets the following chunks fetched ahead of it (by default up to 4 megabytes ahead). Turn it off with `-o readahead=0`, or raise
 the limit with `-o readahead=8` (it never uses more than a quarter of the cache, `-o cachemb=N`).
