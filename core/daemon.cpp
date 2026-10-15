@@ -62,7 +62,7 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     TierPolicy tp = cfg.policy;
     tp.roots = {d->cfg_.logical_prefix};
     if (tp.exclude.empty()) tp.exclude = {"/.git/"};
-    if (cfg.notify) d->notifier_ = std::make_unique<OsascriptNotifier>();
+    if (cfg.notify) d->notifier_ = std::make_unique<OsascriptNotifier>("Run: tierctl control '" + cfg.ledger_dir + "' plan");
     d->gc_ = std::make_unique<GarbageCollector>(*d->ledger_, *d->replicator_, *d->keys_, cfg.gc_config);
     d->policy_ = std::make_unique<PolicyEngine>(*d->ledger_, *d->replicator_, *d->engine_, *d->probe_, tp,
                                                 [origin, pfx = d->cfg_.logical_prefix](const FileRec& f) { return origin + "/" + f.path.substr(pfx.size()); },
@@ -285,6 +285,98 @@ std::string Daemon::cmd_tick() {
     return o.str();
 }
 
+// What stands between a plan and its execution, in plain words (the ledger enforces all of it again when a file moves).
+std::vector<std::string> Daemon::plan_blockers() {
+    std::vector<std::string> b;
+    if (ledger_->get_meta("recovery_acked").value_or("") != "1")
+        b.push_back("the recovery phrase has not been acknowledged (tierctl init shows it once and asks you to retype part of it)");
+    std::string pre = ledger_->get_meta("test_prefix").value_or("");
+    bool test_area = !pre.empty() && cfg_.logical_prefix.compare(0, pre.size(), pre) == 0;
+    if (!test_area) {
+        if (ledger_->get_meta("backup_acked").value_or("") != "1") {
+            b.push_back("no backup is recorded: make a backup, then run: tierctl ack-backup '" + cfg_.ledger_dir + "' I-HAVE-A-BACKUP");
+        } else {
+            long long at = atoll(ledger_->get_meta("backup_acked_at").value_or("0").c_str());
+            long long max_days = atoll(ledger_->get_meta("backup_max_age_days").value_or("30").c_str());
+            if (max_days < 1) max_days = 30;
+            if (at <= 0) b.push_back("the recorded backup has no date: run tierctl ack-backup again after a backup");
+            else if (static_cast<long long>(time(nullptr)) - at > max_days * 86400)
+                b.push_back("the recorded backup is older than " + std::to_string(max_days) + " days: back up again, then run tierctl ack-backup");
+        }
+    }
+    if (devices_snapshot().size() < 2) b.push_back("fewer than two devices are connected (see: tierctl control '" + cfg_.ledger_dir + "' status)");
+    return b;
+}
+
+// `plan [free-now] [GiB]`: builds the plan a person should read before approving anything. Nothing moves.
+std::string Daemon::cmd_plan(const std::string& arg) {
+    bool free_now = false;
+    double gib = -1;
+    std::istringstream in(arg);
+    std::string tok;
+    while (in >> tok) {
+        if (tok == "free-now") free_now = true;
+        else {
+            char* end = nullptr;
+            double v = strtod(tok.c_str(), &end);
+            if (end == tok.c_str() || *end || v <= 0 || v > 1e6) return "ERR usage: plan [free-now] [GiB to free]\n";
+            gib = v;
+        }
+    }
+    std::lock_guard<std::mutex> g(overlay_->engine_mutex());
+    SpaceStatus st = policy_->space();
+    uint64_t need = gib > 0 ? static_cast<uint64_t>(gib * (1ull << 30)) : st.need_bytes;
+    if (need == 0) {
+        std::lock_guard<std::mutex> pg(plan_mu_);
+        pending_plan_.reset();
+        return "Disk space is fine (" + human_bytes(st.info.avail()) + " free of " + human_bytes(st.info.total) + "): nothing needs to move. To plan anyway: plan <GiB to free>\n" + "OK\n";
+    }
+    TierPlan plan = policy_->plan(need, free_now);   // (freeing space NOW, without the undo period, is only ever what the person asked for)
+    PlanContext ctx;
+    ctx.blockers = plan_blockers();
+    ctx.devices = devices_snapshot().size();
+    ctx.quarantine_days = static_cast<int>(cfg_.policy.drop.quarantine_seconds / 86400);
+    ctx.valid_minutes = cfg_.plan_ttl_seconds / 60;
+    ctx.approve_command = "tierctl control '" + cfg_.ledger_dir + "' approve";
+    std::string text = format_plan_review(plan, ctx);
+    {
+        std::lock_guard<std::mutex> pg(plan_mu_);
+        if (plan.entries.empty()) pending_plan_.reset();
+        else { pending_plan_ = plan; pending_at_ = static_cast<int64_t>(time(nullptr)); }
+    }
+    return text + "OK\n";
+}
+
+// `approve <plan id>`: executes exactly the plan that was shown, once.
+std::string Daemon::cmd_approve(const std::string& arg) {
+    std::string id = trim(arg);
+    if (id.size() < 8 || id.find_first_not_of("0123456789abcdef") != std::string::npos) return "ERR give the plan id shown by plan (at least 8 hex characters)\n";
+    std::lock_guard<std::mutex> g(overlay_->engine_mutex());
+    TierPlan plan;
+    {
+        std::lock_guard<std::mutex> pg(plan_mu_);
+        if (!pending_plan_) return "ERR there is no plan to approve: run plan first\n";
+        if (pending_plan_->digest.compare(0, id.size(), id) != 0) return "ERR that is not the plan that was last shown (" + pending_plan_->digest.substr(0, 16) + "): run plan again and read it\n";
+        if (static_cast<int64_t>(time(nullptr)) - pending_at_ > cfg_.plan_ttl_seconds) {
+            pending_plan_.reset();
+            return "ERR the plan is too old to approve: run plan again (the files, the devices and the free space may have changed)\n";
+        }
+        auto blockers = plan_blockers();
+        if (!blockers.empty()) {   // not consumed: fix the problem and approve again
+            std::string e = "ERR the plan cannot run yet:";
+            for (auto& b : blockers) e += " " + b + ";";
+            return e + "\n";
+        }
+        plan = *pending_plan_;
+        pending_plan_.reset();   // a plan is approved once
+    }
+    std::string err;
+    Approval ap = policy_->approve(plan, &err);
+    if (ap.plan_digest.empty()) return "ERR " + err + "\n";
+    ExecReport rep = policy_->execute(plan, ap, devices_snapshot(), overlay_->gate());
+    return format_exec_report(rep) + (rep.rejected ? "ERR rejected\n" : "OK\n");
+}
+
 std::string Daemon::cmd_gc(bool run) {
     std::lock_guard<std::mutex> g(overlay_->engine_mutex());
     DeviceMap devs = devices_snapshot();
@@ -312,6 +404,8 @@ std::string Daemon::control(const std::string& raw) {
     if (cmd == "hydrate" && !arg.empty()) { int r = overlay_->hydrate(arg); return r == 0 ? "OK\n" : "ERR " + std::string(strerror(-r)) + "\n"; }
     if (cmd == "undelete" && !arg.empty()) { int r = overlay_->undelete(arg); return r == 0 ? "OK\n" : "ERR " + std::string(strerror(-r)) + "\n"; }
     if (cmd == "tick") return cmd_tick();
+    if (cmd == "plan") return cmd_plan(arg);
+    if (cmd == "approve") return cmd_approve(arg);
     if (cmd == "gc-plan") return cmd_gc(false);
     if (cmd == "gc-run") return cmd_gc(true);
     return "ERR unknown command; try: status, scan, replicate PATH, offload PATH, hydrate PATH, undelete PATH, tick\n";

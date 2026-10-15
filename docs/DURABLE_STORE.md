@@ -667,6 +667,9 @@ What is NOT done
 - The Keychain test and real-file use still wait for the owner (backups first).
 - Next: 3g (recovery tool and disaster drills).
 
+Plan review and approval (ADR-0012): `format_plan_review` / `format_exec_report` in `core/policy.cpp` write the plan and its outcome in plain words; the daemon's `plan` and `approve` control commands (`tierctl plan|approve`) hold the
+one pending plan, refuse a stale, wrong, blocked or repeated approval, and run the policy engine's `approve` + `execute` on exactly the plan that was shown.
+
 ## 23. Phase 3g status: disaster recovery (implemented)
 
 `core/recovery.*` (library), `tierctl restore` and `tierctl ledger-status`, `tests/recovery_test.cpp` (the disaster drills).
