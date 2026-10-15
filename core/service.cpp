@@ -21,8 +21,9 @@ bool clean_text(const std::string& s) {
 }
 
 const std::set<std::string>& known_options() {
-    static const std::set<std::string> k = {"origin", "prefix", "ledger", "keyfile", "devices", "control", "maint", "waitms", "background", "notify",
-                                            "scan", "cachemb", "readahead", "gc", "gckeep", "gcretentiondays", "namedattr", "noappledouble"};
+    static const std::set<std::string> k = {"origin",    "prefix", "ledger",     "keyfile",         "devices",   "control",
+                                            "maint",     "waitms", "background", "notify",          "scan",      "cachemb",
+                                            "readahead", "gc",     "gckeep",     "gcretentiondays", "namedattr", "noappledouble"};
     return k;
 }
 
@@ -90,7 +91,8 @@ std::string validate_service(const ServiceSpec& s) {
         if ((k == "maint" || k == "waitms" || k == "cachemb" || k == "readahead" || k == "gckeep" || k == "gcretentiondays") &&
             (v.empty() || v.find_first_not_of("0123456789-") != std::string::npos || v == "-"))
             return "the value of '" + k + "' must be a number";
-        if ((k == "background" || k == "notify" || k == "scan" || k == "gc") && v != "0" && v != "1") return "the value of '" + k + "' must be 0 or 1";
+        if ((k == "background" || k == "notify" || k == "scan" || k == "gc") && v != "0" && v != "1")
+            return "the value of '" + k + "' must be 0 or 1";
     }
     for (const char* need : {"origin", "prefix", "ledger", "keyfile"})
         if (!seen.count(need)) return std::string("the option '") + need + "' is required";
@@ -110,12 +112,23 @@ std::string xml_escape(const std::string& s) {
     std::string out;
     for (char c : s) {
         switch (c) {
-            case '&': out += "&amp;"; break;
-            case '<': out += "&lt;"; break;
-            case '>': out += "&gt;"; break;
-            case '"': out += "&quot;"; break;
-            case '\'': out += "&apos;"; break;
-            default: out += c;
+            case '&':
+                out += "&amp;";
+                break;
+            case '<':
+                out += "&lt;";
+                break;
+            case '>':
+                out += "&gt;";
+                break;
+            case '"':
+                out += "&quot;";
+                break;
+            case '\'':
+                out += "&apos;";
+                break;
+            default:
+                out += c;
         }
     }
     return out;
@@ -125,19 +138,27 @@ std::string render_service_plist(const ServiceSpec& s) {
     std::string log = s.log_dir;
     while (!log.empty() && log.back() == '/') log.pop_back();
     log += "/" + s.name + ".log";
-    std::string x = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-                    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-                    "<plist version=\"1.0\">\n<dict>\n";
+    std::string x =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+        "<plist version=\"1.0\">\n<dict>\n";
     auto key = [&](const std::string& k) { x += "  <key>" + k + "</key>\n"; };
-    auto str = [&](const std::string& k, const std::string& v) { key(k); x += "  <string>" + xml_escape(v) + "</string>\n"; };
-    auto boolean = [&](const std::string& k, bool v) { key(k); x += v ? "  <true/>\n" : "  <false/>\n"; };
+    auto str = [&](const std::string& k, const std::string& v) {
+        key(k);
+        x += "  <string>" + xml_escape(v) + "</string>\n";
+    };
+    auto boolean = [&](const std::string& k, bool v) {
+        key(k);
+        x += v ? "  <true/>\n" : "  <false/>\n";
+    };
     str("Label", service_label(s.name));
     key("ProgramArguments");
     x += "  <array>\n";
-    for (const std::string& a : {s.binary, std::string("-o"), join_options(s.options), s.mountpoint}) x += "    <string>" + xml_escape(a) + "</string>\n";
+    for (const std::string& a : {s.binary, std::string("-o"), join_options(s.options), s.mountpoint})
+        x += "    <string>" + xml_escape(a) + "</string>\n";
     x += "  </array>\n";
     boolean("RunAtLoad", s.run_at_load);
-    boolean("KeepAlive", false);   // a crashed mount is looked at by a person, not restarted in a loop
+    boolean("KeepAlive", false);  // a crashed mount is looked at by a person, not restarted in a loop
     str("WorkingDirectory", "/");
     str("StandardOutPath", log);
     str("StandardErrorPath", log);
