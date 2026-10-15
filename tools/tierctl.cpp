@@ -34,6 +34,8 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <mach-o/dyld.h>
+#include <spawn.h>
 #include <termios.h>
 #include <sqlite3.h>
 #include <sys/file.h>
@@ -56,6 +58,7 @@
 #include "../core/keysource.hpp"
 #include "../core/ledger.hpp"
 #include "../core/recovery.hpp"
+#include "../core/service.hpp"
 
 namespace fs = std::filesystem;
 
@@ -658,11 +661,175 @@ static int cmd_ledger_status(int argc, char** argv) {
     return problems.empty() && intents.empty() ? 0 : 3;
 }
 
+
+// ---------------------------------------------------------------- tierctl service: tierfsd as a LaunchAgent
+
+extern char** environ;
+
+// Runs a program (no shell) and collects what it prints. -1 if it could not be started.
+static int run_program(const std::vector<std::string>& argv_in, std::string* out) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) return -1;
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, pipefd[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, pipefd[1], 2);
+    posix_spawn_file_actions_addclose(&fa, pipefd[0]);
+    std::vector<char*> av;
+    for (auto& a : argv_in) av.push_back(const_cast<char*>(a.c_str()));
+    av.push_back(nullptr);
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, argv_in[0].c_str(), &fa, nullptr, av.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(pipefd[1]);
+    if (rc != 0) { close(pipefd[0]); return -1; }
+    std::string text;
+    char buf[1024];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof buf)) > 0) text.append(buf, static_cast<size_t>(n));
+    close(pipefd[0]);
+    int st = 0;
+    waitpid(pid, &st, 0);
+    if (out) *out = text;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
+static std::string read_whole(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static int cmd_service(int argc, char** argv) {
+    const char* usage =
+        "usage: tierctl service plist|install|uninstall|status --name NAME [--mountpoint DIR] [-o key=value ...]\n"
+        "         [--binary PATH] [--log-dir DIR] [--agents-dir DIR] [--run-at-load] [--load] [--force]\n"
+        "  plist      print the LaunchAgent plist (changes nothing)\n"
+        "  install    write ~/Library/LaunchAgents/local.tierfs.NAME.plist; with --load also start it (see docs/RUNBOOK.md: mounting is not proven yet)\n"
+        "  uninstall  stop it and remove the plist (only a plist that is this service's)\n"
+        "  status     is the plist there, is the agent loaded\n"
+        "the -o options are the ones tierfsd takes (origin, prefix, ledger, keyfile are required; keyfile is 'keychain', 'dir:/path' or a key file path)\n";
+    if (argc < 3) { fputs(usage, stderr); return 2; }
+    std::string action = argv[2];
+    if (action != "plist" && action != "install" && action != "uninstall" && action != "status") { fputs(usage, stderr); return 2; }
+    tierfs::ServiceSpec spec;
+    std::string agents_dir;
+    bool load = false, force = false;
+    const char* home = getenv("HOME");
+    for (int i = 3; i < argc; i++) {
+        std::string a = argv[i];
+        auto val = [&](std::string& dst) { if (i + 1 >= argc) { fprintf(stderr, "tierctl: %s needs a value\n", a.c_str()); return false; } dst = argv[++i]; return true; };
+        if (a == "--name") { if (!val(spec.name)) return 2; }
+        else if (a == "--mountpoint") { if (!val(spec.mountpoint)) return 2; }
+        else if (a == "--binary") { if (!val(spec.binary)) return 2; }
+        else if (a == "--log-dir") { if (!val(spec.log_dir)) return 2; }
+        else if (a == "--agents-dir") { if (!val(agents_dir)) return 2; }
+        else if (a == "--run-at-load") spec.run_at_load = true;
+        else if (a == "--load") load = true;
+        else if (a == "--force") force = true;
+        else if (a == "-o") {
+            std::string kv;
+            if (!val(kv)) return 2;
+            size_t eq = kv.find('=');
+            spec.options.emplace_back(kv.substr(0, eq), eq == std::string::npos ? "" : kv.substr(eq + 1));
+        } else { fprintf(stderr, "tierctl: unknown option %s\n", a.c_str()); return 2; }
+    }
+    if (agents_dir.empty() && home) agents_dir = std::string(home) + "/Library/LaunchAgents";
+    if (spec.log_dir.empty() && home) spec.log_dir = std::string(home) + "/Library/Logs/tierfs";
+    if (spec.binary.empty()) {   // tierfsd next to this program
+        char self[4096];
+        uint32_t sz = sizeof self;
+        if (_NSGetExecutablePath(self, &sz) == 0) spec.binary = (fs::path(fs::weakly_canonical(self)).parent_path() / "tierfsd").string();
+    }
+    if (agents_dir.empty()) { fprintf(stderr, "tierctl: no home directory: give --agents-dir\n"); return 2; }
+    const std::string label = tierfs::service_label(spec.name);
+    const std::string plist_path = agents_dir + "/" + label + ".plist";
+    const char* lc = getenv("TIERFS_LAUNCHCTL");
+    const std::string launchctl = lc ? lc : "/bin/launchctl";
+    const std::string domain = "gui/" + std::to_string(getuid());
+
+    if (action == "uninstall" || action == "status") {
+        if (spec.name.empty() || spec.name[0] == '.' || spec.name.find('/') != std::string::npos) { fprintf(stderr, "tierctl: give a valid --name\n"); return 2; }
+        bool present = fs::exists(plist_path);
+        if (action == "status") {
+            std::string out;
+            int rc = run_program({launchctl, "print", domain + "/" + label}, &out);
+            printf("service:  %s\nplist:    %s (%s)\nagent:    %s\n", label.c_str(), plist_path.c_str(), present ? "present" : "absent", rc == 0 ? "loaded" : "not loaded");
+            return 0;
+        }
+        if (present && read_whole(plist_path).find("<string>" + label + "</string>") == std::string::npos) {
+            fprintf(stderr, "tierctl: %s does not look like this service's plist; leaving it alone\n", plist_path.c_str());
+            return 1;
+        }
+        std::string out;
+        int rc = run_program({launchctl, "bootout", domain + "/" + label}, &out);
+        if (rc == 0) printf("stopped %s\n", label.c_str());
+        if (present) {
+            std::error_code ec;
+            fs::remove(plist_path, ec);
+            if (ec) { fprintf(stderr, "tierctl: cannot remove %s: %s\n", plist_path.c_str(), ec.message().c_str()); return 1; }
+            printf("removed %s\n", plist_path.c_str());
+        } else {
+            printf("%s was not installed\n", label.c_str());
+        }
+        return 0;
+    }
+
+    std::string bad = tierfs::validate_service(spec);
+    if (!bad.empty()) { fprintf(stderr, "tierctl: %s\n", bad.c_str()); return 2; }
+    std::string xml = tierfs::render_service_plist(spec);
+    if (action == "plist") { fputs(xml.c_str(), stdout); return 0; }
+
+    // install
+    struct stat bst;
+    if (stat(spec.binary.c_str(), &bst) != 0 || !S_ISREG(bst.st_mode) || access(spec.binary.c_str(), X_OK) != 0) {
+        fprintf(stderr, "tierctl: %s is not an executable file (use --binary)\n", spec.binary.c_str());
+        return 1;
+    }
+    if (load && getenv("TIERFS_I_ACCEPT_A_REBOOT") == nullptr) {
+        fprintf(stderr,
+                "tierctl: refusing to start the mount: mounting with FUSE-T has crashed a Mac (kernel panic in the NFS client) and is not proven yet; see docs/ADR 0006.\n"
+                "         Install without --load, or set TIERFS_I_ACCEPT_A_REBOOT=1 if you accept that.\n");
+        return 1;
+    }
+    std::error_code ec;
+    if (fs::exists(plist_path)) {
+        if (read_whole(plist_path) == xml && !force) {
+            printf("%s is already installed (nothing changed)\n", plist_path.c_str());
+        } else if (!force) {
+            fprintf(stderr, "tierctl: %s exists and differs; pass --force to replace it\n", plist_path.c_str());
+            return 1;
+        }
+    }
+    fs::create_directories(agents_dir, ec);
+    fs::create_directories(spec.log_dir, ec);
+    if (ec) { fprintf(stderr, "tierctl: cannot create the directories: %s\n", ec.message().c_str()); return 1; }
+    if (!fs::exists(plist_path) || read_whole(plist_path) != xml) {
+        std::string tmp = plist_path + ".new";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            f << xml;
+            if (!f) { fprintf(stderr, "tierctl: cannot write %s\n", tmp.c_str()); return 1; }
+        }
+        chmod(tmp.c_str(), 0644);
+        if (rename(tmp.c_str(), plist_path.c_str()) != 0) { unlink(tmp.c_str()); fprintf(stderr, "tierctl: cannot install %s: %s\n", plist_path.c_str(), strerror(errno)); return 1; }
+        printf("installed %s\n", plist_path.c_str());
+    }
+    if (load) {
+        std::string out;
+        int rc = run_program({launchctl, "bootstrap", domain, plist_path}, &out);
+        if (rc != 0) { fprintf(stderr, "tierctl: launchctl bootstrap failed (%d): %s", rc, out.c_str()); return 1; }
+        printf("started %s\n", label.c_str());
+    } else {
+        printf("not started. To start it: launchctl bootstrap %s %s\n", domain.c_str(), plist_path.c_str());
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "check-backup")
         return cmd_check_backup(argc, argv);  // takes an optional folder, not a directory to inspect
     if (argc < 3) {
-        fprintf(stderr, "usage: %s cache-info|cache-verify|cache-clear <cache-dir> [--yes] | restore --out <dir> --device host:port ... | ledger-status <ledger-dir>\n", argv[0]);
+        fprintf(stderr, "usage: %s cache-info|cache-verify|cache-clear <cache-dir> [--yes] | restore --out <dir> --device host:port ... | ledger-status <ledger-dir> | service plist|install|uninstall|status ...\n", argv[0]);
         return 2;
     }
     std::string cmd = argv[1], dir = argv[2];
@@ -674,6 +841,7 @@ int main(int argc, char** argv) {
     if (cmd == "check-phrase") return cmd_check_phrase(argc, argv);
     if (cmd == "ack-backup") return cmd_ack_backup(argc, argv);
     if (cmd == "control") return cmd_control(argc, argv);
+    if (cmd == "service") return cmd_service(argc, argv);
     if (!fs::is_directory(dir)) { fprintf(stderr, "tierctl: %s is not a directory\n", dir.c_str()); return 1; }
     if (!looks_like_cache(dir)) { fprintf(stderr, "tierctl: %s does not look like a tierfs cache\n", dir.c_str()); return 1; }
 

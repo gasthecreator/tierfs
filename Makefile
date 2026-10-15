@@ -23,7 +23,7 @@ build/chunkcache.o: core/chunkcache.cpp core/chunkcache.hpp core/sqlutil.hpp cor
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
 
-build/tierctl: tools/tierctl.cpp build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/keysource.o build/keychain_mac.o
+build/tierctl: tools/tierctl.cpp build/service.o build/chunkcache.o build/recovery.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o build/keysource.o build/keychain_mac.o
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $^ -o $@ $(OPENSSL_LIB) $(SQLITE_LIB) -framework Security
 
@@ -77,6 +77,17 @@ build/recovery.o: core/recovery.cpp core/recovery.hpp core/crypto.hpp core/devic
 build/overlay.o: core/overlay.cpp core/overlay.hpp core/ledger.hpp core/crypto.hpp core/dropengine.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
+
+build/service.o: core/service.cpp core/service.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
+
+build/service_test: tests/service_test.cpp build/service.o
+	$(CXX) $(CXXFLAGS) tests/service_test.cpp build/service.o -o $@
+
+test-service: build/service_test build/tierctl
+	./build/service_test
+	python3 -I tests/service_cli_test.py
 
 build/gc.o: core/gc.cpp core/gc.hpp core/replicator.hpp core/ledger.hpp core/devicestore.hpp core/crashpoint.hpp
 	@mkdir -p build
@@ -292,7 +303,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service
 test: $(NO_MOUNT_TESTS)
 
 .PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan
