@@ -545,7 +545,7 @@ int main() {
         Item& big = w.make("big.bin", 10 * MiB + 500, 1);
         CHECK(big.chunks.size() == 11 && w.drop("big.bin"));
         std::vector<uint8_t> buf(256 * 1024);
-        const size_t SM = 64 * 1024;   // eight of these still fit inside the first chunk
+        const size_t SM = 64 * 1024;  // eight of these still fit inside the first chunk
         // off by default: the reader pays for every chunk, nothing is fetched ahead
         {
             Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w));
@@ -571,46 +571,47 @@ int main() {
             CHECK(ov.read("/big.bin", 0, SM, buf.data()) == static_cast<int64_t>(SM));
             CHECK(ov.read("/big.bin", SM, SM, buf.data()) > 0);
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 1 && ov.stats().prefetched == 0);   // two sequential reads: nothing yet
+            CHECK(ov.stats().chunk_fetches == 1 && ov.stats().prefetched == 0);  // two sequential reads: nothing yet
             CHECK(ov.read("/big.bin", 2 * SM, SM, buf.data()) > 0);
             CHECK(wait_until([&] { return ov.stats().prefetched >= 1; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 2 && ov.stats().prefetched == 1);   // the third: one chunk ahead
+            CHECK(ov.stats().chunk_fetches == 2 && ov.stats().prefetched == 1);  // the third: one chunk ahead
             CHECK(ov.read("/big.bin", 3 * SM, SM, buf.data()) > 0);
             CHECK(wait_until([&] { return ov.stats().prefetched >= 2; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 3 && ov.stats().prefetched == 2);   // the fourth: the window has doubled to two
+            CHECK(ov.stats().chunk_fetches == 3 && ov.stats().prefetched == 2);  // the fourth: the window has doubled to two
             for (int i = 4; i < 8; i++) CHECK(ov.read("/big.bin", i * SM, SM, buf.data()) > 0);
             CHECK(wait_until([&] { return ov.stats().prefetched >= 4; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 5 && ov.stats().prefetched == 4);   // four ahead, no more, while still inside the first chunk
+            CHECK(ov.stats().chunk_fetches == 5 && ov.stats().prefetched == 4);  // four ahead, no more, while still inside the first chunk
         }
         // a streak that is broken starts over with a window of one; a read that ends exactly at a chunk boundary is still in the chunk it ends in
         {
             OverlayConfig c = cfg_for(w);
             c.readahead_chunks = 4;
             Overlay ov(*w.L, *w.keys, devmap(w), c);
-            for (int i = 0; i < 6; i++) ov.read("/big.bin", i * SM, SM, buf.data());   // window 1, 2, 4: chunks 1-4
+            for (int i = 0; i < 6; i++) ov.read("/big.bin", i * SM, SM, buf.data());  // window 1, 2, 4: chunks 1-4
             CHECK(wait_until([&] { return ov.stats().prefetched >= 4; }));
             usleep(300000);
             CHECK(ov.stats().chunk_fetches == 5);
-            for (int i = 0; i < 3; i++) ov.read("/big.bin", 5 * MiB + 1000 + i * SM, SM, buf.data());   // a jump: a new streak, window 1 again
+            for (int i = 0; i < 3; i++) ov.read("/big.bin", 5 * MiB + 1000 + i * SM, SM, buf.data());  // a jump: a new streak, window 1 again
             CHECK(wait_until([&] { return ov.stats().prefetched >= 5; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 5 + 1 + 1);   // chunk 5 (read), chunk 6 (the window of one)
+            CHECK(ov.stats().chunk_fetches == 5 + 1 + 1);  // chunk 5 (read), chunk 6 (the window of one)
             ov.read("/big.bin", 5 * MiB + 1000 + 3 * SM, SM, buf.data());
             CHECK(wait_until([&] { return ov.stats().prefetched >= 6; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 5 + 1 + 1 + 1);   // chunk 7 (the window of two)
+            CHECK(ov.stats().chunk_fetches == 5 + 1 + 1 + 1);  // chunk 7 (the window of two)
         }
         {
             OverlayConfig c = cfg_for(w);
             c.readahead_chunks = 4;
             Overlay ov(*w.L, *w.keys, devmap(w), c);
-            for (int i = 0; i < 4; i++) ov.read("/big.bin", i * 256 * 1024, 256 * 1024, buf.data());   // the fourth read ends exactly at the end of chunk 0
+            for (int i = 0; i < 4; i++)
+                ov.read("/big.bin", i * 256 * 1024, 256 * 1024, buf.data());  // the fourth read ends exactly at the end of chunk 0
             CHECK(wait_until([&] { return ov.stats().prefetched >= 2; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 3 && ov.stats().prefetched == 2);   // chunks 1 and 2, not 2 and 3
+            CHECK(ov.stats().chunk_fetches == 3 && ov.stats().prefetched == 2);  // chunks 1 and 2, not 2 and 3
         }
         // a read that crosses into the next chunk puts the reader in that chunk
         {
@@ -622,7 +623,7 @@ int main() {
             for (int i = 0; i < 3; i++) CHECK(ov.read("/big.bin", i * S4, S4, big4.data()) == static_cast<int64_t>(S4));
             CHECK(wait_until([&] { return ov.stats().prefetched >= 1; }));
             usleep(300000);
-            CHECK(ov.stats().chunk_fetches == 3 && ov.stats().prefetched == 1);   // the third read ended in chunk 1, so chunk 2 is next
+            CHECK(ov.stats().chunk_fetches == 3 && ov.stats().prefetched == 1);  // the third read ended in chunk 1, so chunk 2 is next
         }
         // a read-ahead that fails is not counted as one that worked
         {
@@ -637,7 +638,8 @@ int main() {
             CHECK(wait_until([&] { return ov.stats().prefetched >= 3; }));
             usleep(400000);
             Overlay::Stats st = ov.stats();
-            CHECK(st.prefetched == 3 && st.bad_chunks_skipped == 2 && st.chunk_fetches == 1 + 3 + 2);   // chunks 1, 3 and 4 arrived; chunk 2 failed on both devices
+            CHECK(st.prefetched == 3 && st.bad_chunks_skipped == 2 &&
+                  st.chunk_fetches == 1 + 3 + 2);  // chunks 1, 3 and 4 arrived; chunk 2 failed on both devices
         }
         // the window cannot be bigger than a quarter of the cache
         {
@@ -646,7 +648,7 @@ int main() {
             Overlay ov(*w.L, *w.keys, devmap(w), c);
             for (int i = 0; i < 8; i++) CHECK(ov.read("/big.bin", i * SM, SM, buf.data()) > 0);
             usleep(500000);
-            CHECK(ov.stats().chunk_fetches == 2 && ov.stats().prefetched == 1);   // a 4 MiB cache holds one chunk of read-ahead
+            CHECK(ov.stats().chunk_fetches == 2 && ov.stats().prefetched == 1);  // a 4 MiB cache holds one chunk of read-ahead
         }
         // chunks that were fetched ahead and evicted are fetched ahead again on a second pass
         {
@@ -672,7 +674,9 @@ int main() {
             CHECK(read_all(ov, "/big.bin", big.bytes.size(), 128 * 1024) == big.bytes);
             usleep(500000);
             Overlay::Stats st = ov.stats();
-            CHECK(st.chunk_fetches == 11 && st.prefetched > 0);   // each of the 11 chunks was fetched exactly once, though the reader and the read-ahead often wanted the same one
+            CHECK(st.chunk_fetches == 11 &&
+                  st.prefetched >
+                      0);  // each of the 11 chunks was fetched exactly once, though the reader and the read-ahead often wanted the same one
             w.sa.faults.clear();
             w.sb.faults.clear();
             CHECK(w.sa.start(w.devdir(0)) && w.sb.start(w.devdir(1)));
@@ -692,7 +696,8 @@ int main() {
             OverlayConfig c = cfg_for(w);
             c.readahead_chunks = 4;
             Overlay ov(*w.L, *w.keys, devmap(w), c);
-            for (uint64_t off : {7 * MiB + 10, 2 * MiB + 99, 9 * MiB + 5, 4 * MiB + 1, 0 * MiB + 1000, 6 * MiB + 77}) CHECK(ov.read("/big.bin", off, 100, buf.data()) == 100);
+            for (uint64_t off : {7 * MiB + 10, 2 * MiB + 99, 9 * MiB + 5, 4 * MiB + 1, 0 * MiB + 1000, 6 * MiB + 77})
+                CHECK(ov.read("/big.bin", off, 100, buf.data()) == 100);
             usleep(300000);
             CHECK(ov.stats().chunk_fetches == 6 && ov.stats().prefetched == 0);
             // the same place again and again is not a streak either
@@ -709,7 +714,7 @@ int main() {
             for (int i = 0; i < 6; i++) CHECK(ov.read("/big.bin", from + i * 256 * 1024, 256 * 1024, buf.data()) > 0);
             for (int i = 0; i < 12; i++) ov.read("/big.bin", from + (6 + i) * 256 * 1024, 256 * 1024, buf.data());
             usleep(500000);
-            CHECK(ov.stats().chunk_fetches <= 3 && ov.stats().bad_chunks_skipped == 0);   // chunks 8, 9, 10 and no others
+            CHECK(ov.stats().chunk_fetches <= 3 && ov.stats().bad_chunks_skipped == 0);  // chunks 8, 9, 10 and no others
         }
         // a chunk that fails verification is skipped by the read-ahead; the reader still gets exact bytes from the other device, or an error
         {
@@ -718,17 +723,23 @@ int main() {
             OverlayConfig c = cfg_for(w);
             c.readahead_chunks = 4;
             Overlay ov(*w.L, *w.keys, devmap(w), c);
-            CHECK(read_all(ov, "/big.bin", big.bytes.size(), 256 * 1024) == big.bytes);   // device A's copy of chunk 3 is bad, B's is good
+            CHECK(read_all(ov, "/big.bin", big.bytes.size(), 256 * 1024) == big.bytes);  // device A's copy of chunk 3 is bad, B's is good
             w.damage(1, victim);
             Overlay ov2(*w.L, *w.keys, devmap(w), c);
             std::vector<uint8_t> b2(MiB);
             bool failed = false;
             for (uint64_t off = 0; off < big.bytes.size(); off += 256 * 1024) {
                 int64_t n = ov2.read("/big.bin", off, 256 * 1024, b2.data());
-                if (n < 0) { failed = n == -EIO; break; }
-                if (memcmp(b2.data(), big.bytes.data() + off, static_cast<size_t>(n)) != 0) { failed = false; break; }
+                if (n < 0) {
+                    failed = n == -EIO;
+                    break;
+                }
+                if (memcmp(b2.data(), big.bytes.data() + off, static_cast<size_t>(n)) != 0) {
+                    failed = false;
+                    break;
+                }
             }
-            CHECK(failed);   // both copies of chunk 3 are bad: EIO at that chunk, never wrong bytes
+            CHECK(failed);  // both copies of chunk 3 are bad: EIO at that chunk, never wrong bytes
             CHECK(ov2.stats().bad_chunks_skipped > 0);
         }
         // many readers at once, and an overlay torn down while read-ahead is working
@@ -748,7 +759,10 @@ int main() {
                     std::vector<uint8_t> b(100000);
                     for (uint64_t off = 0; off < want.size(); off += b.size()) {
                         int64_t n = ov.read(p, off, b.size(), b.data());
-                        if (n < 0 || memcmp(b.data(), want.data() + off, static_cast<size_t>(n)) != 0) { bad++; break; }
+                        if (n < 0 || memcmp(b.data(), want.data() + off, static_cast<size_t>(n)) != 0) {
+                            bad++;
+                            break;
+                        }
                     }
                 });
             for (auto& t : ts) t.join();
@@ -758,7 +772,7 @@ int main() {
                 c2.readahead_chunks = 8;
                 Overlay quick(*w.L, *w.keys, devmap(w), c2);
                 for (int k = 0; k < 5; k++) quick.read("/other.bin", k * 100000, 100000, buf.data());
-            }   // (destroyed straight away, with fetches queued or running: no crash, no hang)
+            }  // (destroyed straight away, with fetches queued or running: no crash, no hang)
             CHECK(true);
         }
     }

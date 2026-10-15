@@ -229,15 +229,18 @@ std::shared_ptr<const crypto::Bytes> Overlay::fetch_chunk(const ChunkRec& c, con
                 return it->second.data;
             }
             if (!inflight_.count(c.chunk_id)) break;
-            cache_cv_.wait(g);   // somebody (a reader, or the read-ahead) is fetching it: wait for that instead of fetching twice
+            cache_cv_.wait(g);  // somebody (a reader, or the read-ahead) is fetching it: wait for that instead of fetching twice
         }
         inflight_.insert(c.chunk_id);
     }
-    struct Done {   // whoever fetches releases the claim, success or not, and wakes the waiters
+    struct Done {  // whoever fetches releases the claim, success or not, and wakes the waiters
         Overlay& o;
         const std::string& id;
         ~Done() {
-            { std::lock_guard<std::mutex> g(o.cache_mu_); o.inflight_.erase(id); }
+            {
+                std::lock_guard<std::mutex> g(o.cache_mu_);
+                o.inflight_.erase(id);
+            }
             o.cache_cv_.notify_all();
         }
     } done{*this, c.chunk_id};
@@ -327,13 +330,16 @@ void Overlay::note_read(const FileRec& f, const std::vector<ChunkRec>& chunks, u
             s.window = 1;
         }
         s.next = end;
-        if (s.count < 3) return;   // the third read in a row: the first two only establish that this is a sequential reader
+        if (s.count < 3) return;  // the third read in a row: the first two only establish that this is a sequential reader
         size_t window = std::min(s.window, max_ahead);
         s.window = std::min(max_ahead, s.window * 2);
         uint64_t pos = 0;
         size_t cur = 0;
-        for (size_t i = 0; i < chunks.size(); i++) {   // the chunk holding the last byte just read
-            if (end - 1 < pos + chunks[i].len) { cur = i; break; }
+        for (size_t i = 0; i < chunks.size(); i++) {  // the chunk holding the last byte just read
+            if (end - 1 < pos + chunks[i].len) {
+                cur = i;
+                break;
+            }
             pos += chunks[i].len;
             cur = i;
         }
@@ -355,7 +361,7 @@ void Overlay::note_read(const FileRec& f, const std::vector<ChunkRec>& chunks, u
     if (ra_threads_.empty())
         for (int i = 0; i < std::max(1, cfg_.readahead_threads); i++) ra_threads_.emplace_back([this] { readahead_loop(); });
     for (auto& c : want) {
-        if (ra_queue_.size() >= 64) break;   // a full queue means the devices are slower than the reader: do not pile up
+        if (ra_queue_.size() >= 64) break;  // a full queue means the devices are slower than the reader: do not pile up
         if (ra_queued_.insert(c.chunk_id).second) ra_queue_.push_back(Ahead{c, order});
     }
     ra_cv_.notify_all();
@@ -385,7 +391,6 @@ void Overlay::readahead_loop() {
         ra_queued_.erase(job.chunk.chunk_id);
     }
 }
-
 
 // ---------------------------------------------------------------- the write gate
 

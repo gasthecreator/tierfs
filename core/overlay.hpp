@@ -134,7 +134,9 @@ public:
     std::mutex& engine_mutex() { return engine_mu_; }
 
     // Statistics, for tests and for `tierctl`.
-    struct Stats { uint64_t chunk_fetches = 0, cache_hits = 0, bad_chunks_skipped = 0, hydrations_network = 0, hydrations_quarantine = 0, prefetched = 0; };
+    struct Stats {
+        uint64_t chunk_fetches = 0, cache_hits = 0, bad_chunks_skipped = 0, hydrations_network = 0, hydrations_quarantine = 0, prefetched = 0;
+    };
     Stats stats();
 
     const OverlayConfig& config() const { return cfg_; }
@@ -207,8 +209,15 @@ private:
     std::map<std::string, std::shared_ptr<std::mutex>> hyd_locks_;
 
     // Read-ahead: what each file's last read was, the queue of chunks to fetch, and the threads that fetch them (started on first use).
-    struct Streak { uint64_t next = 0; int count = 0; size_t window = 1; };
-    struct Ahead { ChunkRec chunk; std::vector<std::string> order; };
+    struct Streak {
+        uint64_t next = 0;
+        int count = 0;
+        size_t window = 1;
+    };
+    struct Ahead {
+        ChunkRec chunk;
+        std::vector<std::string> order;
+    };
     std::mutex ra_mu_;
     std::condition_variable ra_cv_;
     std::map<std::string, Streak> streaks_;
@@ -220,7 +229,7 @@ private:
     // LRU of verified plaintext chunks, keyed by chunk id (content-addressed: never stale).
     std::mutex cache_mu_;
     std::condition_variable cache_cv_;
-    std::set<std::string> inflight_;   // chunks somebody is fetching right now (a second reader waits for it instead of fetching again)
+    std::set<std::string> inflight_;  // chunks somebody is fetching right now (a second reader waits for it instead of fetching again)
     std::list<std::string> lru_;
     struct Entry { std::shared_ptr<const crypto::Bytes> data; std::list<std::string>::iterator it; };
     std::map<std::string, Entry> cache_;

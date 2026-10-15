@@ -38,7 +38,7 @@ tfs_ctx *tfs_open(const tfs_options *o, char *err, size_t errlen) {
         c.notify = o->notify != 0;
         c.scan_at_start = o->scan_at_start != 0;
         if (o->cache_mb > 0) c.cache_bytes = static_cast<size_t>(o->cache_mb) << 20;
-        if (o->readahead >= 0) c.readahead_chunks = o->readahead;   // negative: the daemon's default
+        if (o->readahead >= 0) c.readahead_chunks = o->readahead;  // negative: the daemon's default
         c.gc = o->gc != 0;
         if (o->gc_keep_versions > 0) c.gc_config.keep_versions = o->gc_keep_versions;
         if (o->gc_retention_days > 0) c.gc_config.rules.deleted_retention_seconds = static_cast<int64_t>(o->gc_retention_days) * 86400;

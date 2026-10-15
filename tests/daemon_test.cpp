@@ -642,8 +642,10 @@ int main() {
             }
             CHECK(got == big);
             usleep(300000);
-            if (ra == 0) CHECK(d->overlay().stats().prefetched > 0);
-            else CHECK(d->overlay().stats().prefetched == 0);
+            if (ra == 0)
+                CHECK(d->overlay().stats().prefetched > 0);
+            else
+                CHECK(d->overlay().stats().prefetched == 0);
         }
     }
 
