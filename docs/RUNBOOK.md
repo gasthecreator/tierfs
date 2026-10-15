@@ -54,6 +54,10 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## Reading offloaded files faster
+A program that reads an offloaded file from start to finish gets the following chunks fetched ahead of it (by default up to 4 megabytes ahead). Turn it off with `-o readahead=0`, or raise
+the limit with `-o readahead=8` (it never uses more than a quarter of the cache, `-o cachemb=N`).
+
 ## Freeing space on the devices
 Devices keep every version of every file until you let the Mac forget the old ones. Nothing is forgotten unless you ask.
 ```bash

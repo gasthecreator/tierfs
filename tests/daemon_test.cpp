@@ -622,6 +622,32 @@ int main() {
     }
 
     {
+        printf("== the daemon reads ahead for a sequential reader of an offloaded file, unless told not to\n");
+        for (int ra = 0; ra < 2; ra++) {
+            Env e;
+            e.open_gates(true);
+            DaemonConfig cfg = e.config();
+            if (ra == 1) cfg.readahead_chunks = 0;
+            Bytes big = pattern(5 * MiB + 9, 3);
+            spit(e.path("big.bin"), big);
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            CHECK(has(d->control("offload /big.bin"), "offloaded /Users/me/proj/big.bin") && !exists(e.path("big.bin")));
+            Bytes got;
+            std::vector<uint8_t> b(128 * 1024);
+            for (uint64_t off = 0; off < big.size(); off += b.size()) {
+                int64_t n = d->overlay().read("/big.bin", off, b.size(), b.data());
+                if (n < 0) break;
+                got.insert(got.end(), b.begin(), b.begin() + n);
+            }
+            CHECK(got == big);
+            usleep(300000);
+            if (ra == 0) CHECK(d->overlay().stats().prefetched > 0);
+            else CHECK(d->overlay().stats().prefetched == 0);
+        }
+    }
+
+    {
         printf("== the maintenance thread collects garbage only when switched on\n");
         for (int on = 0; on < 2; on++) {
             Env e(false, false);

@@ -55,6 +55,7 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     oc.logical_prefix = d->cfg_.logical_prefix;
     oc.write_wait_ms = cfg.write_wait_ms;
     oc.cache_bytes = cfg.cache_bytes;
+    oc.readahead_chunks = cfg.readahead_chunks;
     d->overlay_ = std::make_unique<Overlay>(*d->ledger_, *d->keys_, DeviceMap{}, oc, d->engine_.get());
     d->scanner_ = std::make_unique<Scanner>(*d->ledger_, *d->overlay_);
     d->probe_ = make_system_probe(origin);

@@ -25,6 +25,7 @@ typedef struct tfs_options {
     int notify;              /* macOS notifications when space runs short */
     int scan_at_start;
     int cache_mb;            /* verified remote chunks kept in memory */
+    int readahead;           /* chunks fetched ahead for a sequential reader of an offloaded file (0 = off; negative = the default, 4) */
     int gc;                  /* the maintenance thread forgets old versions on the devices and has them free the space (0 = only on request) */
     int gc_keep_versions;    /* newest committed versions of a live file to keep (0 = default 3) */
     int gc_retention_days;   /* how long a deleted file can be undeleted before its data goes (0 = default 30) */

@@ -181,7 +181,7 @@ static struct fuse_operations ops = {
 
 struct opts {
     char *origin, *prefix, *ledger, *keyfile, *devices, *control;
-    int maint, wait_ms, background, notify, scan, cache_mb, gc, gc_keep, gc_retention_days;
+    int maint, wait_ms, background, notify, scan, cache_mb, readahead, gc, gc_keep, gc_retention_days;
 };
 
 #define OPT(t, f) {t, offsetof(struct opts, f), 0}
@@ -197,7 +197,7 @@ static struct fuse_opt specs[] = {OPT("origin=%s", origin),
                                   OPT("notify=%d", notify),
                                   OPT("scan=%d", scan),
                                   OPT("cachemb=%d", cache_mb),
-                                  OPT("gc=%d", gc),
+                                  OPT("readahead=%d", readahead), OPT("gc=%d", gc),
                                   OPT("gckeep=%d", gc_keep),
                                   OPT("gcretentiondays=%d", gc_retention_days),
                                   FUSE_OPT_END};
@@ -205,7 +205,7 @@ static struct fuse_opt specs[] = {OPT("origin=%s", origin),
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct opts o = {0};
-    o.maint = 60; o.background = 1; o.notify = 1; o.scan = 1; o.cache_mb = 64; o.wait_ms = 30000;
+    o.readahead = -1; o.maint = 60; o.background = 1; o.notify = 1; o.scan = 1; o.cache_mb = 64; o.wait_ms = 30000;
     if (fuse_opt_parse(&args, &o, specs, NULL) == -1) return 2;
     if (!o.origin || !o.prefix || !o.ledger || !o.keyfile) {
         fprintf(stderr, "usage: %s -o origin=DIR,prefix=/logical/,ledger=DIR,keyfile=FILE[,devices=host:port+host:port] MOUNTPOINT\n", argv[0]);
@@ -217,7 +217,7 @@ int main(int argc, char *argv[]) {
     t.ledger = o.ledger; t.origin = o.origin; t.prefix = o.prefix; t.keyfile = o.keyfile; t.devices = o.devices;
     t.control = o.control; t.maint_seconds = o.maint; t.write_wait_ms = o.wait_ms; t.background = o.background;
     t.notify = o.notify; t.scan_at_start = o.scan; t.cache_mb = o.cache_mb;
-    t.gc = o.gc;
+    t.readahead = o.readahead; t.gc = o.gc;
     t.gc_keep_versions = o.gc_keep;
     t.gc_retention_days = o.gc_retention_days;
     char err[512] = {0};
