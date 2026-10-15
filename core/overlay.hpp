@@ -32,6 +32,7 @@
 #include "crypto.hpp"
 #include "dropengine.hpp"   // DeviceMap
 #include "ledger.hpp"
+#include "locks.hpp"
 
 namespace tierfs {
 
@@ -56,6 +57,7 @@ struct OvStat {
     int64_t mtime_nsec = 0;         // the sub-second part (the kernel decides whether a directory changed by comparing times)
     uint32_t mode = 0;              // permission bits only
     bool remote = false;            // the bytes are not in the origin: they live on the devices
+    uint32_t nlink = 1;             // names the file has in the origin (a file with more than one is never offloaded)
     std::string file_id;            // set when the ledger tracks it
 };
 
@@ -122,6 +124,19 @@ public:
     int removexattr(const std::string& path, const std::string& name);
     // Brings a deleted OFFLOADED file back at its former path (`path`), if nothing is there now.
     int undelete(const std::string& path);
+    // A second name for a regular file (ADR-0011). A file that is only on the devices is brought back first. The new name is a separate tracked
+    // file; while a file has more than one name it is never offloaded. Directories and symlinks: -EPERM. An existing destination: -EEXIST.
+    int link(const std::string& from, const std::string& to);
+
+    // ---- advisory locks (ADR-0011): emulated here, per file identity and lock owner; the caller waits by polling.
+    // getlk: -> `lk->type` becomes Unlock when nothing is in the way, else it is the blocking lock. setlk/flock_op: 0, or -EAGAIN when another owner holds a
+    // conflicting lock. An Unlock always succeeds.
+    int getlk(uint64_t fh, uint64_t owner, LockInfo* lk);
+    int setlk(uint64_t fh, uint64_t owner, const LockRange& lk);
+    int flock_op(uint64_t fh, uint64_t owner, LockType type);
+    // The owner closed a descriptor of this file (FUSE flush): its byte-range locks on the file go, as POSIX says.
+    int unlock_owner(uint64_t fh, uint64_t owner);
+    LockTable& locks() { return locks_; }
 
     // What the drop engine needs: while a file has writers it cannot be frozen; once frozen, new writers wait.
     FileGate* gate() { return &gate_; }
@@ -153,6 +168,8 @@ private:
         bool writable = false, remote = false;
         std::string file_id;
         FileRec snap;   // remote handles read this version, whatever happens to the file afterwards
+        std::mutex lmu;   // guards the two sets below: the owners that locked through this handle (released with it)
+        std::set<uint64_t> range_owners, flock_owners;
     };
     class Gate : public FileGate {
     public:
@@ -168,7 +185,9 @@ private:
                     std::optional<uint32_t> mode, std::optional<int64_t> mtime, int depth = 0);
     int unlink_impl(const std::string& path, int depth);
     int rename_impl(const std::string& from, const std::string& to, int depth);
-    int begin_write(const std::string& logical, const std::string& origin_path, std::string* file_id, bool* need_hydrate);
+    // Registers a writer so that no drop can freeze the file. `modify` false: the file is only being guarded (a hard link is made to it), not changed, so it
+    // stays replicated.
+    int begin_write(const std::string& logical, const std::string& origin_path, std::string* file_id, bool* need_hydrate, bool modify = true);
     void end_write(const std::string& file_id);
     int hydrate_logical(const std::string& logical, const std::string& origin_path);
     int hydrate_from_network(const FileRec& f, const std::string& origin_path);
@@ -181,6 +200,8 @@ private:
     std::vector<std::string> device_order(const FileRec& f);
     static bool is_remote_state(const FileRec& f);
 
+    std::string lock_key(Handle& h);
+    LockTable locks_;
     Ledger& ledger_;
     const crypto::Keys& keys_;
     mutable std::mutex dev_mu_;   // guards devices_

@@ -822,6 +822,171 @@ int main() {
     }
 
     {
+        printf("== hard links: a second name for the same bytes; such a file is never offloaded\n");
+        Lab w;
+        Item& a = w.make("a.bin", MiB + 5, 1);
+        Item& r = w.make("r.bin", MiB + 6, 2);
+        Item& keep = w.make("keep.bin", MiB + 7, 3);
+        Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w, 300), w.E.get());
+        OvStat st;
+        // a local file gets a second name: same bytes, both names show two links, the new name is tracked as a file of its own
+        CHECK(ov.link("/a.bin", "/a2.bin") == 0);
+        struct stat s1, s2;
+        CHECK(stat(w.path("a.bin").c_str(), &s1) == 0 && stat(w.path("a2.bin").c_str(), &s2) == 0 && s1.st_ino == s2.st_ino && s1.st_nlink == 2);
+        CHECK(ov.getattr("/a.bin", &st) == 0 && st.nlink == 2 && ov.getattr("/a2.bin", &st) == 0 && st.nlink == 2 && st.size == a.bytes.size());
+        auto second = w.L->get_file_by_path("/Users/me/proj/a2.bin");
+        CHECK(second && second->file_id != a.fid && second->size == a.bytes.size() && slurp(w.path("a2.bin")) == a.bytes);
+        // neither name may be offloaded while there are two
+        auto out = w.E->drop(a.fid, w.consent, w.devs);
+        CHECK(!out.ok && out.why.find("other hard links") != std::string::npos && exists(w.path("a.bin")));
+        // a write through one name is seen through the other
+        uint64_t fh = 0;
+        CHECK(ov.open("/a2.bin", O_WRONLY, &fh) == 0 && ov.write_fh(fh, 0, reinterpret_cast<const uint8_t*>("HELLO"), 5) == 5 && ov.release(fh) == 0);
+        CHECK(slurp(w.path("a.bin")).size() == a.bytes.size() && memcmp(slurp(w.path("a.bin")).data(), "HELLO", 5) == 0);
+        // when only one name is left it is an ordinary file again
+        CHECK(ov.unlink("/a2.bin") == 0 && ov.getattr("/a.bin", &st) == 0 && st.nlink == 1 && exists(w.path("a.bin")) && !exists(w.path("a2.bin")));
+        CHECK(!w.L->get_file_by_path("/Users/me/proj/a2.bin").has_value());
+        // errors
+        CHECK(ov.link("/a.bin", "/keep.bin") == -EEXIST && ov.link("/a.bin", "/a.bin") == -EEXIST);
+        CHECK(w.drop("r.bin") && ov.link("/a.bin", "/r.bin") == -EEXIST);               // the name belongs to a file that is on the devices
+        CHECK(ov.link("/nope", "/x") == -ENOENT && ov.link("/a.bin", "/nodir/x") == -ENOENT && ov.link("/a.bin", "/.tierfs/x") == -ENOENT && ov.link("/.tierfs/q", "/x") == -ENOENT);
+        CHECK(ov.link("/", "/x") == -EPERM && ov.link("/a.bin", "/") == -EPERM && ov.link("/../a.bin", "/x") == -ENOENT);
+        fs::create_directories(w.path("dir"));
+        CHECK(ov.symlink("a.bin", "/sym") == 0);
+        CHECK(ov.link("/dir", "/dir2") == -EPERM && ov.link("/sym", "/sym2") == -EPERM && !exists(w.path("dir2")) && !exists(w.path("sym2")));
+        // a file that is only on the devices is brought back, then linked
+        CHECK(!exists(w.path("r.bin")) && w.L->get_file(r.fid)->state == FileState::OFFLOADED);
+        CHECK(ov.link("/r.bin", "/r2.bin") == 0 && slurp(w.path("r.bin")) == r.bytes && slurp(w.path("r2.bin")) == r.bytes && w.L->get_file(r.fid)->local_present);
+        CHECK(ov.getattr("/r.bin", &st) == 0 && st.nlink == 2 && !st.remote && w.L->get_file_by_path("/Users/me/proj/r2.bin").has_value());
+        CHECK(ov.unlink("/r2.bin") == 0);
+        // a stale ledger entry for the new name (the file vanished behind our back) is taken over, not duplicated
+        std::string stale = w.L->track_file("/Users/me/proj/ghost.bin", 5, 1, 0644);
+        CHECK(!exists(w.path("ghost.bin")) && ov.link("/keep.bin", "/ghost.bin") == 0 && w.L->get_file_by_path("/Users/me/proj/ghost.bin")->file_id == stale &&
+              w.L->get_file(stale)->size == keep.bytes.size() && slurp(w.path("ghost.bin")) == keep.bytes);
+        CHECK(ov.link("/keep.bin", "/in/deeper") == -ENOENT);
+        // a source that cannot even be looked at says why
+        fs::create_directories(w.path("noaccess"));
+        { std::ofstream(w.path("noaccess/f")) << "x"; }
+        chmod(w.path("noaccess").c_str(), 0);
+        int denied = ov.link("/noaccess/f", "/noaccess-link");
+        chmod(w.path("noaccess").c_str(), 0755);
+        CHECK(denied == -EACCES && !exists(w.path("noaccess-link")));
+        // a source that is being dropped (frozen) is waited for, then refused: the link is not made behind the drop's back
+        {
+            auto krec = *w.L->get_file(keep.fid);
+            std::string why;
+            CHECK(ov.gate()->freeze(krec, &why));
+            CHECK(ov.link("/keep.bin", "/frozen-link") == -EBUSY && !exists(w.path("frozen-link")));
+            ov.gate()->unfreeze(krec);
+            CHECK(ov.link("/keep.bin", "/frozen-link") == 0 && ov.unlink("/frozen-link") == 0);
+        }
+        // linking does not make the source count as modified: it stays replicated until its names are what matters
+        CHECK(w.L->get_file(keep.fid)->state == FileState::REPLICATED);
+        // and nothing is left registered as writing to it
+        CHECK(ov.unlink("/ghost.bin") == 0 && w.E->drop(keep.fid, w.consent, w.devs, ov.gate()).ok);
+        CHECK(w.L->fsck().empty());
+    }
+
+    {
+        printf("== a drop racing a link never leaves the quarantine sharing bytes with a live name\n");
+        Lab w;
+        for (int round = 0; round < 12; round++) {
+            std::string name = "race" + std::to_string(round) + ".bin";
+            Item& it = w.make(name, MiB + 100 + static_cast<size_t>(round), static_cast<uint8_t>(40 + round));
+            Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w, 2000), w.E.get());
+            int lr = 0;
+            bool dropped = false;
+            std::thread linker([&] { lr = ov.link("/" + name, "/" + name + ".lnk"); });
+            std::thread dropper([&] { dropped = w.E->drop(it.fid, w.consent, w.devs, ov.gate()).ok; });
+            linker.join();
+            dropper.join();
+            // whatever happened, no quarantined object has a second name
+            std::error_code ec;
+            for (auto& d : fs::directory_iterator(w.root + "/files/.tierfs/quarantine", ec)) {
+                struct stat qs;
+                if (stat((d.path().string() + "/object").c_str(), &qs) == 0) {
+                    CHECK(qs.st_nlink == 1);
+                }
+            }
+            struct stat ls;
+            if (stat(w.path(name + ".lnk").c_str(), &ls) == 0) {   // if the link exists, the original is not dropped, and both names show the bytes
+                // both names are there and show the bytes: either the drop was refused, or it won and the link brought the file back before linking it
+                struct stat os;
+                CHECK(lr == 0 && stat(w.path(name).c_str(), &os) == 0 && os.st_nlink == 2 && os.st_ino == ls.st_ino && slurp(w.path(name)) == it.bytes && slurp(w.path(name + ".lnk")) == it.bytes);
+            } else {
+                CHECK(lr != 0);                                      // no link: the drop won, and the link was refused or found the file remote and brought it back (then it exists)
+            }
+        }
+    }
+
+    {
+        printf("== advisory locks: owners conflict, one owner never does, closing releases, offloaded files lock without coming back\n");
+        Lab w;
+        Item& a = w.make("a.bin", MiB + 5, 1);
+        Item& r = w.make("r.bin", MiB + 6, 2);
+        Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w, 300), w.E.get());
+        uint64_t f1 = 0, f2 = 0, f3 = 0;
+        CHECK(ov.open("/a.bin", O_RDWR, &f1) == 0 && ov.open("/a.bin", O_RDWR, &f2) == 0 && ov.open("/a.bin", O_RDONLY, &f3) == 0);
+        CHECK(ov.setlk(f1, 100, {LockType::Write, 0, 10}) == 0);
+        CHECK(ov.setlk(f2, 200, {LockType::Read, 5, 1}) == -EAGAIN && ov.setlk(f2, 200, {LockType::Read, 10, 1}) == 0);
+        CHECK(ov.setlk(f3, 100, {LockType::Write, 5, 5}) == 0);                          // the same owner through another descriptor: no conflict
+        LockInfo lk{LockType::Write, 0, 0, 0};
+        CHECK(ov.getlk(f2, 200, &lk) == 0 && lk.type == LockType::Write && lk.owner == 100 && lk.start == 0 && lk.len == 10);
+        lk = LockInfo{LockType::Write, 50, 5, 0};
+        CHECK(ov.getlk(f2, 200, &lk) == 0 && lk.type == LockType::Unlock);              // nothing in the way there
+        // closing a descriptor releases the owner's locks on the file (the kernel's flush)
+        CHECK(ov.unlock_owner(f3, 100) == 0 && ov.setlk(f2, 200, {LockType::Write, 0, 10}) == 0);
+        CHECK(ov.setlk(f1, 100, {LockType::Read, 0, 1}) == -EAGAIN);
+        // releasing a handle drops what was taken through it
+        CHECK(ov.release(f2) == 0 && ov.setlk(f1, 100, {LockType::Write, 0, 10}) == 0);
+        CHECK(ov.release(f1) == 0 && ov.release(f3) == 0 && !ov.locks().held("f:" + a.fid));
+        // flock
+        CHECK(ov.open("/a.bin", O_RDONLY, &f1) == 0 && ov.open("/a.bin", O_RDONLY, &f2) == 0);
+        CHECK(ov.flock_op(f1, 1, LockType::Write) == 0 && ov.flock_op(f2, 2, LockType::Read) == -EAGAIN && ov.flock_op(f1, 1, LockType::Read) == 0 && ov.flock_op(f2, 2, LockType::Read) == 0);
+        CHECK(ov.flock_op(f1, 1, LockType::Write) == -EAGAIN && ov.flock_op(f2, 2, LockType::Unlock) == 0 && ov.flock_op(f1, 1, LockType::Write) == 0);
+        CHECK(ov.release(f1) == 0 && ov.flock_op(f2, 2, LockType::Write) == 0 && ov.release(f2) == 0 && ov.locks().count() == 0);   // a closed descriptor's flock is gone
+        // an owner is never in its own way
+        CHECK(ov.open("/a.bin", O_RDWR, &f1) == 0 && ov.setlk(f1, 100, {LockType::Write, 0, 10}) == 0);
+        lk = LockInfo{LockType::Write, 0, 10, 0};
+        CHECK(ov.getlk(f1, 100, &lk) == 0 && lk.type == LockType::Unlock);
+        lk = LockInfo{LockType::Write, 0, 10, 0};
+        CHECK(ov.getlk(f1, 101, &lk) == 0 && lk.type == LockType::Write && lk.owner == 100);
+        CHECK(ov.getlk(f1, 100, nullptr) == -EBADF);   // (a question with nowhere to put the answer)
+        // an owner that only UNLOCKED through a descriptor leaves nothing behind when it is closed: what it locked through another one stays
+        CHECK(ov.open("/a.bin", O_RDWR, &f2) == 0 && ov.setlk(f2, 100, {LockType::Unlock, 50, 5}) == 0 && ov.release(f2) == 0);
+        CHECK(ov.setlk(f1, 101, {LockType::Write, 0, 5}) == -EAGAIN);
+        // the kernel's flush: everything the owner holds on the file goes (POSIX), and this descriptor forgets the owner
+        CHECK(ov.unlock_owner(f1, 100) == 0 && ov.setlk(f1, 101, {LockType::Write, 0, 5}) == 0 && ov.setlk(f1, 101, {LockType::Unlock, 0, 0}) == 0);
+        CHECK(ov.open("/a.bin", O_RDWR, &f2) == 0 && ov.setlk(f2, 100, {LockType::Write, 20, 5}) == 0);
+        CHECK(ov.release(f1) == 0 && ov.setlk(f2, 101, {LockType::Write, 20, 5}) == -EAGAIN);   // closing f1 does not touch what owner 100 took through f2
+        CHECK(ov.release(f2) == 0 && ov.locks().count() == 0);
+        // bad handles
+        LockInfo none{LockType::Read, 0, 1, 0};
+        CHECK(ov.setlk(999999, 1, {LockType::Read, 0, 1}) == -EBADF && ov.getlk(999999, 1, &none) == -EBADF && ov.flock_op(999999, 1, LockType::Read) == -EBADF && ov.unlock_owner(999999, 1) == -EBADF);
+        CHECK(ov.getlk(f1, 1, nullptr) == -EBADF);
+        // an offloaded file: read-locked without being fetched; the lock is the file's, so a handle opened after it comes back conflicts too
+        CHECK(w.drop("r.bin"));
+        uint64_t rr = 0, rw = 0;
+        CHECK(ov.open("/r.bin", O_RDONLY, &rr) == 0 && ov.setlk(rr, 7, {LockType::Read, 0, 0}) == 0 && !exists(w.path("r.bin")));
+        CHECK(ov.hydrate("/r.bin") == 0 && ov.open("/r.bin", O_RDWR, &rw) == 0);
+        CHECK(ov.setlk(rw, 8, {LockType::Write, 100, 5}) == -EAGAIN && ov.setlk(rw, 8, {LockType::Read, 100, 5}) == 0);      // the lock taken while it was remote still holds
+        CHECK(ov.release(rr) == 0 && ov.setlk(rw, 8, {LockType::Write, 100, 5}) == 0 && ov.release(rw) == 0);
+        // the lock follows the file through a rename
+        uint64_t x1 = 0, x2 = 0;
+        CHECK(ov.open("/keep-me", O_RDONLY, &x1) == -ENOENT);
+        Item& b = w.make("b.bin", MiB + 9, 5);
+        CHECK(ov.open("/b.bin", O_RDONLY, &x1) == 0 && ov.setlk(x1, 1, {LockType::Write, 0, 0}) == 0 && ov.rename("/b.bin", "/c.bin") == 0);
+        CHECK(ov.open("/c.bin", O_RDONLY, &x2) == 0 && ov.setlk(x2, 2, {LockType::Read, 0, 1}) == -EAGAIN && ov.release(x1) == 0 && ov.setlk(x2, 2, {LockType::Read, 0, 1}) == 0 && ov.release(x2) == 0);
+        CHECK(b.bytes.size() > 0 && w.L->fsck().empty());
+        // a file the ledger does not know yet is locked by its inode
+        { std::ofstream(w.path("loose.bin")) << "xyz"; std::ofstream(w.path("loose2.bin")) << "xyz"; }
+        uint64_t l1 = 0, l2 = 0, l3 = 0;
+        CHECK(ov.open("/loose.bin", O_RDONLY, &l1) == 0 && ov.open("/loose.bin", O_RDONLY, &l2) == 0 && ov.open("/loose2.bin", O_RDONLY, &l3) == 0);
+        CHECK(ov.setlk(l1, 1, {LockType::Write, 0, 1}) == 0 && ov.setlk(l2, 2, {LockType::Write, 0, 1}) == -EAGAIN && ov.setlk(l3, 2, {LockType::Write, 0, 1}) == 0);
+        CHECK(ov.release(l1) == 0 && ov.release(l2) == 0 && ov.release(l3) == 0 && ov.locks().count() == 0);
+    }
+
+    {
         printf("== errors are reported as what they are, and nothing is tracked or forgotten by mistake\n");
         Lab w;
         Item& a = w.make("a.bin", MiB + 5, 1, 0644, 1500000000);

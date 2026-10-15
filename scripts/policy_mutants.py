@@ -106,4 +106,8 @@ M = [
  ('backup: skips not counted', P, 'p.skipped["changed after the last recorded backup"]++; continue;', 'continue;'),
  ('backup: coverage warning lost', P, 'p.warnings.push_back("some files are not covered by the recorded backup: back up again and run tierctl ack-backup to make them movable");', ''),
  ('backup: coverage warning always', P, 'else if (!p.skipped.empty() && (p.skipped.count("changed after the last recorded backup") || p.skipped.count("the recorded backup is too old or undated")))', 'else if (true)'),
+ ('hard links: not skipped', P, 'if (!local.empty() && lstat(local.c_str(), &ls) == 0 && S_ISREG(ls.st_mode) && ls.st_nlink > 1) { v.skip_reason = "has other hard links"; return v; }', ''),
+ ('hard links: a second name allowed', P, 'ls.st_nlink > 1) { v.skip_reason = "has other hard links"; return v; }', 'ls.st_nlink > 2) { v.skip_reason = "has other hard links"; return v; }'),
+ ('hard links: the reason is lost', P, 'v.skip_reason = "has other hard links";', 'v.skip_reason = "x";'),
+ ('hard links: not skipped for good', P, 'v.skip_reason = "has other hard links"; return v; }', 'v.skip_reason = "has other hard links"; }'),
 ]

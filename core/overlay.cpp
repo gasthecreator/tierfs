@@ -87,6 +87,7 @@ int Overlay::getattr(const std::string& path, OvStat* out) {
         s.mtime = st.st_mtimespec.tv_sec;
         s.mtime_nsec = st.st_mtimespec.tv_nsec;
         s.mode = st.st_mode & 0777;
+        s.nlink = static_cast<uint32_t>(st.st_nlink);
         if (s.kind == OvKind::File) {
             if (auto f = ledger_.get_file_by_path(lp)) s.file_id = f->file_id;
         }
@@ -424,7 +425,7 @@ void Overlay::end_write(const std::string& file_id) {
 // Registers a writer for the file at `logical`, then records the modification in the ledger. The order matters: once the
 // writer is registered no drop can freeze the file, and the generation bump (done before any byte changes) invalidates every
 // replication or drop that was prepared against the old bytes.
-int Overlay::begin_write(const std::string& logical, const std::string& origin_path, std::string* file_id, bool* need_hydrate) {
+int Overlay::begin_write(const std::string& logical, const std::string& origin_path, std::string* file_id, bool* need_hydrate, bool modify) {
     *need_hydrate = false;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(cfg_.write_wait_ms);
     std::unique_lock<std::mutex> g(gate_mu_);
@@ -451,7 +452,7 @@ int Overlay::begin_write(const std::string& logical, const std::string& origin_p
         }
         if (f->state == FileState::OFFLOADED) return -EIO;   // bytes in the origin but the ledger says they are gone: inconsistent, do not guess
         writers_[id]++;
-        Res r = ledger_.note_local_modified(id, static_cast<uint64_t>(st.st_size), st.st_mtimespec.tv_sec);
+        Res r = modify ? ledger_.note_local_modified(id, static_cast<uint64_t>(st.st_size), st.st_mtimespec.tv_sec) : Res{true, "", ""};
         if (!r.ok) {
             auto it = writers_.find(id);
             if (it != writers_.end() && --it->second <= 0) writers_.erase(it);
@@ -617,6 +618,14 @@ int Overlay::release(uint64_t fh) {
         if (it == handles_.end()) return -EBADF;
         h = it->second;
         handles_.erase(it);
+    }
+    {   // the locks taken through this descriptor go with it
+        std::lock_guard<std::mutex> g(h->lmu);
+        if (!h->range_owners.empty() || !h->flock_owners.empty()) {
+            std::string key = lock_key(*h);
+            for (uint64_t o : h->range_owners) locks_.release_owner(key, o);
+            for (uint64_t o : h->flock_owners) locks_.flock_release(key, o);
+        }
     }
     if (h->fd < 0) return 0;
     int rc = 0;
@@ -980,6 +989,99 @@ int Overlay::rename_impl(const std::string& from, const std::string& to, int dep
     if (!src_id.empty()) ledger_.rename_file(src_id, tlp);   // (a failure leaves it to the scanner: the bytes are where the user put them)
     g.unlock();
     return finish(0);
+}
+
+// ---------------------------------------------------------------- hard links and advisory locks (ADR-0011)
+
+int Overlay::link(const std::string& from, const std::string& to) {
+    for (int attempt = 0; attempt < 4; attempt++) {
+        std::string sop, slp, srel, dop, dlp, drel;
+        if (!resolve(from, &sop, &slp, &srel) || !resolve(to, &dop, &dlp, &drel)) return -ENOENT;
+        if (srel.empty() || drel.empty()) return -EPERM;
+        struct stat st;
+        bool local = lstat(sop.c_str(), &st) == 0;
+        if (!local && errno != ENOENT && errno != ENOTDIR) return -errno;
+        if (local && !S_ISREG(st.st_mode)) return -EPERM;   // directories and symlinks do not get hard links
+        if (!local) {
+            auto f = ledger_.get_file_by_path(slp);
+            if (!f || !is_remote_state(*f)) return -ENOENT;
+            int hr = hydrate_logical(slp, sop);   // the bytes come back first: a name without bytes behind it cannot be a second name for them
+            if (hr < 0) return hr;
+            continue;
+        }
+        struct stat dst;
+        if (lstat(dop.c_str(), &dst) == 0) return -EEXIST;
+        auto df = ledger_.get_file_by_path(dlp);
+        if (df && is_remote_state(*df)) return -EEXIST;
+        // While the second name is being made nobody may drop the first (a drop would move the shared bytes into quarantine).
+        std::string id;
+        bool need = false;
+        if (ledger_.get_file_by_path(slp)) {   // (a file the ledger does not know yet cannot be dropped)
+            int r = begin_write(slp, sop, &id, &need, false);
+            if (r < 0) return r;
+            if (need) continue;   // it was dropped meanwhile: it is remote now, bring it back and look again
+        }
+        int rc = ::link(sop.c_str(), dop.c_str()) == 0 ? 0 : -errno;
+        if (rc == 0) {
+            struct stat now;
+            if (lstat(dop.c_str(), &now) == 0) {
+                if (df) ledger_.note_local_modified(df->file_id, static_cast<uint64_t>(now.st_size), now.st_mtimespec.tv_sec);   // (a stale entry for the name)
+                else ledger_.track_file(dlp, static_cast<uint64_t>(now.st_size), now.st_mtimespec.tv_sec, now.st_mode & 0777);   // (else the scanner finds it)
+            }
+        }
+        if (!id.empty()) end_write(id);
+        return rc;
+    }
+    return -EIO;
+}
+
+std::string Overlay::lock_key(Handle& h) {
+    if (!h.file_id.empty()) return "f:" + h.file_id;
+    struct stat st;
+    if (h.fd >= 0 && fstat(h.fd, &st) == 0) return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino));
+    return "h:" + std::to_string(reinterpret_cast<uintptr_t>(&h));   // (no identity at all: a private key, so nothing conflicts)
+}
+
+int Overlay::getlk(uint64_t fh, uint64_t owner, LockInfo* lk) {
+    auto h = get_handle(fh);
+    if (!h || !lk) return -EBADF;
+    LockInfo blocking;
+    if (locks_.test(lock_key(*h), owner, LockRange{lk->type, lk->start, lk->len}, &blocking)) *lk = blocking;
+    else lk->type = LockType::Unlock;
+    return 0;
+}
+
+int Overlay::setlk(uint64_t fh, uint64_t owner, const LockRange& lk) {
+    auto h = get_handle(fh);
+    if (!h) return -EBADF;
+    std::string key = lock_key(*h);
+    if (!locks_.set(key, owner, lk)) return -EAGAIN;
+    if (lk.type != LockType::Unlock) {
+        std::lock_guard<std::mutex> g(h->lmu);
+        h->range_owners.insert(owner);
+    }
+    return 0;
+}
+
+int Overlay::flock_op(uint64_t fh, uint64_t owner, LockType type) {
+    auto h = get_handle(fh);
+    if (!h) return -EBADF;
+    std::string key = lock_key(*h);
+    if (!locks_.flock_try(key, owner, type)) return -EAGAIN;
+    if (type != LockType::Unlock) {
+        std::lock_guard<std::mutex> g(h->lmu);
+        h->flock_owners.insert(owner);
+    }
+    return 0;
+}
+
+int Overlay::unlock_owner(uint64_t fh, uint64_t owner) {
+    auto h = get_handle(fh);
+    if (!h) return -EBADF;
+    locks_.release_owner(lock_key(*h), owner);
+    std::lock_guard<std::mutex> g(h->lmu);
+    h->range_owners.erase(owner);
+    return 0;
 }
 
 int Overlay::symlink(const std::string& target, const std::string& linkpath) {

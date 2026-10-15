@@ -18,6 +18,8 @@
 #include <fuse.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +44,7 @@ static void fill_stat(struct stat *st, const tfs_stat *a) {
     switch (a->kind) {
     case 0: st->st_mode = S_IFDIR | (a->mode & 07777); st->st_nlink = 2; break;
     case 2: st->st_mode = S_IFLNK | 0777; st->st_nlink = 1; st->st_size = (off_t)a->size; break;
-    default: st->st_mode = S_IFREG | (a->mode & 07777); st->st_nlink = 1; st->st_size = (off_t)a->size; break;
+    default: st->st_mode = S_IFREG | (a->mode & 07777); st->st_nlink = a->nlink ? a->nlink : 1; st->st_size = (off_t)a->size; break;
     }
     st->st_blocks = (blkcnt_t)((a->size + 511) / 512);
 }
@@ -113,7 +115,12 @@ static int t_write(const char *path, const char *buf, size_t size, off_t off, st
     return n < 0 ? (int)n : (int)n;
 }
 
-static int t_flush(const char *path, struct fuse_file_info *fi) { (void)path; (void)fi; return 0; }
+/* Closing a descriptor releases the closing process's byte-range locks on the file (POSIX); the kernel tells us which process by the lock owner. */
+static int t_flush(const char *path, struct fuse_file_info *fi) {
+    (void)path;
+    tfs_unlock_owner(g_ctx, fi->fh, fi->lock_owner);
+    return 0;
+}
 static int t_fsync(const char *path, int datasync, struct fuse_file_info *fi) { (void)path; (void)datasync; return tfs_fsync(g_ctx, fi->fh); }
 static int t_release(const char *path, struct fuse_file_info *fi) { (void)path; return tfs_release(g_ctx, fi->fh); }
 static int t_ftruncate(const char *path, off_t size, struct fuse_file_info *fi) { (void)path; return tfs_ftruncate(g_ctx, fi->fh, (uint64_t)size); }
@@ -123,6 +130,57 @@ static int t_rmdir(const char *path) { return tfs_rmdir(g_ctx, path); }
 static int t_unlink(const char *path) { return tfs_unlink(g_ctx, path); }
 static int t_rename(const char *from, const char *to) { return tfs_rename(g_ctx, from, to); }
 static int t_symlink(const char *target, const char *linkpath) { return tfs_symlink(g_ctx, target, linkpath); }
+static int t_link(const char *from, const char *to) { return tfs_link(g_ctx, from, to); }
+
+/* Waiting for a lock is polling: the core only tries. The wait ends when the kernel interrupts the request, so a stuck lock can be killed. */
+static int wait_for(int (*attempt)(void *), void *arg, int blocking) {
+    for (;;) {
+        int rc = attempt(arg);
+        if (rc != -EAGAIN || !blocking) return rc;
+        if (fuse_interrupted()) return -EINTR;
+        usleep(20000);
+    }
+}
+
+struct setlk_args { uint64_t fh, owner, start, len; int type; };
+static int try_setlk(void *p) {
+    struct setlk_args *a = p;
+    return tfs_setlk(g_ctx, a->fh, a->owner, a->type, a->start, a->len);
+}
+
+/* fcntl locks: libfuse gives absolute ranges (whence SEEK_SET); l_len 0 means to the end of the file. */
+static int t_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *fl) {
+    (void)path;
+    if (fl->l_whence != SEEK_SET || fl->l_start < 0 || fl->l_len < 0) return -EINVAL;
+    int type = fl->l_type == F_RDLCK ? 0 : fl->l_type == F_WRLCK ? 1 : fl->l_type == F_UNLCK ? 2 : -1;
+    if (type < 0) return -EINVAL;
+    if (cmd == F_GETLK) {
+        uint64_t start = (uint64_t)fl->l_start, len = (uint64_t)fl->l_len, blocker = 0;
+        int t = type;
+        int rc = tfs_getlk(g_ctx, fi->fh, fi->lock_owner, &t, &start, &len, &blocker);
+        if (rc) return rc;
+        fl->l_type = t == 0 ? F_RDLCK : t == 1 ? F_WRLCK : F_UNLCK;
+        if (t != 2) { fl->l_start = (off_t)start; fl->l_len = (off_t)len; fl->l_pid = 0; }
+        return 0;
+    }
+    if (cmd != F_SETLK && cmd != F_SETLKW) return -EINVAL;
+    struct setlk_args a = {fi->fh, fi->lock_owner, (uint64_t)fl->l_start, (uint64_t)fl->l_len, type};
+    return wait_for(try_setlk, &a, cmd == F_SETLKW);
+}
+
+struct flock_args { uint64_t fh, owner; int type; };
+static int try_flock(void *p) {
+    struct flock_args *a = p;
+    return tfs_flock(g_ctx, a->fh, a->owner, a->type);
+}
+
+static int t_flock(const char *path, struct fuse_file_info *fi, int op) {
+    (void)path;
+    int type = (op & LOCK_UN) ? 2 : (op & LOCK_EX) ? 1 : (op & LOCK_SH) ? 0 : -1;
+    if (type < 0) return -EINVAL;
+    struct flock_args a = {fi->fh, fi->lock_owner, type};
+    return wait_for(try_flock, &a, !(op & LOCK_NB));
+}
 static int t_chmod(const char *path, mode_t mode) { return tfs_chmod(g_ctx, path, (uint32_t)mode); }
 static int t_chown(const char *path, uid_t uid, gid_t gid) {
     return tfs_chown(g_ctx, path, uid == (uid_t)-1 ? -1 : (int64_t)uid, gid == (gid_t)-1 ? -1 : (int64_t)gid);
@@ -174,7 +232,7 @@ static struct fuse_operations ops = {
     .getattr = t_getattr, .fgetattr = t_fgetattr, .readlink = t_readlink, .readdir = t_readdir,
     .open = t_open, .create = t_create, .read = t_read, .write = t_write, .flush = t_flush,
     .fsync = t_fsync, .release = t_release, .ftruncate = t_ftruncate, .truncate = t_truncate,
-    .mkdir = t_mkdir, .rmdir = t_rmdir, .unlink = t_unlink, .rename = t_rename, .symlink = t_symlink,
+    .mkdir = t_mkdir, .rmdir = t_rmdir, .unlink = t_unlink, .rename = t_rename, .symlink = t_symlink, .link = t_link, .lock = t_lock, .flock = t_flock,
     .chmod = t_chmod, .chown = t_chown, .utimens = t_utimens, .statfs = t_statfs,
     .setxattr = t_setxattr, .getxattr = t_getxattr, .listxattr = t_listxattr, .removexattr = t_removexattr,
 };

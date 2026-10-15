@@ -144,4 +144,8 @@ M = [
  ("[redundant] move_back may overwrite (restore checks first)", D,
   r'''if (fsutil::exists_nofollow(local_path)) return false;   // never overwrite whatever is there now''',
   ''),
+ ('hard links: not checked', D, 'if (lstat(local.c_str(), &ls) == 0 && S_ISREG(ls.st_mode) && ls.st_nlink > 1)', 'if (false)'),
+ ('hard links: a second name allowed', D, 'ls.st_nlink > 1)', 'ls.st_nlink > 2)'),
+ ('[a drop only ever sees regular files] hard links: only regular files', D, 'lstat(local.c_str(), &ls) == 0 && S_ISREG(ls.st_mode) && ls.st_nlink > 1)', 'lstat(local.c_str(), &ls) == 0 && ls.st_nlink > 1)'),
+ ('hard links: the number of other names is wrong', D, 'static_cast<unsigned long long>(ls.st_nlink) - 1', 'static_cast<unsigned long long>(ls.st_nlink)'),
 ]

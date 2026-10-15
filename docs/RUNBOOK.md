@@ -54,6 +54,12 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## Hard links and locks
+- `ln a b` inside the mount works for regular files (an offloaded `a` is fetched first). While a file has two names neither is offloaded; `tierctl control <ledger> tick` and the plan say "has other hard links".
+  Remove the other name and it is eligible again. Programs that cannot get a hard link (directories, symlinks) get EPERM and fall back to copying.
+- `flock` and `fcntl` locks work between programs that use the mount, with the usual rules (shared/exclusive, ranges, released on close). They are advisory, they are not seen by a program that works directly in the
+  origin folder, two hard-linked names are locked separately, and two programs that deadlock wait until one is interrupted. Whether FUSE-T hands lock calls to the driver at all is not proven until a mount test.
+
 ## Starting tierfsd automatically (LaunchAgent)
 ```bash
 ./build/tierctl service plist --name projects --mountpoint ~/Projects \
