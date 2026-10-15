@@ -622,6 +622,128 @@ int main() {
     }
 
     {
+        printf(
+            "== a space plan is shown in plain words and approved by its id: that plan, once, while it is fresh, and only when nothing blocks it\n");
+        auto tight = [](DaemonConfig& c) {
+            c.policy.min_idle_seconds = 0;
+            c.policy.replicate_idle_seconds = 0;
+            c.policy.min_size = 1;
+        };
+        auto id_of = [](const std::string& text) {  // "  tierctl control '<ledger>' approve <16 hex>"
+            size_t at = text.rfind(" approve ");
+            return at == std::string::npos ? std::string() : text.substr(at + 9, 16);
+        };
+        {
+            Env e;
+            e.open_gates(true);
+            DaemonConfig cfg = e.config();
+            tight(cfg);
+            Bytes a = pattern(2 * MiB + 5, 1), b = pattern(MiB + 7, 2);
+            spit(e.path("a.bin"), a);
+            fs::create_directories(e.path("dir"));
+            spit(e.path("dir/b.bin"), b);
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            CHECK(has(d->control("approve 0123456789abcdef"), "ERR there is no plan to approve") &&
+                  has(d->control("approve abc"), "ERR give the plan id") && has(d->control("approve zzzzzzzzzz"), "ERR give the plan id"));
+            CHECK(has(d->control("plan abc"), "ERR usage") && has(d->control("plan 0"), "ERR usage") && has(d->control("plan -1"), "ERR usage"));
+            std::string text = d->control("plan 0.002");
+            std::string id = id_of(text);
+            CHECK(ends_ok(text) && id.size() == 16 && has(text, ("SPACE PLAN " + id).c_str()) && has(text, "moves 2 files") &&
+                  has(text, "/Users/me/proj/dir/") && has(text, "/Users/me/proj/a.bin"));
+            CHECK(has(text, "stays visible at the same path") && has(text, "for 7 days") &&
+                  has(text, "To approve exactly this plan (good for 60 minutes)") && !has(text, "CANNOT RUN"));
+            CHECK(exists(e.path("a.bin")) && exists(e.path("dir/b.bin")));  // reading a plan moves nothing
+            // a plan other than the one shown cannot be approved
+            std::string other = id.substr(0, 15) + (id[15] == '0' ? "1" : "0");
+            CHECK(has(d->control("approve " + other), "ERR that is not the plan that was last shown") && exists(e.path("a.bin")));
+            // the shown plan runs (a prefix of its id is enough), once
+            std::string ran = d->control("approve " + id.substr(0, 10));
+            CHECK(ends_ok(ran) && has(ran, "Moved 2 files") && !exists(e.path("a.bin")) && !exists(e.path("dir/b.bin")));
+            CHECK(read_through(d->overlay(), "/a.bin", a.size()) == a && read_through(d->overlay(), "/dir/b.bin", b.size()) == b);
+            CHECK(has(d->control("approve " + id), "ERR there is no plan to approve"));
+            std::string again = d->control("plan 0.002");
+            CHECK(ends_ok(again) && has(again, "No file can be moved") && !has(again, "To approve") &&
+                  has(d->control("approve " + id), "ERR there is no plan to approve"));
+        }
+        {  // what blocks a plan is said in the plan, and approving it is refused without consuming it
+            Env e;
+            e.open_gates(false);  // the recovery phrase was not acknowledged
+            DaemonConfig cfg = e.config();
+            tight(cfg);
+            spit(e.path("a.bin"), pattern(2 * MiB, 3));
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            std::string text = d->control("plan 0.001");
+            std::string id = id_of(text);
+            CHECK(ends_ok(text) && has(text, "CANNOT RUN YET") && has(text, "recovery phrase has not been acknowledged") &&
+                  has(text, "Fix the above, then approve with") && id.size() == 16);
+            std::string refused = d->control("approve " + id);
+            CHECK(has(refused, "ERR the plan cannot run yet") && has(refused, "recovery phrase") && exists(e.path("a.bin")));
+            d->ledger().set_meta("recovery_acked", "1");
+            CHECK(ends_ok(d->control("approve " + id)) && !exists(e.path("a.bin")));  // fixed: the same plan still stands
+            // the backup statement
+            spit(e.path("c.bin"), pattern(2 * MiB, 4));
+            d->control("scan");
+            d->ledger().set_meta("test_prefix", "");
+            std::string t2 = d->control("plan 0.001");
+            CHECK(has(t2, "no backup is recorded") && has(t2, "ack-backup"));
+            d->ledger().set_meta("backup_acked", "1");
+            d->ledger().set_meta("backup_acked_at", "1000");
+            t2 = d->control("plan 0.001");
+            CHECK(has(t2, "older than 30 days") && !has(t2, "no backup is recorded"));
+            d->ledger().set_meta("backup_acked_at", std::to_string(static_cast<long long>(time(nullptr)) + 5));
+            t2 = d->control("plan 0.001");
+            CHECK(!has(t2, "CANNOT RUN"));
+            d->ledger().set_meta("backup_acked_at", "0");
+            CHECK(has(d->control("plan 0.001"), "has no date"));
+        }
+        {  // one device is not enough, and the plan says so
+            Env e(true, false);
+            e.open_gates(true);
+            DaemonConfig cfg = e.config();
+            tight(cfg);
+            spit(e.path("a.bin"), pattern(2 * MiB, 5));
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            std::string text = d->control("plan 0.001");
+            CHECK(ends_ok(text) && has(text, "fewer than two devices"));
+        }
+        {  // a plan goes stale; "free-now" says what it means; a disk with enough space needs no plan
+            Env e;
+            e.open_gates(true);
+            DaemonConfig cfg = e.config();
+            tight(cfg);
+            cfg.plan_ttl_seconds = 1;
+            spit(e.path("a.bin"), pattern(2 * MiB, 6));
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            std::string id = id_of(d->control("plan 0.001"));
+            usleep(2200000);
+            CHECK(has(d->control("approve " + id), "ERR the plan is too old to approve") && exists(e.path("a.bin")) &&
+                  has(d->control("approve " + id), "ERR there is no plan"));
+            std::string now_text = d->control("plan free-now 0.001");
+            CHECK(has(now_text, "deleted right away") && has(now_text, "no undo period") && !has(now_text, "for 7 days"));
+        }
+        {
+            Env e;
+            e.open_gates(true);
+            DaemonConfig cfg = e.config();
+            tight(cfg);
+            cfg.policy.low_free_bytes = 1;
+            cfg.policy.low_free_fraction = 0;
+            cfg.policy.critical_free_bytes = 1;
+            cfg.policy.critical_free_fraction = 0;
+            spit(e.path("a.bin"), pattern(2 * MiB, 7));
+            auto d = make(e, nullptr, &cfg);
+            CHECK(d && d->start(nullptr));
+            std::string text = d->control("plan");
+            CHECK(ends_ok(text) && has(text, "Disk space is fine") && has(text, "plan <GiB to free>") &&
+                  has(d->control("approve 0123456789abcdef"), "ERR there is no plan"));
+        }
+    }
+
+    {
         printf("== the daemon reads ahead for a sequential reader of an offloaded file, unless told not to\n");
         for (int ra = 0; ra < 2; ra++) {
             Env e;

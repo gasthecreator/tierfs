@@ -13,6 +13,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -50,6 +51,7 @@ struct DaemonConfig {
     bool gc = false;
     int64_t gc_interval_seconds = 86400;
     GcConfig gc_config;
+    int64_t plan_ttl_seconds = 3600;  // a space plan can be approved for this long after it was made (then it is stale: make it again)
 };
 
 class Daemon {
@@ -82,6 +84,9 @@ private:
     std::string cmd_files(const std::string& path, bool drop);   // replicate (drop=false) or offload (drop=true)
     std::string cmd_tick();
     std::string cmd_gc(bool run);
+    std::string cmd_plan(const std::string& arg);
+    std::string cmd_approve(const std::string& arg);
+    std::vector<std::string> plan_blockers();
 
     DaemonConfig cfg_;
     std::unique_ptr<Ledger> ledger_;
@@ -96,6 +101,9 @@ private:
     std::unique_ptr<SpaceProbe> probe_;
     std::unique_ptr<PolicyEngine> policy_;
     std::unique_ptr<GarbageCollector> gc_;
+    std::mutex plan_mu_;
+    std::optional<TierPlan> pending_plan_;  // the plan a person was last shown: only this one can be approved, and only once
+    int64_t pending_at_ = 0;
     std::unique_ptr<Notifier> notifier_;
 
     std::atomic<bool> stop_{false};

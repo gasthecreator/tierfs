@@ -435,15 +435,125 @@ std::string format_plan(const TierPlan& plan) {
     return s;
 }
 
-std::string format_notification(const SpaceStatus& status, const TierPlan& plan) {
+std::string human_bytes(uint64_t bytes) {
+    char buf[32];
+    const char* units[] = {"KiB", "MiB", "GiB", "TiB"};
+    if (bytes < 1024) {
+        snprintf(buf, sizeof buf, "%llu bytes", static_cast<unsigned long long>(bytes));
+        return buf;
+    }
+    double v = static_cast<double>(bytes) / 1024.0;
+    int u = 0;
+    while (v >= 1000.0 && u < 3) {
+        v /= 1024.0;
+        u++;
+    }  // (1000, not 1024: 1,040,000 bytes reads "1.0 MiB", never "1016 KiB" or "1024 KiB")
+    snprintf(buf, sizeof buf, v >= 100 ? "%.0f %s" : "%.1f %s", v, units[u]);
+    return buf;
+}
+
+namespace {
+// The folder an entry is listed under: the first directory below its managed root ("/Users/me/Projects/" + "app/src/x" -> "/Users/me/Projects/app/").
+std::string folder_of(const PlanEntry& e) {
+    std::string rel = e.path.compare(0, e.root.size(), e.root) == 0 ? e.path.substr(e.root.size()) : e.path;
+    size_t slash = rel.find('/');
+    return slash == std::string::npos ? e.root : e.root + rel.substr(0, slash + 1);
+}
+std::string plural(size_t n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); }
+}  // namespace
+
+std::string format_plan_review(const TierPlan& plan, const PlanContext& ctx) {
+    std::string s = "SPACE PLAN " + plan.digest.substr(0, 16) + "\n\n";
+    s += "Disk: " + human_bytes(plan.space.info.avail()) + " free of " + human_bytes(plan.space.info.total) + " (" + to_string(plan.space.level) +
+         "). ";
+    s += plan.need_bytes ? human_bytes(plan.need_bytes) + " should be freed to be comfortable again.\n" : "Nothing needs to be freed right now.\n";
+    if (plan.entries.empty()) {
+        s += "\nNo file can be moved: nothing in your tiered folders is cold, big and safe enough.\n";
+    } else {
+        s += "\nThis plan moves " + plural(plan.entries.size(), "file", "files") + " (" + human_bytes(plan.bytes_total) + ") off this Mac:\n";
+        std::map<std::string, std::pair<size_t, uint64_t>> by_folder;
+        for (const auto& e : plan.entries) {
+            auto& g = by_folder[folder_of(e)];
+            g.first++;
+            g.second += e.size;
+        }
+        std::vector<std::pair<std::string, std::pair<size_t, uint64_t>>> folders(by_folder.begin(), by_folder.end());
+        std::sort(folders.begin(), folders.end(), [](const auto& a, const auto& b) {
+            return a.second.second != b.second.second ? a.second.second > b.second.second : a.first < b.first;
+        });
+        for (size_t i = 0; i < folders.size() && i < ctx.list_folders; i++)
+            s += "  " + folders[i].first + "   " + plural(folders[i].second.first, "file", "files") + ", " + human_bytes(folders[i].second.second) +
+                 "\n";
+        if (folders.size() > ctx.list_folders) s += "  ... and " + plural(folders.size() - ctx.list_folders, "more folder", "more folders") + "\n";
+        std::vector<const PlanEntry*> big;
+        for (const auto& e : plan.entries) big.push_back(&e);
+        std::sort(big.begin(), big.end(),
+                  [](const PlanEntry* a, const PlanEntry* b) { return a->size != b->size ? a->size > b->size : a->path < b->path; });
+        s += "\nThe largest:\n";
+        for (size_t i = 0; i < big.size() && i < ctx.list_files; i++)
+            s += "  " + big[i]->path + "   " + human_bytes(big[i]->size) + ", not used for " + idle_text(big[i]->idle_seconds) +
+                 (big[i]->needs_replication ? "   (copied to the devices first)" : "") + "\n";
+        if (big.size() > ctx.list_files) s += "  ... and " + plural(big.size() - ctx.list_files, "more file", "more files") + "\n";
+        size_t copy_files = 0;
+        for (const auto& e : plan.entries) copy_files += e.needs_replication;
+        if (copy_files)
+            s += "\nBefore anything moves, " + plural(copy_files, "file", "files") + " (" + human_bytes(plan.bytes_to_replicate) + ") " +
+                 (copy_files == 1 ? "is" : "are") + " copied to your devices, which takes time and network.\n";
+        s += "\nWhat happens to each file:\n";
+        s += "  - it is copied to at least two devices, and checked on them again just before it moves;\n";
+        s += "  - it stays visible at the same path; opening it fetches it back from the devices;\n";
+        if (plan.free_now)
+            s += "  - the bytes on this Mac are deleted right away, after fresh checks (you asked to free the space NOW: there is no undo period).\n";
+        else
+            s += "  - the bytes stay on this Mac, set aside, for " + std::to_string(ctx.quarantine_days) +
+                 " days (you can undo until then), then they are deleted.\n";
+    }
+    if (!plan.skipped.empty()) {
+        s += "\nLeft alone:\n";
+        for (const auto& kv : plan.skipped) s += "  " + plural(kv.second, "file", "files") + ": " + kv.first + "\n";
+    }
+    for (const auto& w : plan.warnings) s += "\nWARNING: " + w + "\n";
+    if (ctx.devices < 2 && !plan.entries.empty())
+        s += "\nWARNING: only " + plural(ctx.devices, "device is", "devices are") + " connected; two are needed to hold enough copies.\n";
+    if (!ctx.blockers.empty()) {
+        s += "\nCANNOT RUN YET:\n";
+        for (const auto& b : ctx.blockers) s += "  - " + b + "\n";
+    }
+    if (!plan.entries.empty()) {
+        if (ctx.blockers.empty() && !ctx.approve_command.empty())
+            s += "\nTo approve exactly this plan (good for " + std::to_string(ctx.valid_minutes) + " minutes):\n  " + ctx.approve_command + " " +
+                 plan.digest.substr(0, 16) + "\n";
+        else if (!ctx.approve_command.empty())
+            s += "\nFix the above, then approve with:\n  " + ctx.approve_command + " " + plan.digest.substr(0, 16) + "\n";
+    }
+    return s;
+}
+
+std::string format_exec_report(const ExecReport& r) {
+    if (r.rejected) return "Nothing was done: " + r.reject_reason + "\n";
+    std::string s = "Moved " + plural(r.dropped, "file", "files") + " (" + human_bytes(r.bytes_dropped) + ") off this Mac";
+    if (r.replicated) s += "; copied " + plural(r.replicated, "file", "files") + " to the devices first";
+    if (r.purged) s += "; deleted " + human_bytes(r.bytes_purged) + " of local bytes";
+    s += ".\n";
+    if (r.avail_before || r.avail_after)
+        s += "Free space: " + human_bytes(r.avail_before) + " before, " + human_bytes(r.avail_after) + " after" +
+             (r.target_met ? " (the goal was met)" : "") + ".\n";
+    if (r.skipped) s += plural(r.skipped, "file was", "files were") + " skipped (checked again just now and not safe to move).\n";
+    if (r.failed) s += plural(r.failed, "file", "files") + " failed (nothing was lost; they stay where they were).\n";
+    for (const auto& n : r.notes) s += "  " + n + "\n";
+    return s;
+}
+
+std::string format_notification(const SpaceStatus& status, const TierPlan& plan, const std::string& hint) {
     std::string head = std::string(status.level == SpaceLevel::CRITICAL ? "Disk space is critically low" : "Disk space is low") + ": " +
                        gib(status.info.avail()) + " free of " + gib(status.info.total) + ". ";
     if (plan.entries.empty()) return head + "No cold files in your tiered folders can be moved automatically.";
-    return head + "tierfs can move " + std::to_string(plan.entries.size()) + " cold file(s) (" + gib(plan.bytes_total) + ") off this Mac. Review and approve to continue.";
+    return head + "tierfs can move " + std::to_string(plan.entries.size()) + " cold file(s) (" + gib(plan.bytes_total) + ") off this Mac. " +
+           (hint.empty() ? "Review and approve to continue." : hint);
 }
 
 void OsascriptNotifier::low_space(const SpaceStatus& status, const TierPlan& plan) {
-    std::string msg = format_notification(status, plan), esc;
+    std::string msg = format_notification(status, plan, hint_), esc;
     for (char c : msg) { if (c == '"' || c == '\\') esc += '\\'; esc += c; }
     std::string script = "display notification \"" + esc + "\" with title \"tierfs\"";
     char* argv[] = {const_cast<char*>("osascript"), const_cast<char*>("-e"), const_cast<char*>(script.c_str()), nullptr};

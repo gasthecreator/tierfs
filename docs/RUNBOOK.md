@@ -54,6 +54,18 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## When the disk is nearly full: review, then approve
+tierfs never moves files off the Mac on its own. When space runs short it shows a notification; to see what it would do, in plain words:
+```bash
+./build/tierctl plan <ledger dir>                # what would move to reach a comfortable amount of free space (moves nothing)
+./build/tierctl plan <ledger dir> 20             # ... or to free 20 GiB
+./build/tierctl plan <ledger dir> free-now 20    # ... and delete the local bytes right away, with no undo period
+./build/tierctl approve <ledger dir> <plan id>   # run exactly that plan (the id is printed under the plan)
+```
+The review lists the folders and largest files, says what happens to each file (copied to two devices and checked again just before it moves; it stays visible at the same path; the bytes are kept aside for
+7 days, then deleted), what was left alone and why, and anything that stops it from running (recovery phrase, backup statement, fewer than two devices). The plan can be approved once, within an hour; if it has
+gone stale or you want something different, run `plan` again. If something blocks it, fix that and approve the same plan.
+
 ## Hard links and locks
 - `ln a b` inside the mount works for regular files (an offloaded `a` is fetched first). While a file has two names neither is offloaded; `tierctl control <ledger> tick` and the plan say "has other hard links".
   Remove the other name and it is eligible again. Programs that cannot get a hard link (directories, symlinks) get EPERM and fall back to copying.
