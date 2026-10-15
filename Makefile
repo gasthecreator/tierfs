@@ -272,13 +272,13 @@ test-ledger-tsan:
 
 test-overlay-tsan: build/tierfs-device build/overlay_helper
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_write_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_write_test.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_write_test
 	./build/tsan/overlay_write_test > build/tsan/overlay_write.log 2>&1; echo "exit $$?"; grep -c "ThreadSanitizer" build/tsan/overlay_write.log; grep -a "ALL PASSED\|FAILED" build/tsan/overlay_write.log
 
 test-ns-tsan: build/tierfs-device build/drop_helper
 	@mkdir -p build/tsan
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_ns_test.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_ns_test
-	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/scanner_test.cpp core/scanner.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/scanner_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/overlay_ns_test.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/overlay_ns_test
+	$(CXX) -std=c++17 -g -O1 -fsanitize=thread $(OPENSSL_INC) tests/scanner_test.cpp core/scanner.cpp core/overlay.cpp core/locks.cpp core/dropengine.cpp core/replicator.cpp core/ledger.cpp core/deviceclient.cpp core/securechannel.cpp core/devicestore.cpp core/crypto.cpp $(OPENSSL_LIB) $(SQLITE_LIB) -o build/tsan/scanner_test
 	@for t in overlay_ns_test scanner_test; do ./build/tsan/$$t > build/tsan/$$t.log 2>&1; echo "$$t exit $$?: $$(grep -ac ThreadSanitizer build/tsan/$$t.log) warnings; $$(grep -a 'ALL PASSED\|FAILED' build/tsan/$$t.log)"; done
 
 test-unit: build/metastore_test build/chunkcache_test build/ledger_test build/crypto_test build/devicestore_test

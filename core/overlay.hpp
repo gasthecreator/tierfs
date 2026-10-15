@@ -129,8 +129,8 @@ public:
     int link(const std::string& from, const std::string& to);
 
     // ---- advisory locks (ADR-0011): emulated here, per file identity and lock owner; the caller waits by polling.
-    // getlk: -> `lk->type` becomes Unlock when nothing is in the way, else it is the blocking lock. setlk/flock_op: 0, or -EAGAIN when another owner holds a
-    // conflicting lock. An Unlock always succeeds.
+    // getlk: -> `lk->type` becomes Unlock when nothing is in the way, else it is the blocking lock. setlk/flock_op: 0, or -EAGAIN when another owner
+    // holds a conflicting lock. An Unlock always succeeds.
     int getlk(uint64_t fh, uint64_t owner, LockInfo* lk);
     int setlk(uint64_t fh, uint64_t owner, const LockRange& lk);
     int flock_op(uint64_t fh, uint64_t owner, LockType type);
@@ -168,7 +168,7 @@ private:
         bool writable = false, remote = false;
         std::string file_id;
         FileRec snap;   // remote handles read this version, whatever happens to the file afterwards
-        std::mutex lmu;   // guards the two sets below: the owners that locked through this handle (released with it)
+        std::mutex lmu;  // guards the two sets below: the owners that locked through this handle (released with it)
         std::set<uint64_t> range_owners, flock_owners;
     };
     class Gate : public FileGate {
@@ -185,8 +185,8 @@ private:
                     std::optional<uint32_t> mode, std::optional<int64_t> mtime, int depth = 0);
     int unlink_impl(const std::string& path, int depth);
     int rename_impl(const std::string& from, const std::string& to, int depth);
-    // Registers a writer so that no drop can freeze the file. `modify` false: the file is only being guarded (a hard link is made to it), not changed, so it
-    // stays replicated.
+    // Registers a writer so that no drop can freeze the file. `modify` false: the file is only being guarded (a hard link is made to it), not
+    // changed, so it stays replicated.
     int begin_write(const std::string& logical, const std::string& origin_path, std::string* file_id, bool* need_hydrate, bool modify = true);
     void end_write(const std::string& file_id);
     int hydrate_logical(const std::string& logical, const std::string& origin_path);

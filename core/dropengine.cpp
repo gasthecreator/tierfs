@@ -188,7 +188,8 @@ DropOutcome DropEngine::drop(const std::string& file_id, const std::string& cons
     {
         struct stat ls;
         if (lstat(local.c_str(), &ls) == 0 && S_ISREG(ls.st_mode) && ls.st_nlink > 1)
-            return fail("the file has other hard links (" + std::to_string(static_cast<unsigned long long>(ls.st_nlink) - 1) + " more name(s)); it is not offloaded while it has them");
+            return fail("the file has other hard links (" + std::to_string(static_cast<unsigned long long>(ls.st_nlink) - 1) +
+                        " more name(s)); it is not offloaded while it has them");
     }
 
     // 2. the local bytes must STILL be the replicated version: this is what we are about to move out of the way

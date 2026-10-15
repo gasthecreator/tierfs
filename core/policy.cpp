@@ -110,10 +110,13 @@ PolicyEngine::Verdict PolicyEngine::classify(const FileRec& f, int64_t now, int6
     if (!f.local_present) { v.skip_reason = "no local bytes"; return v; }
     if (f.size < policy_.min_size) { v.skip_reason = "too small"; return v; }
     if (now - activity_of(f) < idle_threshold) { v.skip_reason = "not cold enough"; return v; }
-    {   // another name for the same bytes: dropping would leave the quarantine sharing them with a live name (ADR-0011)
+    {  // another name for the same bytes: dropping would leave the quarantine sharing them with a live name (ADR-0011)
         struct stat ls;
         std::string local = resolve_(f);
-        if (!local.empty() && lstat(local.c_str(), &ls) == 0 && S_ISREG(ls.st_mode) && ls.st_nlink > 1) { v.skip_reason = "has other hard links"; return v; }
+        if (!local.empty() && lstat(local.c_str(), &ls) == 0 && S_ISREG(ls.st_mode) && ls.st_nlink > 1) {
+            v.skip_reason = "has other hard links";
+            return v;
+        }
     }
 
     double w = f.current_version > 0 ? ledger_.committed_weight(f.file_id, f.current_version) : 0.0;

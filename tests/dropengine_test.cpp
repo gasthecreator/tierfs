@@ -310,7 +310,8 @@ int main() {
             for (auto& r : w.L->get_replicas(fid, 1)) if (r.device_id == w.idb) rot_state = r.state;
             CHECK(rot_state && *rot_state == ReplicaState::AUDIT_FAILED);                                // and it is recorded against that device
         }
-        {   World w;   // another name for the same bytes: the quarantine would share them with a live name (ADR-0011)
+        {
+            World w;  // another name for the same bytes: the quarantine would share them with a live name (ADR-0011)
             std::string fid = w.ready("lnk", MiB + 5, 6);
             CHECK(link(w.path("lnk").c_str(), w.path("lnk.second").c_str()) == 0);
             DropOutcome o = w.E->drop(fid, w.consent, w.devs);
@@ -319,7 +320,7 @@ int main() {
             o = w.E->drop(fid, w.consent, w.devs);
             CHECK(!o.ok && has(o.why, "other hard links (2 more name(s))"));
             CHECK(unlink(w.path("lnk.second").c_str()) == 0 && unlink(w.path("lnk.third").c_str()) == 0);
-            o = w.E->drop(fid, w.consent, w.devs);   // with its other names gone it is an ordinary file again
+            o = w.E->drop(fid, w.consent, w.devs);  // with its other names gone it is an ordinary file again
             CHECK(o.ok && !exists(w.path("lnk")) && w.data_safe("lnk"));
         }
         {   World w;   // consent: wrong, then expired

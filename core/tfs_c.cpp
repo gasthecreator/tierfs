@@ -68,7 +68,15 @@ int tfs_getattr(tfs_ctx *c, const char *path, tfs_stat *st) {
     return guarded([&] {
         OvStat s;
         int r = c->ov().getattr(path, &s);
-        if (r == 0 && st) { st->kind = kind_code(s.kind); st->size = s.size; st->mtime = s.mtime; st->mtime_nsec = s.mtime_nsec; st->mode = s.mode; st->remote = s.remote; st->nlink = s.nlink; }
+        if (r == 0 && st) {
+            st->kind = kind_code(s.kind);
+            st->size = s.size;
+            st->mtime = s.mtime;
+            st->mtime_nsec = s.mtime_nsec;
+            st->mode = s.mode;
+            st->remote = s.remote;
+            st->nlink = s.nlink;
+        }
         return r;
     });
 }
@@ -106,12 +114,14 @@ int tfs_rmdir(tfs_ctx *c, const char *path) { return guarded([&] { return c->ov(
 int tfs_unlink(tfs_ctx *c, const char *path) { return guarded([&] { return c->ov().unlink(path); }); }
 int tfs_rename(tfs_ctx *c, const char *from, const char *to) { return guarded([&] { return c->ov().rename(from, to); }); }
 int tfs_symlink(tfs_ctx *c, const char *target, const char *linkpath) { return guarded([&] { return c->ov().symlink(target, linkpath); }); }
-int tfs_link(tfs_ctx *c, const char *from, const char *to) { return guarded([&] { return c->ov().link(from, to); }); }
+int tfs_link(tfs_ctx* c, const char* from, const char* to) {
+    return guarded([&] { return c->ov().link(from, to); });
+}
 
 static LockType lock_type_of(int t) { return t == 0 ? LockType::Read : t == 1 ? LockType::Write : LockType::Unlock; }
 static int lock_code_of(LockType t) { return t == LockType::Read ? 0 : t == LockType::Write ? 1 : 2; }
 
-int tfs_getlk(tfs_ctx *c, uint64_t fh, uint64_t owner, int *type, uint64_t *start, uint64_t *len, uint64_t *blocker) {
+int tfs_getlk(tfs_ctx* c, uint64_t fh, uint64_t owner, int* type, uint64_t* start, uint64_t* len, uint64_t* blocker) {
     return guarded([&] {
         if (!type || !start || !len) return -EINVAL;
         LockInfo lk;
@@ -119,15 +129,24 @@ int tfs_getlk(tfs_ctx *c, uint64_t fh, uint64_t owner, int *type, uint64_t *star
         lk.start = *start;
         lk.len = *len;
         int r = c->ov().getlk(fh, owner, &lk);
-        if (r == 0) { *type = lock_code_of(lk.type); *start = lk.start; *len = lk.len; if (blocker) *blocker = lk.owner; }
+        if (r == 0) {
+            *type = lock_code_of(lk.type);
+            *start = lk.start;
+            *len = lk.len;
+            if (blocker) *blocker = lk.owner;
+        }
         return r;
     });
 }
-int tfs_setlk(tfs_ctx *c, uint64_t fh, uint64_t owner, int type, uint64_t start, uint64_t len) {
+int tfs_setlk(tfs_ctx* c, uint64_t fh, uint64_t owner, int type, uint64_t start, uint64_t len) {
     return guarded([&] { return c->ov().setlk(fh, owner, LockRange{lock_type_of(type), start, len}); });
 }
-int tfs_flock(tfs_ctx *c, uint64_t fh, uint64_t owner, int type) { return guarded([&] { return c->ov().flock_op(fh, owner, lock_type_of(type)); }); }
-int tfs_unlock_owner(tfs_ctx *c, uint64_t fh, uint64_t owner) { return guarded([&] { return c->ov().unlock_owner(fh, owner); }); }
+int tfs_flock(tfs_ctx* c, uint64_t fh, uint64_t owner, int type) {
+    return guarded([&] { return c->ov().flock_op(fh, owner, lock_type_of(type)); });
+}
+int tfs_unlock_owner(tfs_ctx* c, uint64_t fh, uint64_t owner) {
+    return guarded([&] { return c->ov().unlock_owner(fh, owner); });
+}
 
 int tfs_chmod(tfs_ctx *c, const char *path, uint32_t mode) { return guarded([&] { return c->ov().chmod(path, mode); }); }
 int tfs_chown(tfs_ctx *c, const char *path, int64_t uid, int64_t gid) { return guarded([&] { return c->ov().chown(path, uid, gid); }); }

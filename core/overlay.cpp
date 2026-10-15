@@ -619,7 +619,7 @@ int Overlay::release(uint64_t fh) {
         h = it->second;
         handles_.erase(it);
     }
-    {   // the locks taken through this descriptor go with it
+    {  // the locks taken through this descriptor go with it
         std::lock_guard<std::mutex> g(h->lmu);
         if (!h->range_owners.empty() || !h->flock_owners.empty()) {
             std::string key = lock_key(*h);
@@ -1001,11 +1001,11 @@ int Overlay::link(const std::string& from, const std::string& to) {
         struct stat st;
         bool local = lstat(sop.c_str(), &st) == 0;
         if (!local && errno != ENOENT && errno != ENOTDIR) return -errno;
-        if (local && !S_ISREG(st.st_mode)) return -EPERM;   // directories and symlinks do not get hard links
+        if (local && !S_ISREG(st.st_mode)) return -EPERM;  // directories and symlinks do not get hard links
         if (!local) {
             auto f = ledger_.get_file_by_path(slp);
             if (!f || !is_remote_state(*f)) return -ENOENT;
-            int hr = hydrate_logical(slp, sop);   // the bytes come back first: a name without bytes behind it cannot be a second name for them
+            int hr = hydrate_logical(slp, sop);  // the bytes come back first: a name without bytes behind it cannot be a second name for them
             if (hr < 0) return hr;
             continue;
         }
@@ -1016,17 +1016,21 @@ int Overlay::link(const std::string& from, const std::string& to) {
         // While the second name is being made nobody may drop the first (a drop would move the shared bytes into quarantine).
         std::string id;
         bool need = false;
-        if (ledger_.get_file_by_path(slp)) {   // (a file the ledger does not know yet cannot be dropped)
+        if (ledger_.get_file_by_path(slp)) {  // (a file the ledger does not know yet cannot be dropped)
             int r = begin_write(slp, sop, &id, &need, false);
             if (r < 0) return r;
-            if (need) continue;   // it was dropped meanwhile: it is remote now, bring it back and look again
+            if (need) continue;  // it was dropped meanwhile: it is remote now, bring it back and look again
         }
         int rc = ::link(sop.c_str(), dop.c_str()) == 0 ? 0 : -errno;
         if (rc == 0) {
             struct stat now;
             if (lstat(dop.c_str(), &now) == 0) {
-                if (df) ledger_.note_local_modified(df->file_id, static_cast<uint64_t>(now.st_size), now.st_mtimespec.tv_sec);   // (a stale entry for the name)
-                else ledger_.track_file(dlp, static_cast<uint64_t>(now.st_size), now.st_mtimespec.tv_sec, now.st_mode & 0777);   // (else the scanner finds it)
+                if (df)
+                    ledger_.note_local_modified(df->file_id, static_cast<uint64_t>(now.st_size),
+                                                now.st_mtimespec.tv_sec);  // (a stale entry for the name)
+                else
+                    ledger_.track_file(dlp, static_cast<uint64_t>(now.st_size), now.st_mtimespec.tv_sec,
+                                       now.st_mode & 0777);  // (else the scanner finds it)
             }
         }
         if (!id.empty()) end_write(id);
@@ -1038,16 +1042,19 @@ int Overlay::link(const std::string& from, const std::string& to) {
 std::string Overlay::lock_key(Handle& h) {
     if (!h.file_id.empty()) return "f:" + h.file_id;
     struct stat st;
-    if (h.fd >= 0 && fstat(h.fd, &st) == 0) return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino));
-    return "h:" + std::to_string(reinterpret_cast<uintptr_t>(&h));   // (no identity at all: a private key, so nothing conflicts)
+    if (h.fd >= 0 && fstat(h.fd, &st) == 0)
+        return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino));
+    return "h:" + std::to_string(reinterpret_cast<uintptr_t>(&h));  // (no identity at all: a private key, so nothing conflicts)
 }
 
 int Overlay::getlk(uint64_t fh, uint64_t owner, LockInfo* lk) {
     auto h = get_handle(fh);
     if (!h || !lk) return -EBADF;
     LockInfo blocking;
-    if (locks_.test(lock_key(*h), owner, LockRange{lk->type, lk->start, lk->len}, &blocking)) *lk = blocking;
-    else lk->type = LockType::Unlock;
+    if (locks_.test(lock_key(*h), owner, LockRange{lk->type, lk->start, lk->len}, &blocking))
+        *lk = blocking;
+    else
+        lk->type = LockType::Unlock;
     return 0;
 }
 

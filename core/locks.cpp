@@ -11,7 +11,7 @@ constexpr uint64_t END = std::numeric_limits<uint64_t>::max();
 
 uint64_t end_of(uint64_t start, uint64_t len) {
     if (len == 0) return END;
-    return len > END - start ? END : start + len;   // a range that would run past the largest offset runs to the end
+    return len > END - start ? END : start + len;  // a range that would run past the largest offset runs to the end
 }
 
 bool overlaps(uint64_t a0, uint64_t a1, uint64_t b0, uint64_t b1) { return a0 < b1 && b0 < a1; }
@@ -28,7 +28,7 @@ bool LockTable::test(const std::string& key, uint64_t owner, const LockRange& wa
     for (const Held& h : it->second) {
         if (h.owner == owner || !overlaps(w0, w1, h.start, h.end)) continue;
         if (want.type == LockType::Read && h.type == LockType::Read) continue;
-        if (!first || h.start < first->start) first = &h;   // the one that starts first
+        if (!first || h.start < first->start) first = &h;  // the one that starts first
     }
     if (!first) return false;
     if (blocking) {
@@ -43,16 +43,20 @@ bool LockTable::test(const std::string& key, uint64_t owner, const LockRange& wa
 bool LockTable::set(const std::string& key, uint64_t owner, const LockRange& lk) {
     std::lock_guard<std::mutex> g(mu_);
     uint64_t s = lk.start, e = end_of(lk.start, lk.len);
-    if (s >= e) return true;   // an empty range (it starts at the largest offset): nothing to lock or unlock
+    if (s >= e) return true;  // an empty range (it starts at the largest offset): nothing to lock or unlock
     auto& list = ranges_[key];
     if (lk.type != LockType::Unlock) {
         for (const Held& h : list)
-            if (h.owner != owner && overlaps(s, e, h.start, h.end) && !(lk.type == LockType::Read && h.type == LockType::Read)) return false;   // (a conflict means the list is not empty)
+            if (h.owner != owner && overlaps(s, e, h.start, h.end) && !(lk.type == LockType::Read && h.type == LockType::Read))
+                return false;  // (a conflict means the list is not empty)
     }
     // the owner's locks over [s, e) are replaced: cut them out, keeping the parts outside
     std::vector<Held> out;
     for (const Held& h : list) {
-        if (h.owner != owner || !overlaps(s, e, h.start, h.end)) { out.push_back(h); continue; }
+        if (h.owner != owner || !overlaps(s, e, h.start, h.end)) {
+            out.push_back(h);
+            continue;
+        }
         if (h.start < s) out.push_back({h.owner, h.type, h.start, s});
         if (h.end > e) out.push_back({h.owner, h.type, e, h.end});
     }
@@ -66,8 +70,10 @@ bool LockTable::set(const std::string& key, uint64_t owner, const LockRange& lk)
         else
             merged.push_back(h);
     }
-    if (merged.empty()) ranges_.erase(key);
-    else list = merged;
+    if (merged.empty())
+        ranges_.erase(key);
+    else
+        list = merged;
     return true;
 }
 
@@ -93,7 +99,7 @@ bool LockTable::flock_try(const std::string& key, uint64_t owner, LockType type)
     auto& m = flocks_[key];
     for (auto& kv : m)
         if (kv.first != owner && (type == LockType::Write || kv.second == LockType::Write)) return false;
-    m[owner] = type;   // a new lock, or the owner's own converted
+    m[owner] = type;  // a new lock, or the owner's own converted
     return true;
 }
 
@@ -113,7 +119,8 @@ std::vector<LockInfo> LockTable::list(const std::string& key) {
     auto it = ranges_.find(key);
     if (it == ranges_.end()) return out;
     for (const Held& h : it->second) out.push_back({h.type, h.start, h.end == END ? 0 : h.end - h.start, h.owner});
-    std::sort(out.begin(), out.end(), [](const LockInfo& a, const LockInfo& b) { return a.owner != b.owner ? a.owner < b.owner : a.start < b.start; });
+    std::sort(out.begin(), out.end(),
+              [](const LockInfo& a, const LockInfo& b) { return a.owner != b.owner ? a.owner < b.owner : a.start < b.start; });
     return out;
 }
 

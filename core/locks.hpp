@@ -1,7 +1,8 @@
 // Advisory file locks, emulated inside the daemon (ADR-0011). Pure data structure: no files, no waiting.
 //
 // Two separate tables per key (a file identity), because POSIX byte-range locks and BSD flock locks are different things:
-//   byte-range  (fcntl F_SETLK/F_GETLK): owned by a lock owner; shared (read) or exclusive (write) over [start, end); an owner's own locks never conflict with
+//   byte-range  (fcntl F_SETLK/F_GETLK): owned by a lock owner; shared (read) or exclusive (write) over [start, end); an owner's own locks never
+//   conflict with
 //               each other; setting a lock replaces what the owner had over that range (split, merge, convert); unlocking a range removes it.
 //   whole-file  (flock): one shared or exclusive lock per owner; an owner can convert its lock.
 // Only TRYING is offered. A caller that wants to wait polls `set` / `flock_try` until it succeeds (the driver does, and stops when interrupted).
@@ -20,13 +21,13 @@ enum class LockType { Read, Write, Unlock };
 struct LockRange {
     LockType type = LockType::Read;
     uint64_t start = 0;
-    uint64_t len = 0;   // 0: to the end of the file, whatever its size becomes
+    uint64_t len = 0;  // 0: to the end of the file, whatever its size becomes
 };
 
-struct LockInfo {       // a lock that is in the way (F_GETLK)
+struct LockInfo {  // a lock that is in the way (F_GETLK)
     LockType type = LockType::Read;
     uint64_t start = 0;
-    uint64_t len = 0;   // 0: to the end of the file
+    uint64_t len = 0;  // 0: to the end of the file
     uint64_t owner = 0;
 };
 
@@ -50,7 +51,11 @@ public:
     std::vector<LockInfo> list(const std::string& key);
 
 private:
-    struct Held { uint64_t owner; LockType type; uint64_t start, end; };   // [start, end), end == UINT64_MAX: to the end of the file
+    struct Held {
+        uint64_t owner;
+        LockType type;
+        uint64_t start, end;
+    };  // [start, end), end == UINT64_MAX: to the end of the file
     std::mutex mu_;
     std::map<std::string, std::vector<Held>> ranges_;
     std::map<std::string, std::map<uint64_t, LockType>> flocks_;

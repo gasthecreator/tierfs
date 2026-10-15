@@ -69,13 +69,13 @@ int tfs_rmdir(tfs_ctx *c, const char *path);
 int tfs_unlink(tfs_ctx *c, const char *path);
 int tfs_rename(tfs_ctx *c, const char *from, const char *to);
 int tfs_symlink(tfs_ctx *c, const char *target, const char *linkpath);
-int tfs_link(tfs_ctx *c, const char *from, const char *to);
-/* Advisory locks (ADR-0011). type: 0 shared/read, 1 exclusive/write, 2 unlock. len 0 = to the end of the file. All of them only TRY: -EAGAIN means "would
- * block", and the caller polls if it wants to wait. getlk fills the blocking lock (type 2 = nothing in the way). */
-int tfs_getlk(tfs_ctx *c, uint64_t fh, uint64_t owner, int *type, uint64_t *start, uint64_t *len, uint64_t *blocker);
-int tfs_setlk(tfs_ctx *c, uint64_t fh, uint64_t owner, int type, uint64_t start, uint64_t len);
-int tfs_flock(tfs_ctx *c, uint64_t fh, uint64_t owner, int type);
-int tfs_unlock_owner(tfs_ctx *c, uint64_t fh, uint64_t owner);
+int tfs_link(tfs_ctx* c, const char* from, const char* to);
+/* Advisory locks (ADR-0011). type: 0 shared/read, 1 exclusive/write, 2 unlock. len 0 = to the end of the file. All of them only TRY: -EAGAIN means
+ * "would block", and the caller polls if it wants to wait. getlk fills the blocking lock (type 2 = nothing in the way). */
+int tfs_getlk(tfs_ctx* c, uint64_t fh, uint64_t owner, int* type, uint64_t* start, uint64_t* len, uint64_t* blocker);
+int tfs_setlk(tfs_ctx* c, uint64_t fh, uint64_t owner, int type, uint64_t start, uint64_t len);
+int tfs_flock(tfs_ctx* c, uint64_t fh, uint64_t owner, int type);
+int tfs_unlock_owner(tfs_ctx* c, uint64_t fh, uint64_t owner);
 int tfs_chmod(tfs_ctx *c, const char *path, uint32_t mode);
 int tfs_chown(tfs_ctx *c, const char *path, int64_t uid, int64_t gid);
 int tfs_utimens(tfs_ctx *c, const char *path, int has_mtime, int64_t mtime);
