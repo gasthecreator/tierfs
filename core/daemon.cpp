@@ -299,7 +299,8 @@ std::vector<std::string> Daemon::plan_blockers() {
             long long at = atoll(ledger_->get_meta("backup_acked_at").value_or("0").c_str());
             long long max_days = atoll(ledger_->get_meta("backup_max_age_days").value_or("30").c_str());
             if (max_days < 1) max_days = 30;
-            if (at <= 0) b.push_back("the recorded backup has no date: run tierctl ack-backup again after a backup");
+            if (at <= 0)
+                b.push_back("the recorded backup has no date: run tierctl ack-backup again after a backup");
             else if (static_cast<long long>(time(nullptr)) - at > max_days * 86400)
                 b.push_back("the recorded backup is older than " + std::to_string(max_days) + " days: back up again, then run tierctl ack-backup");
         }
@@ -315,7 +316,8 @@ std::string Daemon::cmd_plan(const std::string& arg) {
     std::istringstream in(arg);
     std::string tok;
     while (in >> tok) {
-        if (tok == "free-now") free_now = true;
+        if (tok == "free-now")
+            free_now = true;
         else {
             char* end = nullptr;
             double v = strtod(tok.c_str(), &end);
@@ -329,9 +331,10 @@ std::string Daemon::cmd_plan(const std::string& arg) {
     if (need == 0) {
         std::lock_guard<std::mutex> pg(plan_mu_);
         pending_plan_.reset();
-        return "Disk space is fine (" + human_bytes(st.info.avail()) + " free of " + human_bytes(st.info.total) + "): nothing needs to move. To plan anyway: plan <GiB to free>\n" + "OK\n";
+        return "Disk space is fine (" + human_bytes(st.info.avail()) + " free of " + human_bytes(st.info.total) +
+               "): nothing needs to move. To plan anyway: plan <GiB to free>\n" + "OK\n";
     }
-    TierPlan plan = policy_->plan(need, free_now);   // (freeing space NOW, without the undo period, is only ever what the person asked for)
+    TierPlan plan = policy_->plan(need, free_now);  // (freeing space NOW, without the undo period, is only ever what the person asked for)
     PlanContext ctx;
     ctx.blockers = plan_blockers();
     ctx.devices = devices_snapshot().size();
@@ -341,8 +344,12 @@ std::string Daemon::cmd_plan(const std::string& arg) {
     std::string text = format_plan_review(plan, ctx);
     {
         std::lock_guard<std::mutex> pg(plan_mu_);
-        if (plan.entries.empty()) pending_plan_.reset();
-        else { pending_plan_ = plan; pending_at_ = static_cast<int64_t>(time(nullptr)); }
+        if (plan.entries.empty())
+            pending_plan_.reset();
+        else {
+            pending_plan_ = plan;
+            pending_at_ = static_cast<int64_t>(time(nullptr));
+        }
     }
     return text + "OK\n";
 }
@@ -350,25 +357,27 @@ std::string Daemon::cmd_plan(const std::string& arg) {
 // `approve <plan id>`: executes exactly the plan that was shown, once.
 std::string Daemon::cmd_approve(const std::string& arg) {
     std::string id = trim(arg);
-    if (id.size() < 8 || id.find_first_not_of("0123456789abcdef") != std::string::npos) return "ERR give the plan id shown by plan (at least 8 hex characters)\n";
+    if (id.size() < 8 || id.find_first_not_of("0123456789abcdef") != std::string::npos)
+        return "ERR give the plan id shown by plan (at least 8 hex characters)\n";
     std::lock_guard<std::mutex> g(overlay_->engine_mutex());
     TierPlan plan;
     {
         std::lock_guard<std::mutex> pg(plan_mu_);
         if (!pending_plan_) return "ERR there is no plan to approve: run plan first\n";
-        if (pending_plan_->digest.compare(0, id.size(), id) != 0) return "ERR that is not the plan that was last shown (" + pending_plan_->digest.substr(0, 16) + "): run plan again and read it\n";
+        if (pending_plan_->digest.compare(0, id.size(), id) != 0)
+            return "ERR that is not the plan that was last shown (" + pending_plan_->digest.substr(0, 16) + "): run plan again and read it\n";
         if (static_cast<int64_t>(time(nullptr)) - pending_at_ > cfg_.plan_ttl_seconds) {
             pending_plan_.reset();
             return "ERR the plan is too old to approve: run plan again (the files, the devices and the free space may have changed)\n";
         }
         auto blockers = plan_blockers();
-        if (!blockers.empty()) {   // not consumed: fix the problem and approve again
+        if (!blockers.empty()) {  // not consumed: fix the problem and approve again
             std::string e = "ERR the plan cannot run yet:";
             for (auto& b : blockers) e += " " + b + ";";
             return e + "\n";
         }
         plan = *pending_plan_;
-        pending_plan_.reset();   // a plan is approved once
+        pending_plan_.reset();  // a plan is approved once
     }
     std::string err;
     Approval ap = policy_->approve(plan, &err);

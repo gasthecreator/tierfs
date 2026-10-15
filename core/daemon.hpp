@@ -51,7 +51,7 @@ struct DaemonConfig {
     bool gc = false;
     int64_t gc_interval_seconds = 86400;
     GcConfig gc_config;
-    int64_t plan_ttl_seconds = 3600;         // a space plan can be approved for this long after it was made (then it is stale: make it again)
+    int64_t plan_ttl_seconds = 3600;  // a space plan can be approved for this long after it was made (then it is stale: make it again)
 };
 
 class Daemon {
@@ -102,7 +102,7 @@ private:
     std::unique_ptr<PolicyEngine> policy_;
     std::unique_ptr<GarbageCollector> gc_;
     std::mutex plan_mu_;
-    std::optional<TierPlan> pending_plan_;   // the plan a person was last shown: only this one can be approved, and only once
+    std::optional<TierPlan> pending_plan_;  // the plan a person was last shown: only this one can be approved, and only once
     int64_t pending_at_ = 0;
     std::unique_ptr<Notifier> notifier_;
 

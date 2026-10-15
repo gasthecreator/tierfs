@@ -402,9 +402,12 @@ int main() {
 
     {
         printf("== the plan as a person reads it: sizes, folders, what happens, what is left alone, what blocks it, how to approve\n");
-        CHECK(human_bytes(0) == "0 bytes" && human_bytes(1) == "1 bytes" && human_bytes(1023) == "1023 bytes" && human_bytes(1024) == "1.0 KiB" && human_bytes(1536) == "1.5 KiB");
-        CHECK(human_bytes(100 * 1024) == "100 KiB" && human_bytes(999 * 1024) == "999 KiB" && human_bytes(1000 * 1024) == "1.0 MiB" && human_bytes(1048576) == "1.0 MiB" && human_bytes(1040000) == "1.0 MiB");
-        CHECK(human_bytes(5 * MiB + MiB / 2) == "5.5 MiB" && human_bytes(250 * MiB) == "250 MiB" && human_bytes(3ull << 30) == "3.0 GiB" && human_bytes(1ull << 40) == "1.0 TiB" && human_bytes(5000ull << 40) == "5000 TiB");
+        CHECK(human_bytes(0) == "0 bytes" && human_bytes(1) == "1 bytes" && human_bytes(1023) == "1023 bytes" && human_bytes(1024) == "1.0 KiB" &&
+              human_bytes(1536) == "1.5 KiB");
+        CHECK(human_bytes(100 * 1024) == "100 KiB" && human_bytes(999 * 1024) == "999 KiB" && human_bytes(1000 * 1024) == "1.0 MiB" &&
+              human_bytes(1048576) == "1.0 MiB" && human_bytes(1040000) == "1.0 MiB");
+        CHECK(human_bytes(5 * MiB + MiB / 2) == "5.5 MiB" && human_bytes(250 * MiB) == "250 MiB" && human_bytes(3ull << 30) == "3.0 GiB" &&
+              human_bytes(1ull << 40) == "1.0 TiB" && human_bytes(5000ull << 40) == "5000 TiB");
         auto entry = [](const std::string& root, const std::string& rel, uint64_t size, int64_t idle_days, bool copy) {
             PlanEntry e;
             e.root = root;
@@ -423,10 +426,13 @@ int main() {
         const std::string R1 = "/Users/me/Projects/", R2 = "/Users/me/Photos/";
         for (int i = 0; i < 10; i++) plan.entries.push_back(entry(R1, "app" + std::to_string(i) + "/big.bin", (100 + i) * MiB, 40 + i, i < 3));
         plan.entries.push_back(entry(R1, "top.iso", 700 * MiB, 90, false));
-        plan.entries.push_back(entry(R1, "app9/extra.bin", 10 * MiB, 5, false));   // a second file in a folder that is listed
+        plan.entries.push_back(entry(R1, "app9/extra.bin", 10 * MiB, 5, false));  // a second file in a folder that is listed
         plan.entries.push_back(entry(R2, "2019/a.raw", 30 * MiB, 200, true));
         plan.entries.push_back(entry(R2, "2019/b.raw", 30 * MiB, 200, false));
-        for (auto& e : plan.entries) { plan.bytes_total += e.size; if (e.needs_replication) plan.bytes_to_replicate += e.size; }
+        for (auto& e : plan.entries) {
+            plan.bytes_total += e.size;
+            if (e.needs_replication) plan.bytes_to_replicate += e.size;
+        }
         plan.skipped["too small"] = 4;
         plan.skipped["has other hard links"] = 1;
         plan.warnings.push_back("something to know");
@@ -440,15 +446,22 @@ int main() {
         CHECK(has(t, "Disk: 6.0 GiB free of 228 GiB (CRITICAL). 14.0 GiB should be freed to be comfortable again."));
         CHECK(has(t, ("This plan moves 14 files (" + human_bytes(plan.bytes_total) + ") off this Mac:").c_str()));
         // folders: biggest first, each with its count and size, the rest counted
-        CHECK(has(t, "  /Users/me/Projects/   1 file, 700 MiB\n") && has(t, "  /Users/me/Projects/app9/   2 files, 119 MiB\n") && has(t, "  /Users/me/Projects/app4/   1 file, 104 MiB\n"));
-        CHECK(t.find("/Users/me/Projects/   1 file") < t.find("/Users/me/Projects/app9/") && t.find("/Users/me/Projects/app9/") < t.find("/Users/me/Projects/app8/"));
-        CHECK(has(t, "  ... and 4 more folders\n") && !has(t, "/Users/me/Projects/app2/   1 file") && !has(t, "/Users/me/Projects/app0/   1 file") && !has(t, "/Users/me/Photos/2019/"));   // (12 folders, the 8 biggest named)
+        CHECK(has(t, "  /Users/me/Projects/   1 file, 700 MiB\n") && has(t, "  /Users/me/Projects/app9/   2 files, 119 MiB\n") &&
+              has(t, "  /Users/me/Projects/app4/   1 file, 104 MiB\n"));
+        CHECK(t.find("/Users/me/Projects/   1 file") < t.find("/Users/me/Projects/app9/") &&
+              t.find("/Users/me/Projects/app9/") < t.find("/Users/me/Projects/app8/"));
+        CHECK(has(t, "  ... and 4 more folders\n") && !has(t, "/Users/me/Projects/app2/   1 file") && !has(t, "/Users/me/Projects/app0/   1 file") &&
+              !has(t, "/Users/me/Photos/2019/"));  // (12 folders, the 8 biggest named)
         // files: the largest ten are named with their idle time, the rest counted
-        CHECK(has(t, "  /Users/me/Projects/top.iso   700 MiB, not used for 90 days\n") && has(t, "  /Users/me/Projects/app9/big.bin   109 MiB, not used for 49 days\n"));
-        CHECK(has(t, "  /Users/me/Projects/app2/big.bin   102 MiB, not used for 42 days   (copied to the devices first)\n") && !has(t, "/Users/me/Projects/app0/big.bin") && has(t, "  ... and 4 more files\n"));
+        CHECK(has(t, "  /Users/me/Projects/top.iso   700 MiB, not used for 90 days\n") &&
+              has(t, "  /Users/me/Projects/app9/big.bin   109 MiB, not used for 49 days\n"));
+        CHECK(has(t, "  /Users/me/Projects/app2/big.bin   102 MiB, not used for 42 days   (copied to the devices first)\n") &&
+              !has(t, "/Users/me/Projects/app0/big.bin") && has(t, "  ... and 4 more files\n"));
         CHECK(has(t, "Before anything moves, 4 files (333 MiB) are copied to your devices, which takes time and network."));
-        CHECK(has(t, "it is copied to at least two devices") && has(t, "stays visible at the same path") && has(t, "set aside, for 7 days (you can undo until then)") && !has(t, "right away"));
-        CHECK(has(t, "Left alone:\n  4 files: too small\n  1 file: has other hard links\n") || has(t, "Left alone:\n  1 file: has other hard links\n  4 files: too small\n"));
+        CHECK(has(t, "it is copied to at least two devices") && has(t, "stays visible at the same path") &&
+              has(t, "set aside, for 7 days (you can undo until then)") && !has(t, "right away"));
+        CHECK(has(t, "Left alone:\n  4 files: too small\n  1 file: has other hard links\n") ||
+              has(t, "Left alone:\n  1 file: has other hard links\n  4 files: too small\n"));
         CHECK(has(t, "WARNING: something to know\n") && !has(t, "CANNOT RUN") && !has(t, "device is connected") && !has(t, "devices are connected"));
         CHECK(has(t, ("To approve exactly this plan (good for 60 minutes):\n  tierctl approve '/x/ledger' " + id16 + "\n").c_str()));
         // free now
@@ -464,7 +477,8 @@ int main() {
         c2.list_folders = 1;
         c2.devices = 1;
         std::string t2 = format_plan_review(plan, c2);
-        CHECK(has(t2, "for 14 days") && has(t2, "good for 15 minutes") && has(t2, "... and 12 more files") && has(t2, "... and 11 more folders") && has(t2, "WARNING: only 1 device is connected; two are needed"));
+        CHECK(has(t2, "for 14 days") && has(t2, "good for 15 minutes") && has(t2, "... and 12 more files") && has(t2, "... and 11 more folders") &&
+              has(t2, "WARNING: only 1 device is connected; two are needed"));
         c2.devices = 0;
         CHECK(has(format_plan_review(plan, c2), "WARNING: only 0 devices are connected"));
         // exactly as many as the limit: nothing is "more"
@@ -472,7 +486,8 @@ int main() {
         c5.list_folders = 12;
         c5.list_files = 14;
         std::string t6 = format_plan_review(plan, c5);
-        CHECK(!has(t6, "... and") && has(t6, "/Users/me/Photos/2019/   2 files, 60.0 MiB") && has(t6, "/Users/me/Projects/app9/extra.bin   10.0 MiB"));
+        CHECK(!has(t6, "... and") && has(t6, "/Users/me/Photos/2019/   2 files, 60.0 MiB") &&
+              has(t6, "/Users/me/Projects/app9/extra.bin   10.0 MiB"));
         c5.list_folders = 11;
         c5.list_files = 13;
         t6 = format_plan_review(plan, c5);
@@ -488,7 +503,8 @@ int main() {
         PlanContext c3 = ctx;
         c3.blockers = {"the recovery phrase has not been acknowledged", "no backup is recorded"};
         std::string t3 = format_plan_review(plan, c3);
-        CHECK(has(t3, "CANNOT RUN YET:\n  - the recovery phrase has not been acknowledged\n  - no backup is recorded\n") && has(t3, "Fix the above, then approve with:\n  tierctl approve '/x/ledger' ") && !has(t3, "To approve exactly"));
+        CHECK(has(t3, "CANNOT RUN YET:\n  - the recovery phrase has not been acknowledged\n  - no backup is recorded\n") &&
+              has(t3, "Fix the above, then approve with:\n  tierctl approve '/x/ledger' ") && !has(t3, "To approve exactly"));
         PlanContext c4 = ctx;
         c4.approve_command = "";
         CHECK(!has(format_plan_review(plan, c4), "approve with") && !has(format_plan_review(plan, c4), "To approve"));
@@ -500,7 +516,9 @@ int main() {
         one.bytes_total = 5 * MiB;
         one.digest = PolicyEngine::compute_digest(one);
         std::string t4 = format_plan_review(one, ctx);
-        CHECK(has(t4, "  /Users/me/Projects/   1 file, 5.0 MiB\n") && has(t4, "This plan moves 1 file (5.0 MiB)") && has(t4, "Nothing needs to be freed right now.") && has(t4, "not used for 3 days") && !has(t4, "Before anything moves") && !has(t4, "Left alone"));
+        CHECK(has(t4, "  /Users/me/Projects/   1 file, 5.0 MiB\n") && has(t4, "This plan moves 1 file (5.0 MiB)") &&
+              has(t4, "Nothing needs to be freed right now.") && has(t4, "not used for 3 days") && !has(t4, "Before anything moves") &&
+              !has(t4, "Left alone"));
         one.entries[0].needs_replication = true;
         one.bytes_to_replicate = 5 * MiB;
         CHECK(has(format_plan_review(one, ctx), "Before anything moves, 1 file (5.0 MiB) is copied to your devices"));
@@ -511,7 +529,7 @@ int main() {
         CHECK(has(t5, "No file can be moved") && !has(t5, "To approve") && !has(t5, "What happens") && !has(t5, "only 2 devices"));
         PlanContext nodev = ctx;
         nodev.devices = 0;
-        CHECK(!has(format_plan_review(none, nodev), "WARNING"));   // nothing to move: no reason to complain about devices
+        CHECK(!has(format_plan_review(none, nodev), "WARNING"));  // nothing to move: no reason to complain about devices
         // what an executed plan did
         ExecReport r;
         r.dropped = 3;
@@ -520,10 +538,18 @@ int main() {
         r.avail_after = 2ull << 30;
         r.target_met = true;
         CHECK(format_exec_report(r) == "Moved 3 files (3.0 MiB) off this Mac.\nFree space: 1.0 GiB before, 2.0 GiB after (the goal was met).\n");
-        r.replicated = 2; r.purged = 1; r.bytes_purged = MiB; r.skipped = 1; r.failed = 2; r.target_met = false; r.notes = {"x.bin: gone"};
+        r.replicated = 2;
+        r.purged = 1;
+        r.bytes_purged = MiB;
+        r.skipped = 1;
+        r.failed = 2;
+        r.target_met = false;
+        r.notes = {"x.bin: gone"};
         std::string er = format_exec_report(r);
-        CHECK(has(er, "copied 2 files to the devices first") && has(er, "deleted 1.0 MiB of local bytes") && has(er, "1 file was skipped") && has(er, "2 files failed (nothing was lost") && has(er, "  x.bin: gone\n") && !has(er, "goal was met"));
-        r.dropped = 1; r.bytes_dropped = 0;
+        CHECK(has(er, "copied 2 files to the devices first") && has(er, "deleted 1.0 MiB of local bytes") && has(er, "1 file was skipped") &&
+              has(er, "2 files failed (nothing was lost") && has(er, "  x.bin: gone\n") && !has(er, "goal was met"));
+        r.dropped = 1;
+        r.bytes_dropped = 0;
         CHECK(has(format_exec_report(r), "Moved 1 file ("));
         ExecReport rej;
         rej.rejected = true;
@@ -535,7 +561,9 @@ int main() {
         np.bytes_total = MiB;
         SpaceStatus ss;
         ss.level = SpaceLevel::LOW;
-        CHECK(has(format_notification(ss, np, "Run: tierctl plan"), "Run: tierctl plan") && !has(format_notification(ss, np, "Run: tierctl plan"), "Review and approve") && has(format_notification(ss, np), "Review and approve to continue."));
+        CHECK(has(format_notification(ss, np, "Run: tierctl plan"), "Run: tierctl plan") &&
+              !has(format_notification(ss, np, "Run: tierctl plan"), "Review and approve") &&
+              has(format_notification(ss, np), "Review and approve to continue."));
     }
 
     {

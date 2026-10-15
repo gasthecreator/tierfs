@@ -112,14 +112,15 @@ std::string format_notification(const SpaceStatus& status, const TierPlan& plan,
 // "1.4 GiB", "230 KiB", "12 bytes": the unit that reads well.
 std::string human_bytes(uint64_t bytes);
 
-// What a person needs to read before saying yes (docs/adr/0012): what will move, from where, what happens to it, what could go wrong, and exactly how to approve.
+// What a person needs to read before saying yes (docs/adr/0012): what will move, from where, what happens to it, what could go wrong, and exactly how
+// to approve.
 struct PlanContext {
-    std::vector<std::string> blockers;   // what must be fixed before this plan can run, in plain words (the plan is shown, but approving is refused)
+    std::vector<std::string> blockers;  // what must be fixed before this plan can run, in plain words (the plan is shown, but approving is refused)
     int quarantine_days = 7;
-    size_t devices = 0;                  // how many devices are connected
-    std::string approve_command;         // the command that approves this plan, without the plan id ("tierctl control /path/ledger approve")
+    size_t devices = 0;           // how many devices are connected
+    std::string approve_command;  // the command that approves this plan, without the plan id ("tierctl control /path/ledger approve")
     int64_t valid_minutes = 60;
-    size_t list_files = 10;              // the largest files are named; the rest are counted
+    size_t list_files = 10;  // the largest files are named; the rest are counted
     size_t list_folders = 8;
 };
 std::string format_plan_review(const TierPlan& plan, const PlanContext& ctx);
@@ -129,7 +130,7 @@ std::string format_exec_report(const ExecReport& r);
 // A macOS notification through osascript (no extra dependencies). Only ever shows text; the user decides.
 class OsascriptNotifier : public Notifier {
 public:
-    explicit OsascriptNotifier(std::string hint = "") : hint_(std::move(hint)) {}   // hint: how to review the plan, shown in the notification
+    explicit OsascriptNotifier(std::string hint = "") : hint_(std::move(hint)) {}  // hint: how to review the plan, shown in the notification
     void low_space(const SpaceStatus& status, const TierPlan& plan) override;
 
 private:

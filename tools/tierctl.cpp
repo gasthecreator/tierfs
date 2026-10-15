@@ -7,8 +7,8 @@
 //   /prefix/]
 //                                       get files back from the devices with only the recovery phrase
 //   tierctl ledger-status <ledger-dir>  health of the ledger: files by state, open steps, quarantine, fsck
-//   tierctl plan <ledger-dir> [free-now] [GiB]   a space plan in plain words (moves nothing); tierctl approve <ledger-dir> <plan id> runs exactly that plan
-//   tierctl pair <host:port> --store keychain|dir:PATH
+//   tierctl plan <ledger-dir> [free-now] [GiB]   a space plan in plain words (moves nothing); tierctl approve <ledger-dir> <plan id> runs exactly
+//   that plan tierctl pair <host:port> --store keychain|dir:PATH
 //                                       pair this Mac with a device: type the code the device shows (`tierfs-device <store> --show-pairing-code`);
 //                                       proves the code by authenticating, then stores the secret and prints the key id to use as host:port@keyid
 //   tierctl init <ledger-dir> <key-file>
@@ -903,7 +903,8 @@ int main(int argc, char** argv) {
     if (cmd == "check-phrase") return cmd_check_phrase(argc, argv);
     if (cmd == "ack-backup") return cmd_ack_backup(argc, argv);
     if (cmd == "control") return cmd_control(argc, argv);
-    if (cmd == "plan" || cmd == "approve") {   // tierctl plan <ledger> [free-now] [GiB]  |  tierctl approve <ledger> <plan id>: the control command of that name
+    if (cmd == "plan" ||
+        cmd == "approve") {  // tierctl plan <ledger> [free-now] [GiB]  |  tierctl approve <ledger> <plan id>: the control command of that name
         std::vector<std::string> v = {argv[0], "control", argv[2], cmd};
         for (int i = 3; i < argc; i++) v.push_back(argv[i]);
         std::vector<char*> av;
