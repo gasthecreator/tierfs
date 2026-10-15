@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,11 @@ struct OverlayConfig {
     std::string logical_prefix;     // ledger path = prefix + path relative to the origin, e.g. "/Users/me/Projects/"
     size_t cache_bytes = 64u << 20; // verified remote chunks kept in memory
     int64_t write_wait_ms = 30000;  // how long a writer waits for a drop/hydration of the same file to finish before EBUSY
+    // Read-ahead: once a remote file is being read sequentially (two reads in a row, each starting where the last ended), up to this many of the
+    // following chunks are fetched in the background, verified exactly like any other fetch, and kept in the chunk cache. 0 turns it off. The window
+    // starts at one chunk and doubles with every sequential read, and never exceeds a quarter of the cache.
+    int readahead_chunks = 0;
+    int readahead_threads = 2;
 };
 
 enum class OvKind { Dir, File, Symlink, Other };
@@ -69,6 +75,7 @@ public:
     // `engine` (optional) lets hydration use the quarantine copy when one is still held; the engine's resolver must map a
     // file to the same origin path this overlay uses.
     Overlay(Ledger& ledger, const crypto::Keys& keys, DeviceMap devices, OverlayConfig cfg, DropEngine* engine = nullptr);
+    ~Overlay();
 
     // Paths are relative to the mount ("/", "/dir/file"). Return 0 or -errno.
     int getattr(const std::string& path, OvStat* out);
@@ -127,7 +134,9 @@ public:
     std::mutex& engine_mutex() { return engine_mu_; }
 
     // Statistics, for tests and for `tierctl`.
-    struct Stats { uint64_t chunk_fetches = 0, cache_hits = 0, bad_chunks_skipped = 0, hydrations_network = 0, hydrations_quarantine = 0; };
+    struct Stats {
+        uint64_t chunk_fetches = 0, cache_hits = 0, bad_chunks_skipped = 0, hydrations_network = 0, hydrations_quarantine = 0, prefetched = 0;
+    };
     Stats stats();
 
     const OverlayConfig& config() const { return cfg_; }
@@ -166,6 +175,8 @@ private:
     uint64_t add_handle(std::shared_ptr<Handle> h);
     std::shared_ptr<Handle> get_handle(uint64_t fh);
     int64_t read_remote(const FileRec& f, uint64_t offset, size_t size, uint8_t* buf);
+    void note_read(const FileRec& f, const std::vector<ChunkRec>& chunks, uint64_t offset, size_t done);
+    void readahead_loop();
     std::shared_ptr<const crypto::Bytes> fetch_chunk(const ChunkRec& c, const std::vector<std::string>& device_order);
     std::vector<std::string> device_order(const FileRec& f);
     static bool is_remote_state(const FileRec& f);
@@ -197,8 +208,28 @@ private:
     std::mutex hyd_mu_;                      // one hydration per file at a time
     std::map<std::string, std::shared_ptr<std::mutex>> hyd_locks_;
 
+    // Read-ahead: what each file's last read was, the queue of chunks to fetch, and the threads that fetch them (started on first use).
+    struct Streak {
+        uint64_t next = 0;
+        int count = 0;
+        size_t window = 1;
+    };
+    struct Ahead {
+        ChunkRec chunk;
+        std::vector<std::string> order;
+    };
+    std::mutex ra_mu_;
+    std::condition_variable ra_cv_;
+    std::map<std::string, Streak> streaks_;
+    std::list<Ahead> ra_queue_;
+    std::set<std::string> ra_queued_;
+    std::vector<std::thread> ra_threads_;
+    bool ra_stop_ = false;
+
     // LRU of verified plaintext chunks, keyed by chunk id (content-addressed: never stale).
     std::mutex cache_mu_;
+    std::condition_variable cache_cv_;
+    std::set<std::string> inflight_;  // chunks somebody is fetching right now (a second reader waits for it instead of fetching again)
     std::list<std::string> lru_;
     struct Entry { std::shared_ptr<const crypto::Bytes> data; std::list<std::string>::iterator it; };
     std::map<std::string, Entry> cache_;

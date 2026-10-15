@@ -38,6 +38,15 @@ Overlay::Overlay(Ledger& ledger, const crypto::Keys& keys, DeviceMap devices, Ov
     volume_ = ledger_.volume_id();
 }
 
+Overlay::~Overlay() {
+    {
+        std::lock_guard<std::mutex> g(ra_mu_);
+        ra_stop_ = true;
+    }
+    ra_cv_.notify_all();
+    for (auto& t : ra_threads_) t.join();
+}
+
 bool Overlay::resolve(const std::string& path, std::string* origin_path, std::string* logical_path, std::string* rel_out) const {
     if (path.empty() || path[0] != '/') return false;
     if (path.find('\0') != std::string::npos) return false;
@@ -211,14 +220,30 @@ std::vector<std::string> Overlay::device_order(const FileRec& f) {
 
 std::shared_ptr<const crypto::Bytes> Overlay::fetch_chunk(const ChunkRec& c, const std::vector<std::string>& order) {
     {
-        std::lock_guard<std::mutex> g(cache_mu_);
-        auto it = cache_.find(c.chunk_id);
-        if (it != cache_.end()) {
-            lru_.splice(lru_.begin(), lru_, it->second.it);
-            stats_.cache_hits++;
-            return it->second.data;
+        std::unique_lock<std::mutex> g(cache_mu_);
+        for (;;) {
+            auto it = cache_.find(c.chunk_id);
+            if (it != cache_.end()) {
+                lru_.splice(lru_.begin(), lru_, it->second.it);
+                stats_.cache_hits++;
+                return it->second.data;
+            }
+            if (!inflight_.count(c.chunk_id)) break;
+            cache_cv_.wait(g);  // somebody (a reader, or the read-ahead) is fetching it: wait for that instead of fetching twice
         }
+        inflight_.insert(c.chunk_id);
     }
+    struct Done {  // whoever fetches releases the claim, success or not, and wakes the waiters
+        Overlay& o;
+        const std::string& id;
+        ~Done() {
+            {
+                std::lock_guard<std::mutex> g(o.cache_mu_);
+                o.inflight_.erase(id);
+            }
+            o.cache_cv_.notify_all();
+        }
+    } done{*this, c.chunk_id};
     for (const auto& id : order) {
         crypto::Bytes blob, plain;
         {
@@ -280,9 +305,92 @@ int64_t Overlay::read_remote(const FileRec& f, uint64_t offset, size_t size, uin
         start = end;
         if (start >= offset + size) break;
     }
+    note_read(f, chunks, offset, done);
     return static_cast<int64_t>(done);
 }
 
+// A sequential reader gets the chunks after the one it is in fetched ahead of time. Never blocks the reader, never reports an error: a failed
+// read-ahead is simply a chunk the reader will fetch (and verify) itself.
+void Overlay::note_read(const FileRec& f, const std::vector<ChunkRec>& chunks, uint64_t offset, size_t done) {
+    if (cfg_.readahead_chunks <= 0 || done == 0) return;
+    size_t max_ahead = static_cast<size_t>(cfg_.readahead_chunks);
+    max_ahead = std::min<size_t>(max_ahead, std::max<size_t>(1, cfg_.cache_bytes / (4u << 20)));
+    uint64_t end = offset + done;
+    std::vector<ChunkRec> want;
+    std::vector<std::string> order;
+    {
+        std::lock_guard<std::mutex> g(ra_mu_);
+        if (ra_stop_) return;
+        if (streaks_.size() > 256) streaks_.clear();
+        Streak& s = streaks_[f.file_id];
+        if (offset == s.next && s.count > 0) {
+            s.count++;
+        } else {
+            s.count = 1;
+            s.window = 1;
+        }
+        s.next = end;
+        if (s.count < 3) return;  // the third read in a row: the first two only establish that this is a sequential reader
+        size_t window = std::min(s.window, max_ahead);
+        s.window = std::min(max_ahead, s.window * 2);
+        uint64_t pos = 0;
+        size_t cur = 0;
+        for (size_t i = 0; i < chunks.size(); i++) {  // the chunk holding the last byte just read
+            if (end - 1 < pos + chunks[i].len) {
+                cur = i;
+                break;
+            }
+            pos += chunks[i].len;
+            cur = i;
+        }
+        for (size_t i = cur + 1; i < chunks.size() && i <= cur + window; i++)
+            if (!ra_queued_.count(chunks[i].chunk_id)) want.push_back(chunks[i]);
+    }
+    if (want.empty()) return;
+    order = device_order(f);
+    {
+        std::lock_guard<std::mutex> g(cache_mu_);
+        std::vector<ChunkRec> keep;
+        for (auto& c : want)
+            if (!cache_.count(c.chunk_id) && !inflight_.count(c.chunk_id)) keep.push_back(c);
+        want.swap(keep);
+    }
+    if (want.empty() || order.empty()) return;
+    std::lock_guard<std::mutex> g(ra_mu_);
+    if (ra_stop_) return;
+    if (ra_threads_.empty())
+        for (int i = 0; i < std::max(1, cfg_.readahead_threads); i++) ra_threads_.emplace_back([this] { readahead_loop(); });
+    for (auto& c : want) {
+        if (ra_queue_.size() >= 64) break;  // a full queue means the devices are slower than the reader: do not pile up
+        if (ra_queued_.insert(c.chunk_id).second) ra_queue_.push_back(Ahead{c, order});
+    }
+    ra_cv_.notify_all();
+}
+
+void Overlay::readahead_loop() {
+    for (;;) {
+        Ahead job;
+        {
+            std::unique_lock<std::mutex> g(ra_mu_);
+            ra_cv_.wait(g, [&] { return ra_stop_ || !ra_queue_.empty(); });
+            if (ra_stop_) return;
+            job = std::move(ra_queue_.front());
+            ra_queue_.pop_front();
+        }
+        bool had;
+        {
+            std::lock_guard<std::mutex> g(cache_mu_);
+            had = cache_.count(job.chunk.chunk_id) > 0;
+        }
+        auto data = had ? nullptr : fetch_chunk(job.chunk, job.order);
+        {
+            std::lock_guard<std::mutex> g(cache_mu_);
+            if (data) stats_.prefetched++;
+        }
+        std::lock_guard<std::mutex> g(ra_mu_);
+        ra_queued_.erase(job.chunk.chunk_id);
+    }
+}
 
 // ---------------------------------------------------------------- the write gate
 

@@ -938,3 +938,11 @@ Limits / not done
 - A restore from a device that missed a deletion shows the older state (the next run removes it). No per-Mac authorization of deletions and no revocation.
 - Chunk lists are trusted as the Mac sends them (a lying authenticated Mac could cause a premature sweep).
 - One request deletes at most 64 manifests and a sweep at most 100,000 chunks; a run is bounded by `max_decisions` (2000 versions) and `sweep_rounds`.
+
+### Read-ahead (overlay)
+Reading an offloaded file used to cost one device round trip per 1 MiB chunk, in sequence. Now `Overlay::note_read` watches each file's reads: the third read in a row that starts where the last one ended
+marks a sequential reader, and the chunks after the one it is in are fetched by two background threads (window of 1 chunk, doubling per read up to `readahead_chunks`, default 4 in the daemon, 0 in the
+bare `OverlayConfig`; never more than a quarter of the cache). The fetch is the ordinary `fetch_chunk` (every chunk verified by its AEAD tag, chunk id and length), so a bad copy is skipped and a failure is
+silent: the reader simply fetches that chunk itself and gets the same answer it would have got without read-ahead. A chunk that the reader and the read-ahead both want is fetched once (single flight: the
+second waits for the first). Random readers cause no extra fetches, and nothing is fetched past the last chunk. Tests: `tests/overlay_test.cpp` ("read-ahead"), `tests/daemon_test.cpp`; TSan clean;
+mutants `scripts/overlay_mutants.py` (`readahead:`, `single flight:`).

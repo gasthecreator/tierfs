@@ -43,6 +43,7 @@ struct DaemonConfig {
     bool notify = true;                      // macOS notifications when space runs short (tests turn this off)
     int64_t write_wait_ms = 30000;
     size_t cache_bytes = 64u << 20;
+    int readahead_chunks = 4;                // a sequential reader of an offloaded file gets up to this many chunks fetched ahead (0 = off)
     TierPolicy policy;                       // roots are set to the logical prefix
     // Garbage collection on the devices (ADR-0010): forgets old versions and deleted files, and has the devices free their space. Off unless asked:
     // `gc` makes the maintenance thread run it every gc_interval_seconds; `gc-plan` and `gc-run` on the control socket work either way.
