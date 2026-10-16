@@ -19,6 +19,7 @@ Written in C/C++17 on FUSE-T (no kernel extension).
 - **Survives crashes.** Every step of an offload, restore and recall is journaled in a ledger and finished or undone at the next start.
 - **Tells you when the disk is filling** (checked every 30 seconds) and shows, in plain words, what it would move; nothing moves until you approve that exact plan.
 - **Finds its devices on the network** (Bonjour) when their addresses change; an announcement is only a locator, every device still has to prove it holds the pairing secret.
+- **Runs on an Android phone** as one of the devices (the same server, built with the NDK; see [android/](android/)); so far tried only on an emulator.
 - **Recovers from the phrase alone.** `tierctl restore` rebuilds your files from the devices if the Mac is lost, without overwriting anything.
 
 ## Layout
@@ -27,6 +28,7 @@ Written in C/C++17 on FUSE-T (no kernel extension).
 | `core/` | ledger, crypto, device store and client, replicator, drop (offload) engine, policy, overlay (filesystem semantics), scanner, recovery, daemon |
 | `mount/` | the FUSE-T drivers (`tierfsd.c` is the real one; the others are earlier phases) |
 | `tools/tierctl.cpp` | the command-line tool: `init`, `restore`, `control`, `ledger-status`, `check-phrase`, ... |
+| `android/` | the Android agent: the device server built with the NDK, a small app, and a Gradle-free build script |
 | `tests/` | unit, crash-injection, concurrency and disaster-drill tests |
 | `scripts/` | mutation-testing runners (`mutate_par.py`) and old mount scripts |
 | `docs/` | start at [docs/README.md](docs/README.md): design, runbook, ADRs (`docs/adr/`), threat model |

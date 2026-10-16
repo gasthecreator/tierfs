@@ -35,6 +35,7 @@
 
 #include "../core/crypto.hpp"
 #include "../core/devicestore.hpp"
+#include "../core/fsutil.hpp"
 #include "../core/discovery.hpp"
 #include "../core/securechannel.hpp"
 #include "../core/wire.hpp"
@@ -337,7 +338,7 @@ static bool write_pairing(const std::string& store, const Bytes& secret, bool re
         return false;
     }
     std::string hex = crypto::to_hex(secret.data(), secret.size()) + "\n";
-    bool ok = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fcntl(fd, F_FULLFSYNC) != -1;
+    bool ok = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fsutil::strict_full_sync(fd) == 0;
     close(fd);
     if (!ok) {
         unlink(tmp.c_str());

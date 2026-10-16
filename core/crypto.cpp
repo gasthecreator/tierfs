@@ -11,6 +11,7 @@
 
 #include <cstring>
 
+#include "fsutil.hpp"
 #include "wire.hpp"
 
 namespace tierfs {
@@ -639,7 +640,7 @@ public:
         int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);   // never overwrite a key
         if (fd < 0) return false;
         std::string hex = to_hex(key.data(), KEY_LEN) + "\n";
-        bool ok = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fcntl(fd, F_FULLFSYNC) == 0;
+        bool ok = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fsutil::strict_full_sync(fd) == 0;
         OPENSSL_cleanse(&hex[0], hex.size());
         close(fd);
         if (!ok) unlink(p.c_str());

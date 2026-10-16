@@ -54,6 +54,10 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## A phone as a device (Android)
+See [android/README.md](../android/README.md): build the APK, install it, switch it on, show the pairing code on the phone, `tierctl pair <phone>:9100 --store keychain`. The phone announces itself,
+so `devices=mdns:<name>@<key id>` follows it between networks. It is one device among at least two: files only leave the Mac when two copies are verified.
+
 ## Finding devices on the network
 A paired device can announce itself (Bonjour), so the Mac finds it again when its address changes:
 ```bash

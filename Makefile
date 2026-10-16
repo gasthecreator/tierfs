@@ -182,8 +182,13 @@ build/tierfsd.o: mount/tierfsd.c core/tfs_c.h
 	$(CC) $(CFLAGS) $(FUSE_INC) $(DEPFLAGS) -c $< -o $@
 
 DAEMON_OBJS := build/discovery.o build/keysource.o build/keychain_mac.o build/tfs_c.o build/daemon.o build/gc.o build/scanner.o build/policy.o build/spaceprobe.o build/overlay.o build/locks.o build/dropengine.o build/replicator.o build/ledger.o build/deviceclient.o build/securechannel.o build/devicestore.o build/crypto.o
+DAEMON_OBJS_NO_TFS := $(filter-out build/tfs_c.o,$(DAEMON_OBJS))
 build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
 	$(CXX) $(SAN) $^ -o $@ $(FUSE_LIB) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security
+
+# Manual: a real Android agent (or the emulator) as one of the devices; see android/README.md. Not part of `make test`.
+build/android_smoke: tests/android_smoke.cpp $(DAEMON_OBJS_NO_TFS) build/tierfs-device
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/android_smoke.cpp $(DAEMON_OBJS_NO_TFS) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
 
 build/daemon.o: core/daemon.cpp core/daemon.hpp core/gc.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
 	@mkdir -p build
