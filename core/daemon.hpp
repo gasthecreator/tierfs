@@ -12,6 +12,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <mutex>
@@ -19,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "discovery.hpp"
 #include "dropengine.hpp"
 #include "gc.hpp"
 #include "ledger.hpp"
@@ -35,9 +37,14 @@ struct DaemonConfig {
     std::string origin_dir;                  // the real folder holding the local bytes
     std::string logical_prefix;              // e.g. "/Users/me/Projects/"
     std::string key_file;                    // the key source: "keychain", "dir:PATH", or a key file of 64 hex characters (core/keysource.hpp)
-    std::vector<std::string> devices;        // "host:port"
+    std::vector<std::string> devices;        // "host:port", "host:port@keyid" or "mdns:NAME@keyid"
     std::string control_socket;              // default: <ledger_dir>/control.sock; "none" disables
     int device_timeout_ms = 5000;
+    // "mdns:" device entries are looked up on the network at every maintenance pass (ADR-0013). `discover` is how: given the key ids wanted, it
+    // returns what it found (the default asks the system's Bonjour service for up to mdns_timeout_ms; tests give a fake).
+    using Discoverer = std::function<std::vector<discovery::Found>(const std::vector<std::string>& key_ids)>;
+    Discoverer discover;
+    int mdns_timeout_ms = 1500;
     int maint_seconds = 60;                  // maintenance period; 0 = no background thread
     bool background_replication = true;      // the maintenance thread copies cold files to the devices (never moves or deletes anything)
     bool scan_at_start = true;
@@ -45,7 +52,13 @@ struct DaemonConfig {
     int64_t write_wait_ms = 30000;
     size_t cache_bytes = 64u << 20;
     int readahead_chunks = 4;                // a sequential reader of an offloaded file gets up to this many chunks fetched ahead (0 = off)
-    TierPolicy policy;                       // roots are set to the logical prefix
+    TierPolicy policy;                       // roots are set to the logical prefix (free-space thresholds: low_free_bytes, critical_free_bytes, ...)
+    // How often free space is checked, in seconds, by a thread of its own (so a long copy to the devices never delays a warning). 0 = off. The check
+    // is one statfs and a ledger read; the person is told at most once per policy.prompt_interval for the same shortage, at once if it gets worse.
+    int space_check_seconds = 30;
+    // Replacements for the system's free-space measurement and notification, for tests (the notifier is given the function that words its hint).
+    std::function<std::unique_ptr<SpaceProbe>(const std::string& origin)> make_probe;
+    std::function<std::unique_ptr<Notifier>(HintFn hint)> make_notifier;
     // Garbage collection on the devices (ADR-0010): forgets old versions and deleted files, and has the devices free their space. Off unless asked:
     // `gc` makes the maintenance thread run it every gc_interval_seconds; `gc-plan` and `gc-run` on the control socket work either way.
     bool gc = false;
@@ -77,8 +90,11 @@ public:
 private:
     explicit Daemon(const DaemonConfig& cfg) : cfg_(cfg) {}
     void attach_devices();
+    void refresh_mdns();
     DeviceMap devices_snapshot();
     void maintenance_loop();
+    void space_loop();
+    std::string cmd_space();
     void control_loop();
     std::string cmd_status();
     std::string cmd_files(const std::string& path, bool drop);   // replicate (drop=false) or offload (drop=true)
@@ -91,7 +107,13 @@ private:
     DaemonConfig cfg_;
     std::unique_ptr<Ledger> ledger_;
     std::unique_ptr<crypto::Keys> keys_;
-    struct Dev { std::string spec; std::unique_ptr<DeviceClient> client; std::string id; };
+    struct Dev {
+        std::string spec;
+        std::unique_ptr<DeviceClient> client;
+        std::string id;
+        std::string mdns_kid;  // set for an "mdns:" entry: the key id that identifies the device wherever it is
+        bool located = true;   // false until an "mdns:" entry has been found on the network once
+    };
     std::vector<Dev> devs_;
     std::mutex devs_mu_;
     std::unique_ptr<Replicator> replicator_;
@@ -108,12 +130,14 @@ private:
 
     std::atomic<bool> stop_{false};
     bool started_ = false;
-    std::thread maint_, control_;
+    std::thread maint_, control_, space_;
     int listen_fd_ = -1;
     std::string socket_path_;
     std::vector<std::string> notes_;
     std::mutex last_mu_;
     std::string last_scan_;
+    std::string mdns_error_;    // why the last network lookup failed (guarded by last_mu_)
+    std::string notify_error_;  // set while the last notification could not be shown (guarded by last_mu_)
 };
 
 }  // namespace tierfs

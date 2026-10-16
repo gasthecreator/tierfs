@@ -147,6 +147,12 @@ The device protocol messages of version 3 (above) then run unchanged inside the 
 
 Known answers for the whole handshake and the first frames are in `tests/channel_kat.hpp`, generated independently by `scripts/gen_channel_kat.py`.
 
+## Discovery (Bonjour / mDNS, optional)
+A paired device may announce itself as DNS-SD service `_tierfs._tcp` (instance name: a label for people; host and port: where to connect) with a TXT record of length-prefixed
+`key=value` strings: `v=1` (record version), `auth=1|0` (the device requires the secure channel), `kid=<16 lower-case hex>` (the key id of the pairing secret, section above).
+A receiver ignores a record with another version, a repeated key, a malformed string, a bad key id, or `auth=1` without `kid`; unknown keys are ignored. An unpaired device does
+not advertise. An announcement is a locator only: a client connects to it only for a key id it already holds a secret for, and authenticates as usual (ADR-0013).
+
 ## Version history
 - v4: secure channel (above).
 - v3: device storage protocol (above).

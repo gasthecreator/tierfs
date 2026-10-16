@@ -29,6 +29,7 @@ TARGETS = {
                        tools=[('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'locks': dict(mutants='locks_mutants', mutated='core/locks.cpp', tests=['tests/locks_test.cpp'], extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'service': dict(mutants='service_mutants', mutated='core/service.cpp', tests=['tests/service_test.cpp'], extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'discovery': dict(mutants='discovery_mutants', mutated='core/discovery.cpp', tests=['tests/discovery_test.cpp'], extra_objs=[], tools=[], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'gc': dict(mutants='gc_mutants', mutated='core/gc.cpp', tests=['tests/gc_test.cpp'], extra_objs=[], tools=[],
                libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'ledgerprune': dict(mutants='ledgerprune_mutants', mutated='core/ledger.cpp', tests=['tests/ledger_test.cpp'], extra_objs=[],

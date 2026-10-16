@@ -54,8 +54,21 @@ Write the pairing codes on paper with the recovery phrase: after losing the Mac,
 so the phrase plus the codes is enough to restore onto a new Mac. `--new-pairing-code` replaces a device's secret (every Mac must pair again);
 use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the device's store directory: keep that directory private.
 
+## Finding devices on the network
+A paired device can announce itself (Bonjour), so the Mac finds it again when its address changes:
+```bash
+./build/tierfs-device <store> 9100 0.0.0.0 --advertise=kitchen-pi     # an unpaired device refuses: pair it first
+./build/tierctl discover --store keychain                              # lists announced devices, says whether this Mac is paired with each
+```
+`discover` prints the device entry to use: `mdns:kitchen-pi@<keyid>` (followed wherever the device is) or `host:port@<keyid>`. In the daemon: `-o devices=mdns:kitchen-pi@<keyid>` (several with `+`).
+The key id is required and its pairing secret must be in the key store, so an announcement from anything else is never followed. `tierfsd`'s `status` shows where each device was found and
+whether it is attached; "not found on the network" means nothing announced that key id (is it running with `--advertise`, on the same network?). An announcement proves nothing: the device
+must still authenticate with the pairing secret. Recovery works the same way: `tierctl restore --device mdns:kitchen-pi@<keyid> --store keychain ...`.
+
 ## When the disk is nearly full: review, then approve
-tierfs never moves files off the Mac on its own. When space runs short it shows a notification; to see what it would do, in plain words:
+Free space is checked every 30 seconds on a thread of its own (`-o spacecheck=N`, 0 = off), independent of copying. Thresholds: `-o lowgb=20,criticalgb=8,lowpct=15,criticalpct=5` (the larger of the size
+and the percentage applies; defaults shown). `tierctl space <ledger dir>` shows where you stand, the thresholds, and when you were last told; if a notification cannot be shown it says so and tries again.
+tierfs never moves files off the Mac on its own. When space runs short it shows a notification (naming what stands in the way, if anything); to see what it would do, in plain words:
 ```bash
 ./build/tierctl plan <ledger dir>                # what would move to reach a comfortable amount of free space (moves nothing)
 ./build/tierctl plan <ledger dir> 20             # ... or to free 20 GiB

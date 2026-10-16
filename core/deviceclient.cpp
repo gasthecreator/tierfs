@@ -35,6 +35,17 @@ void DeviceClient::drop_connection() {
     fd_ = -1;
 }
 
+void DeviceClient::set_endpoint(const std::string& host, uint16_t port) {
+    std::lock_guard<std::mutex> g(ep_mu_);
+    pending_host_ = host;
+    pending_port_ = std::to_string(port);
+}
+
+std::string DeviceClient::endpoint() {
+    std::lock_guard<std::mutex> g(ep_mu_);
+    return !pending_host_.empty() ? pending_host_ + ":" + pending_port_ : host_ + ":" + port_;
+}
+
 void DeviceClient::disconnect() {
     std::lock_guard<std::mutex> lk(mu_);
     drop_connection();
@@ -48,6 +59,13 @@ int DeviceClient::rx(Frame& f, int64_t deadline) { return ch_ ? ch_->recv(f, dea
 
 bool DeviceClient::ensure_connected(DevRes* why) {
     if (fd_ >= 0) return true;
+    {
+        std::lock_guard<std::mutex> g(ep_mu_);
+        if (!pending_host_.empty()) {
+            host_ = pending_host_;
+            port_ = pending_port_;
+        }
+    }
     int fd = connect_with_deadline(host_, port_, timeout_ms_);
     if (fd < 0) { why->err = EHOSTUNREACH; why->msg = "cannot reach the device"; return false; }
     Writer w;

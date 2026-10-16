@@ -17,6 +17,8 @@ Written in C/C++17 on FUSE-T (no kernel extension).
 - **Never trusts a copy it hasn't verified.** Data is split into 1 MiB chunks, encrypted and authenticated (keys derived from a recovery phrase), and
   a file is moved off the Mac only after enough copies pass a fresh audit and a backup is on record.
 - **Survives crashes.** Every step of an offload, restore and recall is journaled in a ledger and finished or undone at the next start.
+- **Tells you when the disk is filling** (checked every 30 seconds) and shows, in plain words, what it would move; nothing moves until you approve that exact plan.
+- **Finds its devices on the network** (Bonjour) when their addresses change; an announcement is only a locator, every device still has to prove it holds the pairing secret.
 - **Recovers from the phrase alone.** `tierctl restore` rebuilds your files from the devices if the Mac is lost, without overwriting anything.
 
 ## Layout

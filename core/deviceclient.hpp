@@ -64,6 +64,11 @@ public:
     // Test hook: drop the connection so the next call has to reconnect.
     void disconnect();
 
+    // Where to connect from the next new connection on (a device found again by name at another address). Never blocks on a request in progress and
+    // never touches a connection that is up: the change takes effect when the connection is next made.
+    void set_endpoint(const std::string& host, uint16_t port);
+    std::string endpoint();  // "host:port" the next connection will use
+
 private:
     struct Frame_;
     DevRes call(uint8_t type, const std::vector<uint8_t>& payload, std::vector<uint8_t>& reply, uint64_t expect_bytes);
@@ -73,6 +78,8 @@ private:
     int rx(Frame& f, int64_t deadline);
 
     std::string host_, port_;
+    std::mutex ep_mu_;  // guards pending_host_/pending_port_ (and nothing else, so it is never held across I/O)
+    std::string pending_host_, pending_port_;
     int timeout_ms_;
     crypto::Bytes psk_;
     std::unique_ptr<chan::Channel> ch_;  // set when psk_ is
