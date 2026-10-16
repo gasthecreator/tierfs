@@ -41,7 +41,8 @@ public final class MainActivity extends Activity {
         super.onCreate(b);
         // The pairing code lets whoever has it act as the Mac towards this device: no screenshots, no recent-apps thumbnail.
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
-        // Internal storage: it can lock files (the store needs flock; the emulated "external" storage cannot) and shares the phone's free space anyway.
+        // Internal storage: it can lock files (the store needs flock; the emulated "external" storage cannot) and shares the phone's free space
+        // anyway.
         dir = new File(getFilesDir(), "tierfs-store").getAbsolutePath();
 
         LinearLayout col = new LinearLayout(this);
@@ -77,7 +78,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
-        code.setText("");   // the code is shown only while the screen is in front
+        code.setText(""); // the code is shown only while the screen is in front
     }
 
     private TextView text(LinearLayout parent, int sp) {
@@ -156,7 +157,7 @@ public final class MainActivity extends Activity {
             ui.postDelayed(this::refresh, 600);
             return;
         }
-        String r = Native.pairing(dir, false);   // creates the pairing secret on first use
+        String r = Native.pairing(dir, false); // creates the pairing secret on first use
         if (r.startsWith("ERR")) {
             status.setText(r);
             return;
@@ -174,20 +175,22 @@ public final class MainActivity extends Activity {
         }
         String[] parts = r.split("\n");
         code.setText("Type this on the Mac:\n\n" + parts[0] + "\n\nKey id: " + parts[1]
-                + "\n\nAnyone who has this code can act as the Mac towards this device.");
+            + "\n\nAnyone who has this code can act as the Mac towards this device.");
         refresh();
     }
 
     private void confirmRenew() {
         new AlertDialog.Builder(this)
-                .setTitle("Make a new pairing code?")
-                .setMessage("Every Mac paired with this phone will have to pair again. Do this only if the code may have leaked.")
-                .setPositiveButton("Make a new code", (d, w) -> {
+            .setTitle("Make a new pairing code?")
+            .setMessage("Every Mac paired with this phone will have to pair again. Do this only if the code may have leaked.")
+            .setPositiveButton("Make a new code",
+                (d, w) -> {
                     if (running) stopService(new Intent(this, DeviceService.class));
-                    code.setText(Native.pairing(dir, true).startsWith("ERR") ? "Could not make a new code." : "A new code was made. Switch on, then show it.");
+                    code.setText(
+                        Native.pairing(dir, true).startsWith("ERR") ? "Could not make a new code." : "A new code was made. Switch on, then show it.");
                     ui.postDelayed(this::refresh, 600);
                 })
-                .setNegativeButton("Cancel", null)
-                .show();
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 }

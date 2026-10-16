@@ -1,6 +1,6 @@
-// A real phone (or the emulator) as one of the two devices, end to end: the Mac's daemon offloads a file to the Android agent and a local device, then
-// reads it back from the Android agent ALONE. This is a manual test (it needs the agent running and reachable, e.g. `adb forward tcp:19100 tcp:9100`);
-// it is not part of `make test`. See android/README.md.
+// A real phone (or the emulator) as one of the two devices, end to end: the Mac's daemon offloads a file to the Android agent and a local device,
+// then reads it back from the Android agent ALONE. This is a manual test (it needs the agent running and reachable, e.g. `adb forward tcp:19100
+// tcp:9100`); it is not part of `make test`. See android/README.md.
 //
 //   TIERFS_ANDROID_DEVICE=127.0.0.1:19100@<keyid>  TIERFS_ANDROID_KEYSTORE=<dir holding the pairing secret, from `tierctl pair --store dir:<dir>`>  \
 //   ./build/android_smoke
@@ -62,7 +62,7 @@ int main() {
     std::string root = mkdtemp(tmpl);
     std::string origin = root + "/origin", ledger = root + "/ledger", ksdir = root + "/keystore";
     fs::create_directories(origin);
-    fs::copy(ks, ksdir, fs::copy_options::recursive);   // (the pairing secret; the master key is added below)
+    fs::copy(ks, ksdir, fs::copy_options::recursive);  // (the pairing secret; the master key is added below)
 
     // the second device: a plain local one, so two copies exist and the file may leave the Mac
     pid_t pid = 0;
@@ -84,7 +84,7 @@ int main() {
     c.devices = {spec, "127.0.0.1:19101"};
     c.maint_seconds = 0;
     c.notify = false;
-    c.device_timeout_ms = 15000;   // (an emulator is slow)
+    c.device_timeout_ms = 15000;  // (an emulator is slow)
     std::string err, volume;
     {
         auto L = Ledger::open(ledger, &err);
@@ -93,19 +93,20 @@ int main() {
         crypto::SecretKey master = crypto::SecretKey::random();
         CHECK(crypto::make_file_keystore(ksdir)->store(volume, master));
         L->set_meta("recovery_acked", "1");
-        L->set_meta("test_prefix", "/Users/me/");   // a throwaway ledger: the test prefix stands in for the backup
+        L->set_meta("test_prefix", "/Users/me/");  // a throwaway ledger: the test prefix stands in for the backup
         L->ensure_reserve(1 << 20);
     }
-    const size_t size = 3 * (1u << 20) + 12345;   // four chunks
+    const size_t size = 3 * (1u << 20) + 12345;  // four chunks
     Bytes data = pattern(size, 7);
     {
-        std::ofstream(origin + "/a.bin", std::ios::binary).write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        std::ofstream(origin + "/a.bin", std::ios::binary)
+            .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     }
     {
         auto d = Daemon::create(c, &err);
         CHECK(d && d->start(&err));
         std::string st = d->control("status");
-        CHECK(st.find("not attached") == std::string::npos);   // both devices, including the phone, are attached
+        CHECK(st.find("not attached") == std::string::npos);  // both devices, including the phone, are attached
         std::string r = d->control("offload /a.bin");
         printf("%s", r.c_str());
         CHECK(r.find("offloaded /Users/me/proj/a.bin") != std::string::npos && !fs::exists(origin + "/a.bin"));
@@ -120,7 +121,7 @@ int main() {
         auto d = Daemon::create(c, &err);
         CHECK(d && d->start(&err));
         CHECK(d->control("status").find("not attached") == std::string::npos);
-        CHECK(read_through(d->overlay(), "/a.bin", size) == data);   // read back from the Android agent alone
+        CHECK(read_through(d->overlay(), "/a.bin", size) == data);  // read back from the Android agent alone
         CHECK(d->control("hydrate /a.bin").find("OK") != std::string::npos && slurp(origin + "/a.bin") == data);
         d->stop();
     }

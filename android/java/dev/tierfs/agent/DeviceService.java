@@ -28,11 +28,11 @@ public final class DeviceService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || server != null) return START_NOT_STICKY;   // not restarted by the system: the person switches it on
+        if (intent == null || server != null) return START_NOT_STICKY; // not restarted by the system: the person switches it on
         final String dir = intent.getStringExtra(EXTRA_DIR);
         final int port = intent.getIntExtra(EXTRA_PORT, 9100);
         String keyId = Native.keyId(dir);
-        if (dir == null || keyId.isEmpty()) {   // never serve an unpaired store on the network
+        if (dir == null || keyId.isEmpty()) { // never serve an unpaired store on the network
             Log.e(TAG, "refusing to start: the store is not paired");
             stopSelf();
             return START_NOT_STICKY;
@@ -41,18 +41,18 @@ public final class DeviceService extends Service {
         nm.createNotificationChannel(new NotificationChannel(CHANNEL, "Storage server", NotificationManager.IMPORTANCE_LOW));
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
         Notification n = new Notification.Builder(this, CHANNEL)
-                .setContentTitle("tierfs storage is on")
-                .setContentText("Serving on port " + port + " for the Macs paired with this phone")
-                .setSmallIcon(android.R.drawable.stat_sys_upload)
-                .setContentIntent(open)
-                .setOngoing(true)
-                .build();
+                             .setContentTitle("tierfs storage is on")
+                             .setContentText("Serving on port " + port + " for the Macs paired with this phone")
+                             .setSmallIcon(android.R.drawable.stat_sys_upload)
+                             .setContentIntent(open)
+                             .setOngoing(true)
+                             .build();
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         PowerManager pm = getSystemService(PowerManager.class);
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tierfs:device");
         wake.acquire();
         server = new Thread(() -> {
-            int rc = Native.serve(dir, port, "0.0.0.0");   // only returns if it could not start
+            int rc = Native.serve(dir, port, "0.0.0.0"); // only returns if it could not start
             Log.e(TAG, "the device server stopped (exit code " + rc + ")");
             stopSelf();
         }, "tierfs-device");
@@ -68,15 +68,23 @@ public final class DeviceService extends Service {
         info.setServiceName(name.length() > 63 ? name.substring(0, 63) : name);
         info.setServiceType(SERVICE_TYPE);
         info.setPort(port);
-        info.setAttribute("v", "1");        // the record format of core/discovery.hpp
-        info.setAttribute("auth", "1");     // this device only speaks the authenticated channel
+        info.setAttribute("v", "1"); // the record format of core/discovery.hpp
+        info.setAttribute("auth", "1"); // this device only speaks the authenticated channel
         info.setAttribute("kid", keyId);
         nsd = (NsdManager) getSystemService(Context.NSD_SERVICE);
         registration = new NsdManager.RegistrationListener() {
-            @Override public void onServiceRegistered(NsdServiceInfo i) { Log.i(TAG, "announced as " + i.getServiceName()); }
-            @Override public void onRegistrationFailed(NsdServiceInfo i, int code) { Log.w(TAG, "could not announce on the network (" + code + "); Macs need the address"); }
-            @Override public void onServiceUnregistered(NsdServiceInfo i) {}
-            @Override public void onUnregistrationFailed(NsdServiceInfo i, int code) {}
+            @Override
+            public void onServiceRegistered(NsdServiceInfo i) {
+                Log.i(TAG, "announced as " + i.getServiceName());
+            }
+            @Override
+            public void onRegistrationFailed(NsdServiceInfo i, int code) {
+                Log.w(TAG, "could not announce on the network (" + code + "); Macs need the address");
+            }
+            @Override
+            public void onServiceUnregistered(NsdServiceInfo i) {}
+            @Override
+            public void onUnregistrationFailed(NsdServiceInfo i, int code) {}
         };
         try {
             nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, registration);

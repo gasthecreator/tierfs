@@ -2,9 +2,7 @@ package dev.tierfs.agent;
 
 /** The device server and its pairing files: the same C++ code that runs on the Mac (backend/device_server.cpp), loaded as a library. */
 final class Native {
-    static {
-        System.loadLibrary("tierfsdevice");
-    }
+    static { System.loadLibrary("tierfsdevice"); }
 
     private Native() {}
 

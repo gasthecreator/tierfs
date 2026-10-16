@@ -1,9 +1,9 @@
 // The Android agent's native side: the SAME device server as backend/device_server.cpp (the store, the wire protocol, the secure channel, the pairing
 // files), compiled into a shared library and started from Java. Nothing about the protocol is re-implemented here.
 //
-// `main` is renamed and included so the code that is tested on the Mac (tests/deviceauth_test.cpp, devicenet_test.cpp, gc_test.cpp) is the code that runs on
-// the phone. The server never returns on its own; the service that hosts it runs in its own process (":device") and stops it by ending the process, which
-// the store is built to survive (docs/DURABLE_STORE.md).
+// `main` is renamed and included so the code that is tested on the Mac (tests/deviceauth_test.cpp, devicenet_test.cpp, gc_test.cpp) is the code that
+// runs on the phone. The server never returns on its own; the service that hosts it runs in its own process (":device") and stops it by ending the
+// process, which the store is built to survive (docs/DURABLE_STORE.md).
 #include <android/log.h>
 #include <jni.h>
 
@@ -50,7 +50,8 @@ extern "C" {
 JNIEXPORT jint JNICALL Java_dev_tierfs_agent_Native_serve(JNIEnv* env, jclass, jstring dir, jint port, jstring bind) {
     forward_stderr_to_logcat();
     std::string d = to_std(env, dir), p = std::to_string(port), b = to_std(env, bind);
-    std::vector<char*> av = {const_cast<char*>("tierfs-device"), const_cast<char*>(d.c_str()), const_cast<char*>(p.c_str()), const_cast<char*>(b.c_str()), nullptr};
+    std::vector<char*> av = {const_cast<char*>("tierfs-device"), const_cast<char*>(d.c_str()), const_cast<char*>(p.c_str()),
+                             const_cast<char*>(b.c_str()), nullptr};
     return tierfs_device_main(4, av.data());
 }
 
