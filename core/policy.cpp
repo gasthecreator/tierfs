@@ -387,7 +387,7 @@ bool PolicyEngine::should_prompt(SpaceLevel level, int64_t now) {
 
 void PolicyEngine::record_prompt(SpaceLevel level, int64_t now) {
     ledger_.set_meta("policy.prompt", std::to_string(static_cast<int>(level)) + ":" + std::to_string(now));
-    ledger_.set_meta("policy.prompt_retry", "0:0");   // it was shown: nothing to retry
+    ledger_.set_meta("policy.prompt_retry", "0:0");  // it was shown: nothing to retry
 }
 
 TickReport PolicyEngine::tick(const DeviceMap& devices) {
@@ -427,7 +427,7 @@ SpaceCheck PolicyEngine::check_space() {
         if (m && parse_prompt(*m, &l, &t) && l != 0) record_prompt(SpaceLevel::OK, now);   // forget: the next shortage prompts immediately
         return r;
     }
-    if (!notifier_ || !should_prompt(r.space.level, now)) return r;   // (the plan is made only when it is going to be shown: it reads every file)
+    if (!notifier_ || !should_prompt(r.space.level, now)) return r;  // (the plan is made only when it is going to be shown: it reads every file)
     r.plan = plan(r.space.need_bytes, r.space.level == SpaceLevel::CRITICAL);
     if (notifier_->low_space(r.space, r.plan)) {
         record_prompt(r.space.level, now);
@@ -582,27 +582,31 @@ bool OsascriptNotifier::low_space(const SpaceStatus& status, const TierPlan& pla
     if (posix_spawn(&pid, program_.c_str(), nullptr, nullptr, argv, environ) != 0) return false;
     int st = 0;
     if (waitpid(pid, &st, 0) < 0) return false;
-    return WIFEXITED(st) && WEXITSTATUS(st) == 0;   // osascript fails when there is no user session to show it in
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0;  // osascript fails when there is no user session to show it in
 }
 
 std::string validate_thresholds(const TierPolicy& p) {
     if (p.low_free_fraction < 0 || p.low_free_fraction > 0.9 || p.critical_free_fraction < 0 || p.critical_free_fraction > 0.9)
         return "the free-space percentages must be between 0 and 90";
-    if (p.critical_free_bytes > p.low_free_bytes) return "the critical level (" + gib(p.critical_free_bytes) + ") cannot be above the low level (" + gib(p.low_free_bytes) + ")";
+    if (p.critical_free_bytes > p.low_free_bytes)
+        return "the critical level (" + gib(p.critical_free_bytes) + ") cannot be above the low level (" + gib(p.low_free_bytes) + ")";
     if (p.critical_free_fraction > p.low_free_fraction) return "the critical percentage cannot be above the low percentage";
-    if (p.low_free_bytes == 0 && p.low_free_fraction == 0) return "the low level is zero, so the warning could never appear: give a size or a percentage";
+    if (p.low_free_bytes == 0 && p.low_free_fraction == 0)
+        return "the low level is zero, so the warning could never appear: give a size or a percentage";
     return "";
 }
 
 std::string format_space(const SpaceStatus& s, int local_snapshots, const std::string& last_notice) {
     std::string out = std::string("Space ") + to_string(s.level) + ": " + gib(s.info.avail()) + " free of " + gib(s.info.total) + ".\n";
-    out += "  warns below " + gib(s.low_threshold) + " free, critical below " + gib(s.critical_threshold) + "; a plan aims for " + gib(s.target_free) + ".\n";
+    out += "  warns below " + gib(s.low_threshold) + " free, critical below " + gib(s.critical_threshold) + "; a plan aims for " +
+           gib(s.target_free) + ".\n";
     if (s.need_bytes) out += "  " + gib(s.need_bytes) + " would have to move off this Mac to reach the target.\n";
-    if (s.info.avail_important > s.info.avail_raw)   // (zero means the system gave no answer)
+    if (s.info.avail_important > s.info.avail_raw)  // (zero means the system gave no answer)
         out += "  (macOS counts " + gib(s.info.avail_important) + " as available, including " + gib(s.info.avail_important - s.info.avail_raw) +
                " it can reclaim by itself; that is the figure used, as in the system's own warning.)\n";
     if (local_snapshots > 0)
-        out += "  " + std::to_string(local_snapshots) + " local Time Machine snapshot(s) exist: deleting files may not free space until they are thinned.\n";
+        out += "  " + std::to_string(local_snapshots) +
+               " local Time Machine snapshot(s) exist: deleting files may not free space until they are thinned.\n";
     out += last_notice.empty() ? "  You have not been notified about low space.\n" : "  Last notified: " + last_notice + "\n";
     return out;
 }

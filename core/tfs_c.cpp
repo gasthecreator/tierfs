@@ -46,7 +46,7 @@ tfs_ctx *tfs_open(const tfs_options *o, char *err, size_t errlen) {
         if (o->critical_gb > 0) c.policy.critical_free_bytes = static_cast<uint64_t>(o->critical_gb) << 30;
         if (o->low_pct > 0) c.policy.low_free_fraction = o->low_pct / 100.0;
         if (o->critical_pct > 0) c.policy.critical_free_fraction = o->critical_pct / 100.0;
-        if (o->space_check >= 0) c.space_check_seconds = o->space_check;   // negative: the daemon's default
+        if (o->space_check >= 0) c.space_check_seconds = o->space_check;  // negative: the daemon's default
         std::string e;
         auto d = Daemon::create(c, &e);
         if (!d) { say(e); return nullptr; }

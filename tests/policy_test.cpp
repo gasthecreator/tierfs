@@ -254,8 +254,12 @@ struct FakeProbe : SpaceProbe {
 struct CountNotifier : Notifier {
     int calls = 0;
     SpaceLevel last = SpaceLevel::OK;
-    bool deliver = true;   // false: the notification cannot be shown
-    bool low_space(const SpaceStatus& s, const TierPlan&) override { calls++; last = s.level; return deliver; }
+    bool deliver = true;  // false: the notification cannot be shown
+    bool low_space(const SpaceStatus& s, const TierPlan&) override {
+        calls++;
+        last = s.level;
+        return deliver;
+    }
 };
 
 static TierPolicy base_policy() {
@@ -978,7 +982,7 @@ int main() {
         w.now_ += 7 * 3600;
         TickReport tq = quiet->tick(w.devs);
         CHECK(!tq.prompted && tq.space.level == SpaceLevel::CRITICAL && n.calls == 6);
-        CHECK(tq.plan.free_now && !tq.plan.digest.empty());   // the tick still reports what it would do, in free-now mode when critical
+        CHECK(tq.plan.free_now && !tq.plan.digest.empty());  // the tick still reports what it would do, in free-now mode when critical
         // tick never moves anything by itself
         CHECK(exists(w.path("a")) && w.L->list_quarantine().empty() && w.L->open_intents().empty());
     }
@@ -1000,11 +1004,12 @@ int main() {
         CHECK(low.space.level == SpaceLevel::LOW && low.prompted && n.calls == 1 && low.plan.entries.size() == 1 && !low.plan.digest.empty());
         w.now_ += 60;
         SpaceCheck again = pe->check_space();
-        CHECK(!again.prompted && n.calls == 1 && again.plan.digest.empty());   // not due: no prompt, and the plan (which reads every file) is not even made
+        CHECK(!again.prompted && n.calls == 1 &&
+              again.plan.digest.empty());  // not due: no prompt, and the plan (which reads every file) is not even made
         probe.avail = 3ull << 30;
         SpaceCheck crit = pe->check_space();
         CHECK(crit.prompted && n.calls == 2 && n.last == SpaceLevel::CRITICAL && crit.plan.free_now);
-        CHECK(exists(w.path("a")) && w.L->list_quarantine().empty() && w.L->open_intents().empty());   // it never moves anything
+        CHECK(exists(w.path("a")) && w.L->list_quarantine().empty() && w.L->open_intents().empty());  // it never moves anything
         // no notifier: it measures and does nothing else
         auto quiet = make_pe(w, probe, pol, nullptr);
         SpaceCheck q = quiet->check_space();
@@ -1021,7 +1026,9 @@ int main() {
             std::vector<std::thread> ts;
             std::atomic<int> prompted{0};
             for (int i = 0; i < 8; i++)
-                ts.emplace_back([&] { if (pe2->check_space().prompted) prompted++; });
+                ts.emplace_back([&] {
+                    if (pe2->check_space().prompted) prompted++;
+                });
             for (auto& t : ts) t.join();
             CHECK(prompted == 1 && n2.calls == 1);
         }
@@ -1035,21 +1042,21 @@ int main() {
         n.deliver = false;
         put(w, "a", 2 * MiB, 1);
         w.now_ += 40 * 86400;
-        TierPolicy pol = base_policy();   // prompt_retry = 600 s
+        TierPolicy pol = base_policy();  // prompt_retry = 600 s
         auto pe = make_pe(w, probe, pol, &n);
         probe.avail = 25ull << 30;
         SpaceCheck c1 = pe->check_space();
         CHECK(!c1.prompted && c1.prompt_failed && n.calls == 1);
         w.now_ += 599;
         SpaceCheck c2 = pe->check_space();
-        CHECK(!c2.prompted && !c2.prompt_failed && n.calls == 1);            // not at every check
+        CHECK(!c2.prompted && !c2.prompt_failed && n.calls == 1);  // not at every check
         w.now_ += 1;
         n.deliver = true;
         SpaceCheck c3 = pe->check_space();
-        CHECK(c3.prompted && !c3.prompt_failed && n.calls == 2);             // after the retry period, and now it is said
+        CHECK(c3.prompted && !c3.prompt_failed && n.calls == 2);  // after the retry period, and now it is said
         w.now_ += 60;
-        CHECK(!pe->check_space().prompted && n.calls == 2);                  // and said means said: the usual interval applies
-        {   // the retry period is the setting, not a fixed number; and a notice that was finally shown leaves no retry behind
+        CHECK(!pe->check_space().prompted && n.calls == 2);  // and said means said: the usual interval applies
+        {  // the retry period is the setting, not a fixed number; and a notice that was finally shown leaves no retry behind
             World w4;
             FakeProbe p4;
             CountNotifier n4;
@@ -1064,7 +1071,7 @@ int main() {
             w4.now_ += 99;
             CHECK(!pe4->check_space().prompt_failed && n4.calls == 1);
             w4.now_ += 1;
-            CHECK(pe4->check_space().prompt_failed && n4.calls == 2);          // exactly the setting
+            CHECK(pe4->check_space().prompt_failed && n4.calls == 2);  // exactly the setting
             // failed at LOW; worse is shown at once; back to normal; short again soon after: told at once (the old failure must not hold it back)
             w4.now_ += 10;
             p4.avail = 3ull << 30;
@@ -1089,15 +1096,15 @@ int main() {
         CHECK(pe3->check_space().prompt_failed && n3.calls == 1);
         w3.now_ += 10;
         p3.avail = 3ull << 30;
-        CHECK(pe3->check_space().prompt_failed && n3.calls == 2);            // critical now: tried at once
+        CHECK(pe3->check_space().prompt_failed && n3.calls == 2);  // critical now: tried at once
         w3.now_ += 10;
         p3.avail = 25ull << 30;
-        CHECK(!pe3->check_space().prompt_failed && n3.calls == 2);           // better than the failed one: waits for the retry period
+        CHECK(!pe3->check_space().prompt_failed && n3.calls == 2);  // better than the failed one: waits for the retry period
         // the same through tick
         w3.now_ += 700;
         n3.deliver = false;
         TickReport tf = pe3->tick(w3.devs);
-        CHECK(!tf.prompted && tf.prompt_failed);   // the tick reports a notification that could not be shown
+        CHECK(!tf.prompted && tf.prompt_failed);  // the tick reports a notification that could not be shown
         w3.now_ += 700;
         n3.deliver = true;
         TickReport t = pe3->tick(w3.devs);
@@ -1115,26 +1122,45 @@ int main() {
         printf("== thresholds are checked, and the space report is plain\n");
         TierPolicy p = base_policy();
         CHECK(validate_thresholds(p).empty());
-        p = base_policy(); p.critical_free_bytes = p.low_free_bytes + 1;
+        p = base_policy();
+        p.critical_free_bytes = p.low_free_bytes + 1;
         CHECK(validate_thresholds(p).find("cannot be above the low level") != std::string::npos);
-        p = base_policy(); p.critical_free_fraction = p.low_free_fraction + 0.01;
+        p = base_policy();
+        p.critical_free_fraction = p.low_free_fraction + 0.01;
         CHECK(validate_thresholds(p).find("percentage") != std::string::npos);
-        p = base_policy(); p.low_free_fraction = 0.95;
+        p = base_policy();
+        p.low_free_fraction = 0.95;
         CHECK(!validate_thresholds(p).empty());
-        p = base_policy(); p.critical_free_fraction = -0.1;
+        p = base_policy();
+        p.critical_free_fraction = -0.1;
         CHECK(!validate_thresholds(p).empty());
-        p = base_policy(); p.low_free_fraction = -0.1; p.critical_free_fraction = 0;
-        CHECK(validate_thresholds(p).find("between 0 and 90") != std::string::npos);   // the sign is named as the problem, not the order of the two
-        p = base_policy(); p.low_free_fraction = -0.1; p.critical_free_fraction = -0.2;
+        p = base_policy();
+        p.low_free_fraction = -0.1;
+        p.critical_free_fraction = 0;
+        CHECK(validate_thresholds(p).find("between 0 and 90") != std::string::npos);  // the sign is named as the problem, not the order of the two
+        p = base_policy();
+        p.low_free_fraction = -0.1;
+        p.critical_free_fraction = -0.2;
         CHECK(validate_thresholds(p).find("between 0 and 90") != std::string::npos);
-        p = base_policy(); p.low_free_bytes = 0; p.low_free_fraction = 0; p.critical_free_bytes = 0; p.critical_free_fraction = 0;
+        p = base_policy();
+        p.low_free_bytes = 0;
+        p.low_free_fraction = 0;
+        p.critical_free_bytes = 0;
+        p.critical_free_fraction = 0;
         CHECK(validate_thresholds(p).find("never appear") != std::string::npos);
-        p = base_policy(); p.low_free_bytes = 0; p.critical_free_bytes = 0; p.critical_free_fraction = 0.05;
-        CHECK(validate_thresholds(p).empty());   // a percentage alone is fine
-        p = base_policy(); p.critical_free_bytes = p.low_free_bytes; p.critical_free_fraction = p.low_free_fraction;
-        CHECK(validate_thresholds(p).empty());   // equal is allowed
-        p = base_policy(); p.low_free_fraction = 0.9; p.critical_free_fraction = 0.9;
-        CHECK(validate_thresholds(p).empty());   // 90 is the edge
+        p = base_policy();
+        p.low_free_bytes = 0;
+        p.critical_free_bytes = 0;
+        p.critical_free_fraction = 0.05;
+        CHECK(validate_thresholds(p).empty());  // a percentage alone is fine
+        p = base_policy();
+        p.critical_free_bytes = p.low_free_bytes;
+        p.critical_free_fraction = p.low_free_fraction;
+        CHECK(validate_thresholds(p).empty());  // equal is allowed
+        p = base_policy();
+        p.low_free_fraction = 0.9;
+        p.critical_free_fraction = 0.9;
+        CHECK(validate_thresholds(p).empty());  // 90 is the edge
 
         SpaceStatus s;
         s.info.total = 200ull << 30;
@@ -1150,16 +1176,16 @@ int main() {
               t.find("critical below 10.0 GiB") != std::string::npos && t.find("12.0 GiB would have to move") != std::string::npos);
         CHECK(t.find("including 15.0 GiB it can reclaim") != std::string::npos);
         CHECK(t.find("2 local Time Machine snapshot") != std::string::npos && t.find("Last notified: LOW at 2026-10-15 09:00") != std::string::npos);
-        s.info.avail_important = s.info.avail_raw;   // nothing reclaimable
+        s.info.avail_important = s.info.avail_raw;  // nothing reclaimable
         CHECK(format_space(s, 0, "").find("reclaim") == std::string::npos);
-        s.info.avail_important = 5ull << 30;         // less than raw: nothing to say either
+        s.info.avail_important = 5ull << 30;  // less than raw: nothing to say either
         CHECK(format_space(s, 0, "").find("reclaim") == std::string::npos);
         s.need_bytes = 0;
         s.info.avail_important = 0;
         s.level = SpaceLevel::OK;
         std::string t2 = format_space(s, 0, "");
-        CHECK(t2.find("would have to move") == std::string::npos && t2.find("local Time Machine") == std::string::npos && t2.find("reclaim") == std::string::npos &&
-              t2.find("You have not been notified") != std::string::npos);
+        CHECK(t2.find("would have to move") == std::string::npos && t2.find("local Time Machine") == std::string::npos &&
+              t2.find("reclaim") == std::string::npos && t2.find("You have not been notified") != std::string::npos);
     }
 
     {

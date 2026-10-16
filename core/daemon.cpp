@@ -65,8 +65,9 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     tp.roots = {d->cfg_.logical_prefix};
     if (tp.exclude.empty()) tp.exclude = {"/.git/"};
     if (std::string bad = validate_thresholds(tp); !bad.empty()) return fail("free-space thresholds: " + bad);
-    if (cfg.space_check_seconds < 0 || cfg.space_check_seconds > 86400) return fail("the free-space check period must be between 0 and 86400 seconds");
-    if (cfg.notify) {   // what the notification says to do is worked out when it is shown, so it can name what stands in the way at that moment
+    if (cfg.space_check_seconds < 0 || cfg.space_check_seconds > 86400)
+        return fail("the free-space check period must be between 0 and 86400 seconds");
+    if (cfg.notify) {  // what the notification says to do is worked out when it is shown, so it can name what stands in the way at that moment
         HintFn hint = [raw = d.get(), dir = cfg.ledger_dir] {
             std::string review = "Review with: tierctl plan '" + dir + "' (nothing moves until you approve)";
             auto b = raw->plan_blockers();
@@ -78,8 +79,9 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     d->policy_ = std::make_unique<PolicyEngine>(*d->ledger_, *d->replicator_, *d->engine_, *d->probe_, tp,
                                                 [origin, pfx = d->cfg_.logical_prefix](const FileRec& f) { return origin + "/" + f.path.substr(pfx.size()); },
                                                 d->notifier_.get());
-    for (const auto& spec : cfg.devices) {  // "host:port" (open device), "host:port@keyid" (paired: the secret is in the key store), or "mdns:NAME@keyid"
-        if (discovery::is_mdns_spec(spec)) {   // a paired device that is looked up on the network instead of being given an address
+    for (const auto& spec :
+         cfg.devices) {  // "host:port" (open device), "host:port@keyid" (paired: the secret is in the key store), or "mdns:NAME@keyid"
+        if (discovery::is_mdns_spec(spec)) {  // a paired device that is looked up on the network instead of being given an address
             std::string merr;
             auto ms = discovery::parse_mdns_spec(spec, &merr);
             if (!ms) return fail(merr);
@@ -146,7 +148,7 @@ void Daemon::refresh_mdns() {
         found = cfg_.discover(kids);
     } else {
         std::set<std::string> missing(kids.begin(), kids.end());
-        found = discovery::browse(cfg_.mdns_timeout_ms, &err, [&](const discovery::Found& f) {   // done as soon as every wanted device has been seen
+        found = discovery::browse(cfg_.mdns_timeout_ms, &err, [&](const discovery::Found& f) {  // done as soon as every wanted device has been seen
             if (f.paired) missing.erase(f.key_id);
             return missing.empty();
         });
@@ -268,14 +270,19 @@ void Daemon::maintenance_loop() {
 // Free space is checked on its own clock: the maintenance pass can spend minutes copying files to the devices, and a person whose disk is filling up
 // should not wait for that to hear about it. The check touches no device and moves nothing (PolicyEngine::check_space).
 void Daemon::space_loop() {
-    auto next = std::chrono::steady_clock::now();   // the first check is at once: starting the daemon on a full disk should say so
+    auto next = std::chrono::steady_clock::now();  // the first check is at once: starting the daemon on a full disk should say so
     while (!stop_) {
-        if (std::chrono::steady_clock::now() < next) { usleep(100000); continue; }
+        if (std::chrono::steady_clock::now() < next) {
+            usleep(100000);
+            continue;
+        }
         next = std::chrono::steady_clock::now() + std::chrono::seconds(cfg_.space_check_seconds);
         SpaceCheck c = policy_->check_space();
         std::lock_guard<std::mutex> g(last_mu_);
-        if (c.prompt_failed) notify_error_ = "the low-space notification could not be shown (is a user session logged in?); it will be tried again";
-        else if (c.prompted || c.space.level == SpaceLevel::OK) notify_error_.clear();
+        if (c.prompt_failed)
+            notify_error_ = "the low-space notification could not be shown (is a user session logged in?); it will be tried again";
+        else if (c.prompted || c.space.level == SpaceLevel::OK)
+            notify_error_.clear();
     }
 }
 
@@ -314,8 +321,14 @@ std::string Daemon::cmd_status() {
             o << (d.id.empty() ? "not attached" : "attached " + d.id.substr(0, 8)) << "\n";
         }
     }
-    { std::lock_guard<std::mutex> g(last_mu_); if (!notify_error_.empty()) o << "note " << notify_error_ << "\n"; }
-    { std::lock_guard<std::mutex> g(last_mu_); if (!mdns_error_.empty()) o << "note looking for devices on the network failed: " << mdns_error_ << "\n"; }
+    {
+        std::lock_guard<std::mutex> g(last_mu_);
+        if (!notify_error_.empty()) o << "note " << notify_error_ << "\n";
+    }
+    {
+        std::lock_guard<std::mutex> g(last_mu_);
+        if (!mdns_error_.empty()) o << "note looking for devices on the network failed: " << mdns_error_ << "\n";
+    }
     SpaceStatus sp = policy_->space();
     o << "space " << to_string(sp.level) << " free " << sp.info.avail() << " of " << sp.info.total << "\n";
     { std::lock_guard<std::mutex> g(last_mu_); o << last_scan_ << "\n"; }
@@ -378,9 +391,13 @@ std::string Daemon::cmd_space() {
         }
     }
     std::string text = format_space(sp, probe_->local_snapshots(), last);
-    text += notifier_ ? "  Checked every " + std::to_string(cfg_.space_check_seconds) + " seconds" + (cfg_.space_check_seconds ? "" : " (off)") + "; notifications are on.\n"
+    text += notifier_ ? "  Checked every " + std::to_string(cfg_.space_check_seconds) + " seconds" + (cfg_.space_check_seconds ? "" : " (off)") +
+                            "; notifications are on.\n"
                       : std::string("  Notifications are off (the daemon was started with notify=0).\n");
-    { std::lock_guard<std::mutex> g(last_mu_); if (!notify_error_.empty()) text += "  PROBLEM: " + notify_error_ + "\n"; }
+    {
+        std::lock_guard<std::mutex> g(last_mu_);
+        if (!notify_error_.empty()) text += "  PROBLEM: " + notify_error_ + "\n";
+    }
     return text + "OK\n";
 }
 

@@ -7,7 +7,8 @@
 // advertisement for a device it has no pairing secret for, and a device that is not paired refuses to advertise itself.
 //
 // The wire form of an advertisement (the TXT record) and the choice among found devices are plain functions with no network in them, so the
-// rules can be tested exactly; only `browse` and `Advertiser` touch the system's mDNS service (dns_sd.h; built into macOS, avahi provides it on Linux).
+// rules can be tested exactly; only `browse` and `Advertiser` touch the system's mDNS service (dns_sd.h; built into macOS, avahi provides it on
+// Linux).
 #pragma once
 
 #include <cstdint>
@@ -24,8 +25,8 @@ constexpr int TXT_VERSION = 1;
 
 // One device found on the network.
 struct Found {
-    std::string name;     // the instance name, a human label ("kitchen-pi")
-    std::string host;     // the host name to connect to ("kitchen-pi.local"), no trailing dot
+    std::string name;  // the instance name, a human label ("kitchen-pi")
+    std::string host;  // the host name to connect to ("kitchen-pi.local"), no trailing dot
     uint16_t port = 0;
     std::string key_id;   // lower-case hex of the pairing key id (16 characters); empty when the device did not say
     bool paired = false;  // the device says it requires the authenticated channel
@@ -51,7 +52,7 @@ struct MdnsSpec {
 };
 bool is_mdns_spec(const std::string& spec);
 std::optional<MdnsSpec> parse_mdns_spec(const std::string& spec, std::string* err);
-bool valid_key_id(const std::string& s);   // exactly 16 lower-case hex characters
+bool valid_key_id(const std::string& s);  // exactly 16 lower-case hex characters
 
 // Which of the found devices a spec means: one that announces exactly this key id AND says it is paired. When several do (the same device on two
 // networks, or a stale record), the one with the smallest instance name is taken so the choice does not change from run to run.
@@ -59,7 +60,8 @@ std::optional<Found> pick(const std::vector<Found>& found, const std::string& ke
 
 // A valid DNS-SD instance name for this machine: the host name without its domain, cut to 63 bytes; "tierfs-device" if there is none.
 std::string default_instance_name();
-// The same rule for a given host name ("Kitchen-Pi.local" -> "Kitchen-Pi"): the part before the first dot, without control characters, at most 63 bytes.
+// The same rule for a given host name ("Kitchen-Pi.local" -> "Kitchen-Pi"): the part before the first dot, without control characters, at most 63
+// bytes.
 std::string instance_name_from_host(const std::string& host);
 // An instance name is 1 to 63 bytes with no control characters.
 bool valid_instance_name(const std::string& s);
@@ -77,7 +79,7 @@ public:
     Advertiser& operator=(const Advertiser&) = delete;
     // The name actually registered (the system adds " (2)" when the name is taken).
     const std::string& name() const { return name_; }
-    struct Impl;   // the system registration (internal)
+    struct Impl;  // the system registration (internal)
 
 private:
     Advertiser() = default;

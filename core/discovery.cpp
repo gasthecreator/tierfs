@@ -56,14 +56,14 @@ bool parse_txt(const uint8_t* data, size_t len, Advert* out) {
     size_t i = 0;
     while (i < len) {
         size_t n = data[i++];
-        if (n == 0 || i + n > len) return false;   // an empty string or one that runs past the end: not a record we wrote
+        if (n == 0 || i + n > len) return false;  // an empty string or one that runs past the end: not a record we wrote
         std::string item(reinterpret_cast<const char*>(data + i), n);
         i += n;
         size_t eq = item.find('=');
         if (eq == std::string::npos || eq == 0) return false;
         std::string key = item.substr(0, eq);
-        for (auto& c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));   // DNS-SD keys are case-insensitive
-        if (!kv.emplace(key, item.substr(eq + 1)).second) return false;   // a repeated key is ambiguous
+        for (auto& c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));  // DNS-SD keys are case-insensitive
+        if (!kv.emplace(key, item.substr(eq + 1)).second) return false;                     // a repeated key is ambiguous
     }
     auto v = kv.find("v");
     if (v == kv.end() || v->second != std::to_string(TXT_VERSION)) return false;
@@ -75,7 +75,7 @@ bool parse_txt(const uint8_t* data, size_t len, Advert* out) {
         if (!valid_key_id(k->second)) return false;
         a.key_id = k->second;
     }
-    if (a.paired && a.key_id.empty()) return false;   // a paired device that does not say which secret it wants cannot be matched
+    if (a.paired && a.key_id.empty()) return false;  // a paired device that does not say which secret it wants cannot be matched
     if (out) *out = a;
     return true;
 }
@@ -93,7 +93,8 @@ std::optional<MdnsSpec> parse_mdns_spec(const std::string& spec, std::string* er
     std::string rest = spec.substr(5);
     size_t at = rest.rfind('@');
     if (at == std::string::npos)
-        return fail("a discovered device needs its key id so that it can be told apart from an impostor: mdns:NAME@KEYID (tierctl discover prints it)");
+        return fail(
+            "a discovered device needs its key id so that it can be told apart from an impostor: mdns:NAME@KEYID (tierctl discover prints it)");
     MdnsSpec m;
     m.name = rest.substr(0, at);
     m.key_id = rest.substr(at + 1);
@@ -133,9 +134,7 @@ std::string instance_name_from_host(const std::string& host) {
 #ifdef TIERFS_HAVE_DNSSD
 namespace {
 
-int64_t now_ms() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+int64_t now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 std::string describe(DNSServiceErrorType e) { return "the system's mDNS service failed (DNS-SD error " + std::to_string(e) + ")"; }
 
@@ -148,12 +147,12 @@ struct BrowseCtx {
     bool satisfied = false;
 };
 
-void DNSSD_API resolve_cb(DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceErrorType err, const char* fullname, const char* hosttarget, uint16_t port,
-                          uint16_t txt_len, const unsigned char* txt, void* ctx_) {
+void DNSSD_API resolve_cb(DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceErrorType err, const char* fullname, const char* hosttarget,
+                          uint16_t port, uint16_t txt_len, const unsigned char* txt, void* ctx_) {
     auto* ctx = static_cast<BrowseCtx*>(ctx_);
     if (err != kDNSServiceErr_NoError || !hosttarget) return;
     Advert ad;
-    if (!parse_txt(txt, txt_len, &ad)) return;   // not one of ours, or not a version we speak
+    if (!parse_txt(txt, txt_len, &ad)) return;  // not one of ours, or not a version we speak
     Found f;
     // fullname is "<instance>._tierfs._tcp.local.": the instance may contain escaped characters; the part before the type is what people see
     std::string full = fullname ? fullname : "";
@@ -161,7 +160,7 @@ void DNSSD_API resolve_cb(DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceEr
     size_t cut = full.find(marker);
     f.name = cut == std::string::npos ? full : full.substr(0, cut);
     std::string unesc;
-    for (size_t i = 0; i < f.name.size(); i++) {   // undo DNS escaping: "\032" (decimal) and "\." style
+    for (size_t i = 0; i < f.name.size(); i++) {  // undo DNS escaping: "\032" (decimal) and "\." style
         if (f.name[i] == '\\' && i + 1 < f.name.size()) {
             if (i + 3 < f.name.size() && isdigit(static_cast<unsigned char>(f.name[i + 1])) && isdigit(static_cast<unsigned char>(f.name[i + 2])) &&
                 isdigit(static_cast<unsigned char>(f.name[i + 3]))) {
@@ -182,7 +181,7 @@ void DNSSD_API resolve_cb(DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceEr
     f.paired = ad.paired;
     if (f.host.empty() || f.port == 0) return;
     for (const auto& have : ctx->found)
-        if (have == f) return;   // the same device seen on another interface
+        if (have == f) return;  // the same device seen on another interface
     ctx->found.push_back(f);
     if (ctx->want && ctx->want(f)) ctx->satisfied = true;
 }
@@ -230,10 +229,16 @@ std::vector<Found> browse(int timeout_ms, std::string* err, const std::function<
         tv.tv_usec = static_cast<int>((left % 1000) * 1000);
         int n = select(fd + 1, &rs, nullptr, nullptr, &tv);
         if (n < 0 && errno == EINTR) continue;
-        if (n < 0) { ctx.error = "waiting for the system's mDNS service failed"; break; }
-        if (n > 0 && DNSServiceProcessResult(ctx.main) != kDNSServiceErr_NoError) { ctx.error = "the system's mDNS service stopped answering"; break; }
+        if (n < 0) {
+            ctx.error = "waiting for the system's mDNS service failed";
+            break;
+        }
+        if (n > 0 && DNSServiceProcessResult(ctx.main) != kDNSServiceErr_NoError) {
+            ctx.error = "the system's mDNS service stopped answering";
+            break;
+        }
     }
-    for (auto r : ctx.resolves) DNSServiceRefDeallocate(r);   // sub-references first, then the connection
+    for (auto r : ctx.resolves) DNSServiceRefDeallocate(r);  // sub-references first, then the connection
     DNSServiceRefDeallocate(br);
     DNSServiceRefDeallocate(ctx.main);
     if (!ctx.error.empty() && err) *err = ctx.error;
@@ -244,7 +249,7 @@ struct Advertiser::Impl {
     DNSServiceRef ref = nullptr;
     std::thread pump;
     std::atomic<bool> stop{false};
-    std::atomic<int> state{0};   // 0 waiting, 1 registered, -1 failed
+    std::atomic<int> state{0};  // 0 waiting, 1 registered, -1 failed
     std::mutex mu;
     std::string name, error;
 };
@@ -288,7 +293,10 @@ std::unique_ptr<Advertiser> Advertiser::start(const std::string& name, uint16_t 
             int n = select(fd + 1, &rs, nullptr, nullptr, &tv);
             if (n > 0 && DNSServiceProcessResult(im->ref) != kDNSServiceErr_NoError) {
                 std::lock_guard<std::mutex> g(im->mu);
-                if (im->state == 0) { im->error = "the system's mDNS service stopped answering"; im->state = -1; }
+                if (im->state == 0) {
+                    im->error = "the system's mDNS service stopped answering";
+                    im->state = -1;
+                }
                 return;
             }
         }
@@ -297,7 +305,7 @@ std::unique_ptr<Advertiser> Advertiser::start(const std::string& name, uint16_t 
     while (im->state == 0 && now_ms() < deadline) usleep(20000);
     if (im->state != 1) {
         std::string why = im->state == -1 ? im->error : "the system's mDNS service did not confirm the registration";
-        return fail(why);   // ~Advertiser stops the thread and releases the registration
+        return fail(why);  // ~Advertiser stops the thread and releases the registration
     }
     a->name_ = im->name;
     return a;

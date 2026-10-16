@@ -106,9 +106,9 @@ public:
 // The cheap, frequent part of the policy: is space short, and has the person been told? Touches no device and moves nothing.
 struct SpaceCheck {
     SpaceStatus space;
-    bool prompted = false;        // a notification was shown now
-    bool prompt_failed = false;   // one was due but could not be shown
-    TierPlan plan;                // made only when space is short
+    bool prompted = false;       // a notification was shown now
+    bool prompt_failed = false;  // one was due but could not be shown
+    TierPlan plan;               // made only when space is short
 };
 
 struct TickReport {
@@ -151,7 +151,7 @@ public:
 
 private:
     HintFn hint_;
-    std::string program_;   // (a test points this at /usr/bin/true or /usr/bin/false)
+    std::string program_;  // (a test points this at /usr/bin/true or /usr/bin/false)
 };
 
 // The first thing wrong with the thresholds, or empty. Low must be at least as demanding as critical (in bytes and in fraction), fractions are
@@ -211,7 +211,7 @@ private:
     TierPolicy policy_;
     OriginResolver resolve_;
     Notifier* notifier_;
-    std::mutex prompt_mu_;   // a check and the record of its prompt are one step
+    std::mutex prompt_mu_;  // a check and the record of its prompt are one step
 };
 
 }  // namespace tierfs

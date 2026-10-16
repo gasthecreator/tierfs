@@ -391,7 +391,8 @@ int main(int argc, char** argv) {
         else pos.push_back(a);
     }
     if (pos.empty()) {
-        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n", argv[0]);
+        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n",
+                argv[0]);
         return 2;
     }
     if (show_code || new_code) {  // pairing management: no server, no store needed beyond the directory
@@ -434,8 +435,9 @@ int main(int argc, char** argv) {
                 bind_addr.c_str());
         return 2;
     }
-    if (advertise && !g_psk) {   // an unauthenticated device is never invited onto the network
-        fprintf(stderr, "refusing to advertise: this device is not paired, so it has no authentication (tierfs-device <store> --show-pairing-code)\n");
+    if (advertise && !g_psk) {  // an unauthenticated device is never invited onto the network
+        fprintf(stderr,
+                "refusing to advertise: this device is not paired, so it has no authentication (tierfs-device <store> --show-pairing-code)\n");
         return 2;
     }
     if (advertise && adv_name.empty()) adv_name = discovery::default_instance_name();
@@ -466,7 +468,7 @@ int main(int argc, char** argv) {
             (unsigned long long)i.epoch, (unsigned long long)i.seq,
             g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
             (g_psk || allow_delete) ? ", deletions accepted" : "", faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
-    std::unique_ptr<discovery::Advertiser> announcer;   // lives as long as the server: the device disappears from the network when it stops
+    std::unique_ptr<discovery::Advertiser> announcer;  // lives as long as the server: the device disappears from the network when it stops
     if (advertise) {
         discovery::Advert ad;
         ad.paired = true;

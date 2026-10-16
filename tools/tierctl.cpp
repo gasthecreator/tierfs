@@ -182,7 +182,7 @@ static std::optional<tierfs::crypto::Bytes> secret_from_code(const std::string& 
 static std::unique_ptr<tierfs::DeviceClient> make_device_client(const std::string& spec, const std::string& store,
                                                                 const std::map<std::string, std::string>& codes, int timeout_ms, std::string* err) {
     DeviceSpec d = parse_device(spec);
-    if (tierfs::discovery::is_mdns_spec(spec)) {   // mdns:NAME@keyid: look the paired device up on the network (its secret decides who is accepted)
+    if (tierfs::discovery::is_mdns_spec(spec)) {  // mdns:NAME@keyid: look the paired device up on the network (its secret decides who is accepted)
         auto ms = tierfs::discovery::parse_mdns_spec(spec, err);
         if (!ms) return nullptr;
         if (store.empty()) {
@@ -301,8 +301,10 @@ static int cmd_discover(int argc, char** argv) {
     std::string store;
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--seconds" && i + 1 < argc) seconds = atoi(argv[++i]);
-        else if (a == "--store" && i + 1 < argc) store = argv[++i];
+        if (a == "--seconds" && i + 1 < argc)
+            seconds = atoi(argv[++i]);
+        else if (a == "--store" && i + 1 < argc)
+            store = argv[++i];
         else {
             fprintf(stderr, "usage: tierctl discover [--seconds N] [--store keychain|dir:PATH]\n");
             return 2;
@@ -320,7 +322,10 @@ static int cmd_discover(int argc, char** argv) {
     }
     std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.name != b.name ? a.name < b.name : a.host < b.host; });
     if (found.empty()) {
-        printf("no tierfs devices answered in %d seconds.\nA device announces itself when it is started with --advertise (tierfs-device <store> <port> <address> --advertise).\n", seconds);
+        printf(
+            "no tierfs devices answered in %d seconds.\nA device announces itself when it is started with --advertise (tierfs-device <store> <port> "
+            "<address> --advertise).\n",
+            seconds);
         return 0;
     }
     for (const auto& f : found) {
@@ -329,15 +334,19 @@ static int cmd_discover(int argc, char** argv) {
             std::string e2;
             ours = tierfs::load_pairing_secret(store, f.key_id, &e2).has_value();
         }
-        printf("%s  %s:%d  %s\n", f.name.c_str(), f.host.c_str(), f.port, f.paired ? ("paired, key id " + f.key_id).c_str() : "NOT PAIRED (no authentication)");
+        printf("%s  %s:%d  %s\n", f.name.c_str(), f.host.c_str(), f.port,
+               f.paired ? ("paired, key id " + f.key_id).c_str() : "NOT PAIRED (no authentication)");
         if (f.paired) {
-            if (!store.empty()) printf("    this Mac %s\n", ours ? "is paired with it" : "is NOT paired with it: tierctl pair <host:port> --store ...");
+            if (!store.empty())
+                printf("    this Mac %s\n", ours ? "is paired with it" : "is NOT paired with it: tierctl pair <host:port> --store ...");
             printf("    device entry:  mdns:%s@%s   (or %s:%d@%s)\n", f.name.c_str(), f.key_id.c_str(), f.host.c_str(), f.port, f.key_id.c_str());
         } else {
             printf("    not usable by the daemon: pair the device first (tierfs-device <store> --show-pairing-code, then tierctl pair)\n");
         }
     }
-    printf("An announcement only says where a device claims to be. Nothing is trusted because of it: the device must still prove it holds the pairing secret.\n");
+    printf(
+        "An announcement only says where a device claims to be. Nothing is trusted because of it: the device must still prove it holds the pairing "
+        "secret.\n");
     return 0;
 }
 

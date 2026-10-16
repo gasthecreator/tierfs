@@ -265,7 +265,13 @@ struct SpaceFake {
 struct FakeSpaceProbe : SpaceProbe {
     SpaceFake& f;
     explicit FakeSpaceProbe(SpaceFake& x) : f(x) {}
-    SpaceInfo measure() override { SpaceInfo s; s.total = 200ull << 30; s.avail_raw = f.avail; s.avail_important = f.avail; return s; }
+    SpaceInfo measure() override {
+        SpaceInfo s;
+        s.total = 200ull << 30;
+        s.avail_raw = f.avail;
+        s.avail_important = f.avail;
+        return s;
+    }
     int local_snapshots() override { return 0; }
 };
 struct FakeNotifier : Notifier {
@@ -922,7 +928,7 @@ int main() {
         c.devices = {"mdns:devA"};
         CHECK(!Daemon::create(c, &err) && has(err, "key id"));
         c.devices = {"mdns:devA@0123456789abcdef"};
-        CHECK(!Daemon::create(c, &err) && has(err, "no pairing secret"));   // no secret for it: the daemon will not follow an announcement for it
+        CHECK(!Daemon::create(c, &err) && has(err, "no pairing secret"));  // no secret for it: the daemon will not follow an announcement for it
         c.devices = {"mdns:devA@nothex"};
         CHECK(!Daemon::create(c, &err) && has(err, "16 lower-case hex"));
 
@@ -941,8 +947,9 @@ int main() {
             auto d = Daemon::create(c, &err);
             CHECK(d && d->start(nullptr));
             std::string st = d->control("status");
-            CHECK(has(st, "mdns:devA@") && has(st, "at 127.0.0.1:" + std::to_string(PA)) && !has(st, "not attached") && d->ledger().list_devices().size() == 2);
-            CHECK(asked.size() == 2 && asked[0] == pa.second && asked[1] == pb.second);   // it asks for exactly the key ids it holds secrets for
+            CHECK(has(st, "mdns:devA@") && has(st, "at 127.0.0.1:" + std::to_string(PA)) && !has(st, "not attached") &&
+                  d->ledger().list_devices().size() == 2);
+            CHECK(asked.size() == 2 && asked[0] == pa.second && asked[1] == pb.second);  // it asks for exactly the key ids it holds secrets for
             std::string r = d->control("offload /m1.bin");
             CHECK(has(r, "offloaded /Users/me/proj/m1.bin") && read_through(d->overlay(), "/m1.bin", a.size()) == a);
             CHECK(ends_ok(d->control("hydrate /m1.bin")));
@@ -973,14 +980,15 @@ int main() {
         {
             DaemonConfig c3 = c;
             c3.devices = {"mdns:devA@" + pa.second};
-            network = {found_at("devA", PB, pa.second, true)};   // device B answers there, holding a different secret
+            network = {found_at("devA", PB, pa.second, true)};  // device B answers there, holding a different secret
             auto d = Daemon::create(c3, &err);
             CHECK(d && d->start(nullptr));
             std::string st = d->control("status");
-            CHECK(has(st, "at 127.0.0.1:" + std::to_string(PB)) && has(st, "not attached"));   // it went there, failed to authenticate, attached nothing
-            CHECK(has(d->control("offload /m2.bin"), "refused"));   // no device attached: nothing can be moved
-            d.reset();   // (one daemon per ledger)
-            network = {found_at("devA", PA, pa.second, false)};   // says it is not paired: never followed
+            CHECK(has(st, "at 127.0.0.1:" + std::to_string(PB)) &&
+                  has(st, "not attached"));                        // it went there, failed to authenticate, attached nothing
+            CHECK(has(d->control("offload /m2.bin"), "refused"));  // no device attached: nothing can be moved
+            d.reset();                                             // (one daemon per ledger)
+            network = {found_at("devA", PA, pa.second, false)};    // says it is not paired: never followed
             auto d2 = Daemon::create(c3, &err);
             CHECK(d2 && d2->start(nullptr));
             std::string st2 = d2 ? d2->control("status") : "";
@@ -1041,7 +1049,7 @@ int main() {
             auto d = Daemon::create(c, nullptr);
             CHECK(d && d->start(nullptr));
             usleep(1500000);
-            CHECK(f.calls == 0);   // plenty of space: nothing said
+            CHECK(f.calls == 0);  // plenty of space: nothing said
             std::string sp = d->control("space");
             CHECK(has(sp, "Space OK: 100.0 GiB free of 200.0 GiB") && has(sp, "warns below 30.0 GiB") && has(sp, "You have not been notified") &&
                   has(sp, "Checked every 1 seconds") && ends_ok(sp));
@@ -1052,10 +1060,10 @@ int main() {
                 std::lock_guard<std::mutex> g(f.mu);
                 CHECK(f.levels.size() == 1 && f.levels[0] == SpaceLevel::LOW);
                 CHECK(has(f.hints[0], "tierctl plan '" + e.ledger + "'") && has(f.hints[0], "nothing moves until you approve"));
-                CHECK(has(f.hints[0], "Not ready to run yet"));   // this ledger has no backup recorded: the notification says so, not just "approve"
+                CHECK(has(f.hints[0], "Not ready to run yet"));  // this ledger has no backup recorded: the notification says so, not just "approve"
             }
             usleep(2500000);
-            CHECK(f.calls == 1);   // the same shortage is not announced again every second
+            CHECK(f.calls == 1);  // the same shortage is not announced again every second
             std::string sp2 = d->control("space");
             CHECK(has(sp2, "Space LOW: 25.0 GiB free of 200.0 GiB") && has(sp2, "Last notified: LOW at "));
             // worse: at once
@@ -1067,7 +1075,7 @@ int main() {
             }
             // a long copy to the devices (the maintenance pass holds the engine) does not hold a warning back
             f.avail = 100ull << 30;
-            usleep(1500000);   // back to normal: the memory of the last warning is cleared
+            usleep(1500000);  // back to normal: the memory of the last warning is cleared
             f.avail = 25ull << 30;
             {
                 std::lock_guard<std::mutex> busy(d->overlay().engine_mutex());
@@ -1077,7 +1085,7 @@ int main() {
         }
         // the notification cannot be shown: the daemon says so, and tries again
         {
-            Env e2(false, false);   // (a ledger remembers when it last warned, so each case gets its own)
+            Env e2(false, false);  // (a ledger remembers when it last warned, so each case gets its own)
             e2.open_gates(true);
             SpaceFake g2;
             g2.avail = 25ull << 30;
