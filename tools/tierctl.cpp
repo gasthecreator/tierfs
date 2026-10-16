@@ -7,10 +7,14 @@
 //   /prefix/]
 //                                       get files back from the devices with only the recovery phrase
 //   tierctl ledger-status <ledger-dir>  health of the ledger: files by state, open steps, quarantine, fsck
+//   tierctl space <ledger-dir>          where free space stands, the warning thresholds, and when you were last told
 //   tierctl plan <ledger-dir> [free-now] [GiB]   a space plan in plain words (moves nothing); tierctl approve <ledger-dir> <plan id> runs exactly
 //   that plan tierctl pair <host:port> --store keychain|dir:PATH
 //                                       pair this Mac with a device: type the code the device shows (`tierfs-device <store> --show-pairing-code`);
 //                                       proves the code by authenticating, then stores the secret and prints the key id to use as host:port@keyid
+//   tierctl discover [--seconds N] [--store keychain|dir:PATH]
+//                                       list the tierfs devices announcing themselves on the local network, with the device entry to use for each
+//                                       (host:port@keyid, or mdns:NAME@keyid, which keeps working when the device's address changes)
 //   tierctl init <ledger-dir> <key-file>
 //                                       create a new volume: a fresh key, shown ONCE as a recovery phrase you must write down and prove
 //                                       (three groups re-typed on stdin) before anything is saved; then the ledger is created and the
@@ -43,6 +47,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <sys/wait.h>
@@ -56,6 +61,7 @@
 #include <vector>
 
 #include "../core/chunkcache.hpp"
+#include "../core/discovery.hpp"
 #include "../core/keysource.hpp"
 #include "../core/ledger.hpp"
 #include "../core/recovery.hpp"
@@ -176,8 +182,27 @@ static std::optional<tierfs::crypto::Bytes> secret_from_code(const std::string& 
 static std::unique_ptr<tierfs::DeviceClient> make_device_client(const std::string& spec, const std::string& store,
                                                                 const std::map<std::string, std::string>& codes, int timeout_ms, std::string* err) {
     DeviceSpec d = parse_device(spec);
+    if (tierfs::discovery::is_mdns_spec(spec)) {   // mdns:NAME@keyid: look the paired device up on the network (its secret decides who is accepted)
+        auto ms = tierfs::discovery::parse_mdns_spec(spec, err);
+        if (!ms) return nullptr;
+        if (store.empty()) {
+            *err = spec + ": a device found by name needs --store (where its pairing secret is kept)";
+            return nullptr;
+        }
+        auto sec = tierfs::load_pairing_secret(store, ms->key_id, err);
+        if (!sec) return nullptr;
+        std::string berr;
+        auto found = tierfs::discovery::browse(5000, &berr, [&](const tierfs::discovery::Found& f) { return f.paired && f.key_id == ms->key_id; });
+        auto f = tierfs::discovery::pick(found, ms->key_id);
+        if (!f) {
+            *err = spec + ": no paired device with that key id answered on the network" + (berr.empty() ? "" : " (" + berr + ")");
+            return nullptr;
+        }
+        fprintf(stderr, "  %s is at %s:%d\n", spec.c_str(), f->host.c_str(), f->port);
+        return std::make_unique<tierfs::DeviceClient>(f->host, f->port, timeout_ms, *sec);
+    }
     if (!d.ok) {
-        *err = "device must be host:port or host:port@keyid, got " + spec;
+        *err = "device must be host:port, host:port@keyid or mdns:NAME@keyid, got " + spec;
         return nullptr;
     }
     std::string hostport = d.host + ":" + std::to_string(d.port);
@@ -268,6 +293,51 @@ static int cmd_pair(int argc, char** argv) {
     printf("paired with device %s at %s:%d (key id %s)\nsecret stored in %s as %s\nuse it as:  --device %s:%d@%s   (daemon: devices=%s:%d@%s)\n",
            info.device_id.c_str(), d.host.c_str(), d.port, id.c_str(), source.c_str(), tierfs::pairing_account(id).c_str(), d.host.c_str(), d.port,
            id.c_str(), d.host.c_str(), d.port, id.c_str());
+    return 0;
+}
+
+static int cmd_discover(int argc, char** argv) {
+    int seconds = 3;
+    std::string store;
+    for (int i = 2; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--seconds" && i + 1 < argc) seconds = atoi(argv[++i]);
+        else if (a == "--store" && i + 1 < argc) store = argv[++i];
+        else {
+            fprintf(stderr, "usage: tierctl discover [--seconds N] [--store keychain|dir:PATH]\n");
+            return 2;
+        }
+    }
+    if (seconds < 1 || seconds > 60) {
+        fprintf(stderr, "tierctl: --seconds must be between 1 and 60\n");
+        return 2;
+    }
+    std::string err;
+    auto found = tierfs::discovery::browse(seconds * 1000, &err);
+    if (!err.empty()) {
+        fprintf(stderr, "tierctl: %s\n", err.c_str());
+        return 1;
+    }
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.name != b.name ? a.name < b.name : a.host < b.host; });
+    if (found.empty()) {
+        printf("no tierfs devices answered in %d seconds.\nA device announces itself when it is started with --advertise (tierfs-device <store> <port> <address> --advertise).\n", seconds);
+        return 0;
+    }
+    for (const auto& f : found) {
+        bool ours = false;
+        if (!store.empty() && f.paired) {
+            std::string e2;
+            ours = tierfs::load_pairing_secret(store, f.key_id, &e2).has_value();
+        }
+        printf("%s  %s:%d  %s\n", f.name.c_str(), f.host.c_str(), f.port, f.paired ? ("paired, key id " + f.key_id).c_str() : "NOT PAIRED (no authentication)");
+        if (f.paired) {
+            if (!store.empty()) printf("    this Mac %s\n", ours ? "is paired with it" : "is NOT paired with it: tierctl pair <host:port> --store ...");
+            printf("    device entry:  mdns:%s@%s   (or %s:%d@%s)\n", f.name.c_str(), f.key_id.c_str(), f.host.c_str(), f.port, f.key_id.c_str());
+        } else {
+            printf("    not usable by the daemon: pair the device first (tierfs-device <store> --show-pairing-code, then tierctl pair)\n");
+        }
+    }
+    printf("An announcement only says where a device claims to be. Nothing is trusted because of it: the device must still prove it holds the pairing secret.\n");
     return 0;
 }
 
@@ -890,7 +960,7 @@ int main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr,
                 "usage: %s cache-info|cache-verify|cache-clear <cache-dir> [--yes] | restore --out <dir> --device host:port ... | ledger-status "
-                "<ledger-dir> | service plist|install|uninstall|status ...\n",
+                "<ledger-dir> | service plist|install|uninstall|status ... | discover\n",
                 argv[0]);
         return 2;
     }
@@ -900,10 +970,11 @@ int main(int argc, char** argv) {
     if (cmd == "test-gates") return cmd_test_gates(argc, argv);
     if (cmd == "init") return cmd_init(argc, argv);
     if (cmd == "pair") return cmd_pair(argc, argv);
+    if (cmd == "discover") return cmd_discover(argc, argv);
     if (cmd == "check-phrase") return cmd_check_phrase(argc, argv);
     if (cmd == "ack-backup") return cmd_ack_backup(argc, argv);
     if (cmd == "control") return cmd_control(argc, argv);
-    if (cmd == "plan" ||
+    if (cmd == "plan" || cmd == "space" ||
         cmd == "approve") {  // tierctl plan <ledger> [free-now] [GiB]  |  tierctl approve <ledger> <plan id>: the control command of that name
         std::vector<std::string> v = {argv[0], "control", argv[2], cmd};
         for (int i = 3; i < argc; i++) v.push_back(argv[i]);

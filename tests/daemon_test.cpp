@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <atomic>
 #include <thread>
@@ -53,7 +54,7 @@ static void release_ramdisks() {
     } while (0)
 
 template <class T> static const T& at(const std::vector<T>& v, size_t i) { static const T dummy{}; return i < v.size() ? v[i] : dummy; }
-static bool has(const std::string& s, const char* n) { return s.find(n) != std::string::npos; }
+static bool has(const std::string& s, const std::string& n) { return s.find(n) != std::string::npos; }
 // TIERFS_TEST_TMP / TIERFS_TEST_PORT let several copies of this test run side by side (the parallel mutation runner).
 static std::string tmpdir() {
     std::string t = std::string(getenv("TIERFS_TEST_TMP") ? getenv("TIERFS_TEST_TMP") : "/tmp") + "/tierfs-daemontest-XXXXXX";
@@ -252,6 +253,43 @@ static std::string talk(const std::string& sock, const std::string& line) {
     return out;
 }
 static bool ends_ok(const std::string& r) { return r.size() >= 3 && r.compare(r.size() - 3, 3, "OK\n") == 0; }
+// A disk whose free space the test controls, and a notification that only counts (nothing is ever shown on the screen).
+struct SpaceFake {
+    std::atomic<uint64_t> avail{100ull << 30};
+    std::atomic<int> calls{0};
+    std::atomic<bool> deliver{true};
+    std::mutex mu;
+    std::vector<std::string> hints;
+    std::vector<SpaceLevel> levels;
+};
+struct FakeSpaceProbe : SpaceProbe {
+    SpaceFake& f;
+    explicit FakeSpaceProbe(SpaceFake& x) : f(x) {}
+    SpaceInfo measure() override { SpaceInfo s; s.total = 200ull << 30; s.avail_raw = f.avail; s.avail_important = f.avail; return s; }
+    int local_snapshots() override { return 0; }
+};
+struct FakeNotifier : Notifier {
+    SpaceFake& f;
+    HintFn hint;
+    FakeNotifier(SpaceFake& x, HintFn h) : f(x), hint(std::move(h)) {}
+    bool low_space(const SpaceStatus& st, const TierPlan&) override {
+        std::lock_guard<std::mutex> g(f.mu);
+        f.calls++;
+        f.hints.push_back(hint());
+        f.levels.push_back(st.level);
+        return f.deliver;
+    }
+};
+static void wire_space(DaemonConfig& c, SpaceFake& f) {
+    c.notify = true;
+    c.make_probe = [&f](const std::string&) { return std::unique_ptr<SpaceProbe>(new FakeSpaceProbe(f)); };
+    c.make_notifier = [&f](HintFn h) { return std::unique_ptr<Notifier>(new FakeNotifier(f, std::move(h))); };
+}
+static bool wait_for(const std::function<bool()>& cond, int ms) {
+    for (int i = 0; i < ms / 50 && !cond(); i++) usleep(50000);
+    return cond();
+}
+
 static bool spawn_drop_crash(Env& e, const std::string& fid, const char* point, const std::string& ida, const std::string& idb, const std::string& consent) {
     std::vector<std::string> env;
     for (char** x = environ; *x; x++) env.push_back(*x);
@@ -866,6 +904,222 @@ int main() {
         c.key_file = e.root + "/plain-key-file";
         std::ofstream(c.key_file) << crypto::to_hex(master.data(), 32) << "\n";
         CHECK(!Daemon::create(c, &err) && has(err, "key store"));  // a plain key file cannot hold pairing secrets
+
+        // ---- devices found by name on the network (ADR-0013): "mdns:NAME@keyid"
+        printf("== devices found on the network: followed by key id, never trusted for being announced\n");
+        c.key_file = "dir:" + ks_dir;
+        auto found_at = [&](const std::string& name, uint16_t port, const std::string& kid, bool paired) {
+            discovery::Found f;
+            f.name = name;
+            f.host = "127.0.0.1";
+            f.port = port;
+            f.key_id = kid;
+            f.paired = paired;
+            return f;
+        };
+        // a configuration problem is refused up front, in words
+        for (const char* n : {"m1.bin", "m2.bin", "m3.bin"}) spit(e.path(n), a);
+        c.devices = {"mdns:devA"};
+        CHECK(!Daemon::create(c, &err) && has(err, "key id"));
+        c.devices = {"mdns:devA@0123456789abcdef"};
+        CHECK(!Daemon::create(c, &err) && has(err, "no pairing secret"));   // no secret for it: the daemon will not follow an announcement for it
+        c.devices = {"mdns:devA@nothex"};
+        CHECK(!Daemon::create(c, &err) && has(err, "16 lower-case hex"));
+
+        // the device is found, attached and used like any other
+        std::mutex mu;
+        std::vector<discovery::Found> network;
+        std::vector<std::string> asked;
+        c.discover = [&](const std::vector<std::string>& kids) {
+            std::lock_guard<std::mutex> g(mu);
+            asked = kids;
+            return network;
+        };
+        c.devices = {"mdns:devA@" + pa.second, "mdns:devB@" + pb.second};
+        {
+            network = {found_at("devA", PA, pa.second, true), found_at("devB", PB, pb.second, true)};
+            auto d = Daemon::create(c, &err);
+            CHECK(d && d->start(nullptr));
+            std::string st = d->control("status");
+            CHECK(has(st, "mdns:devA@") && has(st, "at 127.0.0.1:" + std::to_string(PA)) && !has(st, "not attached") && d->ledger().list_devices().size() == 2);
+            CHECK(asked.size() == 2 && asked[0] == pa.second && asked[1] == pb.second);   // it asks for exactly the key ids it holds secrets for
+            std::string r = d->control("offload /m1.bin");
+            CHECK(has(r, "offloaded /Users/me/proj/m1.bin") && read_through(d->overlay(), "/m1.bin", a.size()) == a);
+            CHECK(ends_ok(d->control("hydrate /m1.bin")));
+        }
+        // nothing found: not attached, and it says why; found later: it attaches by itself
+        {
+            network.clear();
+            DaemonConfig c2 = c;
+            c2.maint_seconds = 1;
+            c2.background_replication = false;
+            auto d = Daemon::create(c2, &err);
+            CHECK(d && d->start(nullptr));
+            std::string st = d->control("status");
+            CHECK(has(st, "not found on the network") && has(st, "not attached"));
+            {
+                std::lock_guard<std::mutex> g(mu);
+                network = {found_at("devA", PA, pa.second, true), found_at("devB", PB, pb.second, true)};
+            }
+            bool up = false;
+            for (int i = 0; i < 60 && !up; i++) {
+                usleep(200000);
+                st = d->control("status");
+                up = !has(st, "not attached") && !has(st, "not found");
+            }
+            CHECK(up);
+        }
+        // an announcement is not trusted: an impostor at another address cannot authenticate, and an unpaired announcement is not followed at all
+        {
+            DaemonConfig c3 = c;
+            c3.devices = {"mdns:devA@" + pa.second};
+            network = {found_at("devA", PB, pa.second, true)};   // device B answers there, holding a different secret
+            auto d = Daemon::create(c3, &err);
+            CHECK(d && d->start(nullptr));
+            std::string st = d->control("status");
+            CHECK(has(st, "at 127.0.0.1:" + std::to_string(PB)) && has(st, "not attached"));   // it went there, failed to authenticate, attached nothing
+            CHECK(has(d->control("offload /m2.bin"), "refused"));   // no device attached: nothing can be moved
+            d.reset();   // (one daemon per ledger)
+            network = {found_at("devA", PA, pa.second, false)};   // says it is not paired: never followed
+            auto d2 = Daemon::create(c3, &err);
+            CHECK(d2 && d2->start(nullptr));
+            std::string st2 = d2 ? d2->control("status") : "";
+            CHECK(has(st2, "not found on the network") && has(st2, "not attached"));
+        }
+        // the device moves: the next connection goes to the new address
+        {
+            DaemonConfig c4 = c;
+            c4.devices = {"mdns:devA@" + pa.second, "mdns:devB@" + pb.second};
+            c4.maint_seconds = 1;
+            c4.background_replication = false;
+            network = {found_at("devA", PA, pa.second, true), found_at("devB", PB, pb.second, true)};
+            auto d = Daemon::create(c4, &err);
+            CHECK(d && d->start(nullptr) && !has(d->control("status"), "not attached"));
+            const uint16_t moved = static_cast<uint16_t>(port_base() + 2);
+            Server sa2(moved);
+            e.sa.stop();
+            CHECK(sa2.start(e.root + "/devA"));
+            {
+                std::lock_guard<std::mutex> g(mu);
+                network = {found_at("devA", moved, pa.second, true), found_at("devB", PB, pb.second, true)};
+            }
+            bool followed = false;
+            for (int i = 0; i < 60 && !followed; i++) {
+                usleep(200000);
+                followed = has(d->control("status"), "at 127.0.0.1:" + std::to_string(moved));
+            }
+            CHECK(followed);
+            std::string r = d->control("offload /m3.bin");
+            CHECK(has(r, "offloaded /Users/me/proj/m3.bin") && read_through(d->overlay(), "/m3.bin", a.size()) == a);
+        }
+    }
+
+    {
+        printf("== free space is watched on its own clock, and the person is told in plain words\n");
+        Env e(false, false);
+        spit(e.path("a.bin"), pattern(MiB + 5, 1));
+        e.open_gates(true);
+        SpaceFake f;
+        DaemonConfig c = e.config();
+        c.devices.clear();
+        c.space_check_seconds = 1;
+        wire_space(c, f);
+        // thresholds that cannot be right are refused up front
+        {
+            DaemonConfig bad = c;
+            bad.policy.critical_free_bytes = bad.policy.low_free_bytes + 1;
+            std::string err;
+            CHECK(!Daemon::create(bad, &err) && has(err, "free-space thresholds") && has(err, "critical level"));
+            bad = c;
+            bad.space_check_seconds = -1;
+            CHECK(!Daemon::create(bad, &err) && has(err, "free-space check period"));
+            bad = c;
+            bad.space_check_seconds = 100000;
+            CHECK(!Daemon::create(bad, &err));
+        }
+        {
+            auto d = Daemon::create(c, nullptr);
+            CHECK(d && d->start(nullptr));
+            usleep(1500000);
+            CHECK(f.calls == 0);   // plenty of space: nothing said
+            std::string sp = d->control("space");
+            CHECK(has(sp, "Space OK: 100.0 GiB free of 200.0 GiB") && has(sp, "warns below 30.0 GiB") && has(sp, "You have not been notified") &&
+                  has(sp, "Checked every 1 seconds") && ends_ok(sp));
+            // it gets short: told within a check or two, by the thread, with no tick or command involved
+            f.avail = 25ull << 30;
+            CHECK(wait_for([&] { return f.calls == 1; }, 4000));
+            {
+                std::lock_guard<std::mutex> g(f.mu);
+                CHECK(f.levels.size() == 1 && f.levels[0] == SpaceLevel::LOW);
+                CHECK(has(f.hints[0], "tierctl plan '" + e.ledger + "'") && has(f.hints[0], "nothing moves until you approve"));
+                CHECK(has(f.hints[0], "Not ready to run yet"));   // this ledger has no backup recorded: the notification says so, not just "approve"
+            }
+            usleep(2500000);
+            CHECK(f.calls == 1);   // the same shortage is not announced again every second
+            std::string sp2 = d->control("space");
+            CHECK(has(sp2, "Space LOW: 25.0 GiB free of 200.0 GiB") && has(sp2, "Last notified: LOW at "));
+            // worse: at once
+            f.avail = 3ull << 30;
+            CHECK(wait_for([&] { return f.calls == 2; }, 4000));
+            {
+                std::lock_guard<std::mutex> g(f.mu);
+                CHECK(f.levels[1] == SpaceLevel::CRITICAL);
+            }
+            // a long copy to the devices (the maintenance pass holds the engine) does not hold a warning back
+            f.avail = 100ull << 30;
+            usleep(1500000);   // back to normal: the memory of the last warning is cleared
+            f.avail = 25ull << 30;
+            {
+                std::lock_guard<std::mutex> busy(d->overlay().engine_mutex());
+                CHECK(wait_for([&] { return f.calls == 3; }, 4000));
+            }
+            d->stop();
+        }
+        // the notification cannot be shown: the daemon says so, and tries again
+        {
+            Env e2(false, false);   // (a ledger remembers when it last warned, so each case gets its own)
+            e2.open_gates(true);
+            SpaceFake g2;
+            g2.avail = 25ull << 30;
+            g2.deliver = false;
+            DaemonConfig c2 = e2.config();
+            c2.devices.clear();
+            c2.space_check_seconds = 1;
+            wire_space(c2, g2);
+            c2.policy.prompt_retry = 1;
+            auto d = Daemon::create(c2, nullptr);
+            CHECK(d && d->start(nullptr));
+            CHECK(wait_for([&] { return g2.calls >= 1; }, 4000));
+            CHECK(wait_for([&] { return has(d->control("status"), "could not be shown"); }, 3000));
+            CHECK(has(d->control("space"), "PROBLEM: the low-space notification could not be shown"));
+            g2.deliver = true;
+            int before = g2.calls;
+            CHECK(wait_for([&] { return g2.calls > before && !has(d->control("status"), "could not be shown"); }, 6000));
+            d->stop();
+        }
+        // switched off: no thread, no warnings, and the report says so
+        {
+            SpaceFake g3;
+            g3.avail = 3ull << 30;
+            DaemonConfig c3 = c;
+            wire_space(c3, g3);
+            c3.space_check_seconds = 0;
+            auto d = Daemon::create(c3, nullptr);
+            CHECK(d && d->start(nullptr));
+            usleep(2500000);
+            CHECK(g3.calls == 0 && has(d->control("space"), "Checked every 0 seconds (off)") && has(d->control("space"), "Space CRITICAL"));
+            d->stop();
+        }
+        // notify=0: the report says notifications are off
+        {
+            DaemonConfig c4 = e.config();
+            c4.devices.clear();
+            SpaceFake g4;
+            c4.make_probe = [&g4](const std::string&) { return std::unique_ptr<SpaceProbe>(new FakeSpaceProbe(g4)); };
+            auto d = Daemon::create(c4, nullptr);
+            CHECK(d && d->start(nullptr) && has(d->control("space"), "Notifications are off"));
+            d->stop();
+        }
     }
 
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);

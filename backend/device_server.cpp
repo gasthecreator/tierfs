@@ -2,7 +2,7 @@
 // It stores encrypted chunks and manifests; it never sees keys or plaintext.
 //
 // Usage: tierfs-device <store-dir> [port=9100] [bind-addr=127.0.0.1]
-//                      [--faults=a,b,slow=N] [--insecure-allow-network] [--allow-delete]
+//                      [--faults=a,b,slow=N] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]
 //        tierfs-device <store-dir> --show-pairing-code     print the pairing code (creating the secret on first use) and exit
 //        tierfs-device <store-dir> --new-pairing-code      replace the pairing secret (every Mac must pair again) and exit
 //
@@ -12,6 +12,8 @@
 //   * Open (no pairing.key): plaintext protocol version 3 with no authentication. Anyone who can connect could upload junk
 //     under a chunk id they have seen on the wire, so it refuses any bind address except loopback unless
 //     --insecure-allow-network is given (for experiments on a trusted LAN).
+// --advertise announces a PAIRED device on the local network (Bonjour, ADR-0013) so a Mac can find it again when its address changes; an unpaired
+// device refuses.
 // Deleting (garbage collection, ADR-0010) is accepted only by a paired device, or by an open one started with --allow-delete.
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -25,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <thread>
 
 #include <fcntl.h>
@@ -32,6 +35,7 @@
 
 #include "../core/crypto.hpp"
 #include "../core/devicestore.hpp"
+#include "../core/discovery.hpp"
 #include "../core/securechannel.hpp"
 #include "../core/wire.hpp"
 
@@ -365,7 +369,8 @@ static void print_pairing(const Bytes& secret) {
 int main(int argc, char** argv) {
     std::vector<std::string> pos;
     std::string faults_csv;
-    bool insecure = false, show_code = false, new_code = false, allow_delete = false;
+    bool insecure = false, show_code = false, new_code = false, allow_delete = false, advertise = false;
+    std::string adv_name;
     if (const char* e = getenv("TIERFS_DEVICE_FAULTS")) faults_csv = e;
     if (const char* e = getenv("TIERFS_DEVICE_IDLE_S")) g_idle_s = atoi(e) > 0 ? atoi(e) : 120;
     for (int i = 1; i < argc; i++) {
@@ -374,14 +379,19 @@ int main(int argc, char** argv) {
         else if (a == "--insecure-allow-network") insecure = true;
         else if (a == "--allow-delete")
             allow_delete = true;
-        else if (a == "--show-pairing-code")
+        else if (a == "--advertise")
+            advertise = true;
+        else if (a.compare(0, 12, "--advertise=") == 0) {
+            advertise = true;
+            adv_name = a.substr(12);
+        } else if (a == "--show-pairing-code")
             show_code = true;
         else if (a == "--new-pairing-code")
             new_code = true;
         else pos.push_back(a);
     }
     if (pos.empty()) {
-        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete]\n", argv[0]);
+        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n", argv[0]);
         return 2;
     }
     if (show_code || new_code) {  // pairing management: no server, no store needed beyond the directory
@@ -424,6 +434,11 @@ int main(int argc, char** argv) {
                 bind_addr.c_str());
         return 2;
     }
+    if (advertise && !g_psk) {   // an unauthenticated device is never invited onto the network
+        fprintf(stderr, "refusing to advertise: this device is not paired, so it has no authentication (tierfs-device <store> --show-pairing-code)\n");
+        return 2;
+    }
+    if (advertise && adv_name.empty()) adv_name = discovery::default_instance_name();
     DeviceFaults faults;
     std::string ferr;
     if (!DeviceFaults::parse(faults_csv, &faults, &ferr)) { fprintf(stderr, "%s\n", ferr.c_str()); return 2; }
@@ -451,6 +466,20 @@ int main(int argc, char** argv) {
             (unsigned long long)i.epoch, (unsigned long long)i.seq,
             g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
             (g_psk || allow_delete) ? ", deletions accepted" : "", faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
+    std::unique_ptr<discovery::Advertiser> announcer;   // lives as long as the server: the device disappears from the network when it stops
+    if (advertise) {
+        discovery::Advert ad;
+        ad.paired = true;
+        ad.key_id = chan::key_id_hex(*g_psk);
+        std::string aerr;
+        announcer = discovery::Advertiser::start(adv_name, static_cast<uint16_t>(port), ad, &aerr);
+        if (!announcer) {
+            fprintf(stderr, "cannot advertise on the network: %s\n", aerr.c_str());
+            return 1;
+        }
+        fprintf(stderr, "advertising as \"%s\" (%s) with key id %s%s\n", announcer->name().c_str(), discovery::SERVICE_TYPE, ad.key_id.c_str(),
+                bind_addr == "127.0.0.1" ? "; NOTE: it listens on 127.0.0.1 only, so other machines cannot reach it" : "");
+    }
     for (;;) {
         int c = accept(ls, nullptr, nullptr);
         if (c < 0) continue;

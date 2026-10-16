@@ -12,7 +12,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,7 @@ struct TierPolicy {
     size_t max_files_per_plan = 500;
     int64_t consent_ttl = 3600;                   // an approval is good for an hour
     int64_t prompt_interval = 6 * 3600;           // do not repeat the same prompt more often than this
+    int64_t prompt_retry = 600;                   // when a notification could not be shown, try again after this long
     int64_t reconcile_interval = 3600;
     bool auto_purge = true;                       // delete quarantined bytes once the quarantine period is over (still fully gated)
     uint64_t replicate_budget_bytes = 4ull << 30; // background copying per tick
@@ -96,14 +99,23 @@ struct ReplicationReport {
 class Notifier {
 public:
     virtual ~Notifier() = default;
-    virtual void low_space(const SpaceStatus& status, const TierPlan& plan) = 0;
+    // Tells the person. False if it could not be shown (then it is tried again soon instead of being treated as said).
+    virtual bool low_space(const SpaceStatus& status, const TierPlan& plan) = 0;
+};
+
+// The cheap, frequent part of the policy: is space short, and has the person been told? Touches no device and moves nothing.
+struct SpaceCheck {
+    SpaceStatus space;
+    bool prompted = false;        // a notification was shown now
+    bool prompt_failed = false;   // one was due but could not be shown
+    TierPlan plan;                // made only when space is short
 };
 
 struct TickReport {
     SpaceStatus space;
     ReplicationReport replication;
     size_t purged = 0;
-    bool reconciled = false, prompted = false;
+    bool reconciled = false, prompted = false, prompt_failed = false;
     TierPlan plan;
 };
 
@@ -127,15 +139,27 @@ std::string format_plan_review(const TierPlan& plan, const PlanContext& ctx);
 // What an executed plan did, in plain words.
 std::string format_exec_report(const ExecReport& r);
 
+// What the notification tells the person to do next, worked out when it is shown (so it can say what stands in the way right now).
+using HintFn = std::function<std::string()>;
+
 // A macOS notification through osascript (no extra dependencies). Only ever shows text; the user decides.
 class OsascriptNotifier : public Notifier {
 public:
-    explicit OsascriptNotifier(std::string hint = "") : hint_(std::move(hint)) {}  // hint: how to review the plan, shown in the notification
-    void low_space(const SpaceStatus& status, const TierPlan& plan) override;
+    explicit OsascriptNotifier(std::string hint = "") : hint_([h = std::move(hint)] { return h; }) {}  // hint: how to review the plan
+    explicit OsascriptNotifier(HintFn hint, std::string program = "/usr/bin/osascript") : hint_(std::move(hint)), program_(std::move(program)) {}
+    bool low_space(const SpaceStatus& status, const TierPlan& plan) override;
 
 private:
-    std::string hint_;
+    HintFn hint_;
+    std::string program_;   // (a test points this at /usr/bin/true or /usr/bin/false)
 };
+
+// The first thing wrong with the thresholds, or empty. Low must be at least as demanding as critical (in bytes and in fraction), fractions are
+// below 90%, and nothing is zero-sized in a way that would make every check pass or fail.
+std::string validate_thresholds(const TierPolicy& p);
+// The `space` report: level, what the thresholds are, how much would have to move, whether the system has snapshots that hold deleted space, and
+// when the person was last told.
+std::string format_space(const SpaceStatus& s, int local_snapshots, const std::string& last_notice);
 
 class PolicyEngine {
 public:
@@ -159,6 +183,9 @@ public:
     size_t purge_due(const DeviceMap& devices);
     // One pass of everything a daemon would do periodically.
     TickReport tick(const DeviceMap& devices);
+    // Just the free-space part of a tick: measures, and when short makes the plan and tells the person (rate-limited, retried if it could not be
+    // shown). Cheap and safe to call every few seconds from its own thread; calls from several threads are serialised.
+    SpaceCheck check_space();
 
     static std::string compute_digest(const TierPlan& plan);
 
@@ -184,6 +211,7 @@ private:
     TierPolicy policy_;
     OriginResolver resolve_;
     Notifier* notifier_;
+    std::mutex prompt_mu_;   // a check and the record of its prompt are one step
 };
 
 }  // namespace tierfs

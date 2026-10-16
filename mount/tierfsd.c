@@ -277,6 +277,7 @@ static struct fuse_operations ops = {
 struct opts {
     char *origin, *prefix, *ledger, *keyfile, *devices, *control;
     int maint, wait_ms, background, notify, scan, cache_mb, readahead, gc, gc_keep, gc_retention_days;
+    int low_gb, critical_gb, low_pct, critical_pct, space_check;
 };
 
 #define OPT(t, f) {t, offsetof(struct opts, f), 0}
@@ -296,12 +297,18 @@ static struct fuse_opt specs[] = {OPT("origin=%s", origin),
                                   OPT("gc=%d", gc),
                                   OPT("gckeep=%d", gc_keep),
                                   OPT("gcretentiondays=%d", gc_retention_days),
+                                  OPT("lowgb=%d", low_gb),
+                                  OPT("criticalgb=%d", critical_gb),
+                                  OPT("lowpct=%d", low_pct),
+                                  OPT("criticalpct=%d", critical_pct),
+                                  OPT("spacecheck=%d", space_check),
                                   FUSE_OPT_END};
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct opts o = {0};
     o.readahead = -1;
+    o.space_check = -1;
     o.maint = 60;
     o.background = 1;
     o.notify = 1;
@@ -323,6 +330,11 @@ int main(int argc, char *argv[]) {
     t.gc = o.gc;
     t.gc_keep_versions = o.gc_keep;
     t.gc_retention_days = o.gc_retention_days;
+    t.low_gb = o.low_gb;
+    t.critical_gb = o.critical_gb;
+    t.low_pct = o.low_pct;
+    t.critical_pct = o.critical_pct;
+    t.space_check = o.space_check;
     char err[512] = {0};
     g_ctx = tfs_open(&t, err, sizeof err);
     if (!g_ctx) {

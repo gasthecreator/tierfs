@@ -9,10 +9,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace tierfs {
@@ -58,16 +60,40 @@ std::unique_ptr<Daemon> Daemon::create(const DaemonConfig& cfg, std::string* err
     oc.readahead_chunks = cfg.readahead_chunks;
     d->overlay_ = std::make_unique<Overlay>(*d->ledger_, *d->keys_, DeviceMap{}, oc, d->engine_.get());
     d->scanner_ = std::make_unique<Scanner>(*d->ledger_, *d->overlay_);
-    d->probe_ = make_system_probe(origin);
+    d->probe_ = cfg.make_probe ? cfg.make_probe(origin) : make_system_probe(origin);
     TierPolicy tp = cfg.policy;
     tp.roots = {d->cfg_.logical_prefix};
     if (tp.exclude.empty()) tp.exclude = {"/.git/"};
-    if (cfg.notify) d->notifier_ = std::make_unique<OsascriptNotifier>("Run: tierctl control '" + cfg.ledger_dir + "' plan");
+    if (std::string bad = validate_thresholds(tp); !bad.empty()) return fail("free-space thresholds: " + bad);
+    if (cfg.space_check_seconds < 0 || cfg.space_check_seconds > 86400) return fail("the free-space check period must be between 0 and 86400 seconds");
+    if (cfg.notify) {   // what the notification says to do is worked out when it is shown, so it can name what stands in the way at that moment
+        HintFn hint = [raw = d.get(), dir = cfg.ledger_dir] {
+            std::string review = "Review with: tierctl plan '" + dir + "' (nothing moves until you approve)";
+            auto b = raw->plan_blockers();
+            return b.empty() ? review : "Not ready to run yet: " + b[0] + ". " + review;
+        };
+        d->notifier_ = cfg.make_notifier ? cfg.make_notifier(hint) : std::make_unique<OsascriptNotifier>(hint);
+    }
     d->gc_ = std::make_unique<GarbageCollector>(*d->ledger_, *d->replicator_, *d->keys_, cfg.gc_config);
     d->policy_ = std::make_unique<PolicyEngine>(*d->ledger_, *d->replicator_, *d->engine_, *d->probe_, tp,
                                                 [origin, pfx = d->cfg_.logical_prefix](const FileRec& f) { return origin + "/" + f.path.substr(pfx.size()); },
                                                 d->notifier_.get());
-    for (const auto& spec : cfg.devices) {  // "host:port" (open device) or "host:port@keyid" (paired: the secret is in the key store)
+    for (const auto& spec : cfg.devices) {  // "host:port" (open device), "host:port@keyid" (paired: the secret is in the key store), or "mdns:NAME@keyid"
+        if (discovery::is_mdns_spec(spec)) {   // a paired device that is looked up on the network instead of being given an address
+            std::string merr;
+            auto ms = discovery::parse_mdns_spec(spec, &merr);
+            if (!ms) return fail(merr);
+            std::string perr;
+            auto sec = load_pairing_secret(cfg.key_file, ms->key_id, &perr);
+            if (!sec) return fail("device " + spec + ": " + perr);
+            Dev dev;
+            dev.spec = spec;
+            dev.mdns_kid = ms->key_id;
+            dev.located = false;
+            dev.client = std::make_unique<DeviceClient>("", 0, cfg.device_timeout_ms, std::move(*sec));
+            d->devs_.push_back(std::move(dev));
+            continue;
+        }
         std::string addr = spec, kid;
         if (size_t at = spec.find('@'); at != std::string::npos) {
             addr = spec.substr(0, at);
@@ -103,12 +129,49 @@ DeviceMap Daemon::devices_snapshot() {
     return m;
 }
 
+// Looks the "mdns:" devices up on the network and points their clients at wherever they are now. Only an advertisement that names the device's key
+// id and says it is paired is followed (discovery::pick); the connection that follows still has to authenticate with the pairing secret, so a
+// forged advertisement can at worst make a connection fail.
+void Daemon::refresh_mdns() {
+    std::vector<std::string> kids;
+    {
+        std::lock_guard<std::mutex> g(devs_mu_);
+        for (auto& d : devs_)
+            if (!d.mdns_kid.empty() && std::find(kids.begin(), kids.end(), d.mdns_kid) == kids.end()) kids.push_back(d.mdns_kid);
+    }
+    if (kids.empty()) return;
+    std::vector<discovery::Found> found;
+    std::string err;
+    if (cfg_.discover) {
+        found = cfg_.discover(kids);
+    } else {
+        std::set<std::string> missing(kids.begin(), kids.end());
+        found = discovery::browse(cfg_.mdns_timeout_ms, &err, [&](const discovery::Found& f) {   // done as soon as every wanted device has been seen
+            if (f.paired) missing.erase(f.key_id);
+            return missing.empty();
+        });
+    }
+    {
+        std::lock_guard<std::mutex> g(last_mu_);
+        mdns_error_ = err;
+    }
+    std::lock_guard<std::mutex> g(devs_mu_);
+    for (auto& d : devs_) {
+        if (d.mdns_kid.empty()) continue;
+        if (auto f = discovery::pick(found, d.mdns_kid)) {
+            d.client->set_endpoint(f->host, f->port);
+            d.located = true;
+        }
+    }
+}
+
 void Daemon::attach_devices() {
+    refresh_mdns();
     bool changed = false;
     {
         std::lock_guard<std::mutex> g(devs_mu_);
         for (auto& d : devs_) {
-            if (!d.id.empty()) continue;
+            if (!d.id.empty() || !d.located) continue;
             std::string id;
             Res r = replicator_->attach(*d.client, d.spec, "B", &id);
             if (r.ok) { d.id = id; changed = true; }
@@ -165,6 +228,7 @@ bool Daemon::start(std::string* err) {
         control_ = std::thread([this] { control_loop(); });
     }
     if (cfg_.maint_seconds > 0) maint_ = std::thread([this] { maintenance_loop(); });
+    if (notifier_ && cfg_.space_check_seconds > 0) space_ = std::thread([this] { space_loop(); });
     started_ = true;
     return true;
 }
@@ -172,6 +236,7 @@ bool Daemon::start(std::string* err) {
 void Daemon::stop() {
     stop_ = true;
     if (maint_.joinable()) maint_.join();
+    if (space_.joinable()) space_.join();
     if (control_.joinable()) control_.join();
     if (listen_fd_ >= 0) { close(listen_fd_); listen_fd_ = -1; if (!socket_path_.empty()) unlink(socket_path_.c_str()); }
     started_ = false;
@@ -197,6 +262,20 @@ void Daemon::maintenance_loop() {
             if (auto v = ledger_->get_meta("gc_last_run")) last = atoll(v->c_str());
             if (time(nullptr) - last >= cfg_.gc_interval_seconds) cmd_gc(true);
         }
+    }
+}
+
+// Free space is checked on its own clock: the maintenance pass can spend minutes copying files to the devices, and a person whose disk is filling up
+// should not wait for that to hear about it. The check touches no device and moves nothing (PolicyEngine::check_space).
+void Daemon::space_loop() {
+    auto next = std::chrono::steady_clock::now();   // the first check is at once: starting the daemon on a full disk should say so
+    while (!stop_) {
+        if (std::chrono::steady_clock::now() < next) { usleep(100000); continue; }
+        next = std::chrono::steady_clock::now() + std::chrono::seconds(cfg_.space_check_seconds);
+        SpaceCheck c = policy_->check_space();
+        std::lock_guard<std::mutex> g(last_mu_);
+        if (c.prompt_failed) notify_error_ = "the low-space notification could not be shown (is a user session logged in?); it will be tried again";
+        else if (c.prompted || c.space.level == SpaceLevel::OK) notify_error_.clear();
     }
 }
 
@@ -229,8 +308,14 @@ std::string Daemon::cmd_status() {
     o << "open steps " << ledger_->open_intents().size() << "\n";
     {
         std::lock_guard<std::mutex> g(devs_mu_);
-        for (auto& d : devs_) o << "device " << d.spec << " " << (d.id.empty() ? "not attached" : "attached " + d.id.substr(0, 8)) << "\n";
+        for (auto& d : devs_) {
+            o << "device " << d.spec << " ";
+            if (!d.mdns_kid.empty()) o << (d.located ? "at " + d.client->endpoint() + ", " : std::string("not found on the network, "));
+            o << (d.id.empty() ? "not attached" : "attached " + d.id.substr(0, 8)) << "\n";
+        }
     }
+    { std::lock_guard<std::mutex> g(last_mu_); if (!notify_error_.empty()) o << "note " << notify_error_ << "\n"; }
+    { std::lock_guard<std::mutex> g(last_mu_); if (!mdns_error_.empty()) o << "note looking for devices on the network failed: " << mdns_error_ << "\n"; }
     SpaceStatus sp = policy_->space();
     o << "space " << to_string(sp.level) << " free " << sp.info.avail() << " of " << sp.info.total << "\n";
     { std::lock_guard<std::mutex> g(last_mu_); o << last_scan_ << "\n"; }
@@ -274,6 +359,29 @@ std::string Daemon::cmd_files(const std::string& path, bool drop) {
     }
     o << (drop ? "offloaded " : "replicated ") << done << ", refused " << refused << "\n" << (refused ? "ERR some files were refused\n" : "OK\n");
     return o.str();
+}
+
+// `space`: where the free space stands, what the thresholds are, and whether (and when) the person has been told.
+std::string Daemon::cmd_space() {
+    SpaceStatus sp = policy_->space();
+    std::string last;
+    if (auto m = ledger_->get_meta("policy.prompt")) {
+        int level = 0;
+        long long ts = 0;
+        if (sscanf(m->c_str(), "%d:%lld", &level, &ts) == 2 && level != 0) {
+            char when[64] = {0};
+            time_t t = static_cast<time_t>(ts);
+            struct tm tmv;
+            localtime_r(&t, &tmv);
+            strftime(when, sizeof when, "%Y-%m-%d %H:%M", &tmv);
+            last = std::string(level == 2 ? "CRITICAL" : "LOW") + " at " + when;
+        }
+    }
+    std::string text = format_space(sp, probe_->local_snapshots(), last);
+    text += notifier_ ? "  Checked every " + std::to_string(cfg_.space_check_seconds) + " seconds" + (cfg_.space_check_seconds ? "" : " (off)") + "; notifications are on.\n"
+                      : std::string("  Notifications are off (the daemon was started with notify=0).\n");
+    { std::lock_guard<std::mutex> g(last_mu_); if (!notify_error_.empty()) text += "  PROBLEM: " + notify_error_ + "\n"; }
+    return text + "OK\n";
 }
 
 std::string Daemon::cmd_tick() {
@@ -414,6 +522,7 @@ std::string Daemon::control(const std::string& raw) {
     if (cmd == "undelete" && !arg.empty()) { int r = overlay_->undelete(arg); return r == 0 ? "OK\n" : "ERR " + std::string(strerror(-r)) + "\n"; }
     if (cmd == "tick") return cmd_tick();
     if (cmd == "plan") return cmd_plan(arg);
+    if (cmd == "space") return cmd_space();
     if (cmd == "approve") return cmd_approve(arg);
     if (cmd == "gc-plan") return cmd_gc(false);
     if (cmd == "gc-run") return cmd_gc(true);

@@ -29,6 +29,11 @@ typedef struct tfs_options {
     int gc;                  /* the maintenance thread forgets old versions on the devices and has them free the space (0 = only on request) */
     int gc_keep_versions;    /* newest committed versions of a live file to keep (0 = default 3) */
     int gc_retention_days;   /* how long a deleted file can be undeleted before its data goes (0 = default 30) */
+    int low_gb;              /* warn when less than this many GiB are free (0 = default 20; the larger of this and low_pct applies) */
+    int critical_gb;         /* critical below this many GiB (0 = default 8) */
+    int low_pct;             /* warn below this percentage of the volume (0 = default 15) */
+    int critical_pct;        /* critical below this percentage (0 = default 5) */
+    int space_check;         /* how often free space is checked, in seconds (0 = off; negative = the default, 30) */
 } tfs_options;
 
 typedef struct tfs_stat {

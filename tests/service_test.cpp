@@ -165,7 +165,7 @@ int main() {
         has(bad([&](ServiceSpec& s) { opt(s, "keyfile", "dir:relative"); }), "keyfile must be") &&
         has(bad([&](ServiceSpec& s) { opt(s, "keyfile", "dir:"); }), "keyfile must be") &&
         has(bad([&](ServiceSpec& s) { opt(s, "keyfile", "Keychain"); }), "keyfile must be"));
-    for (const char* k : {"maint", "waitms", "cachemb", "readahead", "gckeep", "gcretentiondays"}) {
+    for (const char* k : {"maint", "waitms", "cachemb", "readahead", "gckeep", "gcretentiondays", "lowgb", "criticalgb", "lowpct", "criticalpct", "spacecheck"}) {
         CHECK(has(bad([&](ServiceSpec& s) { s.options.push_back({k, "abc"}); }), "must be a number") &&
               has(bad([&](ServiceSpec& s) { s.options.push_back({k, "-"}); }), "must be a number") &&
               has(bad([&](ServiceSpec& s) { s.options.push_back({k, "1x"}); }), "must be a number") &&

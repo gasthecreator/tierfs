@@ -23,7 +23,8 @@ bool clean_text(const std::string& s) {
 const std::set<std::string>& known_options() {
     static const std::set<std::string> k = {"origin",    "prefix", "ledger",     "keyfile",         "devices",   "control",
                                             "maint",     "waitms", "background", "notify",          "scan",      "cachemb",
-                                            "readahead", "gc",     "gckeep",     "gcretentiondays", "namedattr", "noappledouble"};
+                                            "readahead", "gc",     "gckeep",     "gcretentiondays", "lowgb",     "criticalgb",
+                                            "lowpct",    "criticalpct", "spacecheck", "namedattr",       "noappledouble"};
     return k;
 }
 
@@ -88,7 +89,8 @@ std::string validate_service(const ServiceSpec& s) {
         if (k == "ledger") ledger = v;
         if (k == "keyfile") keyfile = v;
         if (k == "prefix") prefix = v;
-        if ((k == "maint" || k == "waitms" || k == "cachemb" || k == "readahead" || k == "gckeep" || k == "gcretentiondays") &&
+        if ((k == "maint" || k == "waitms" || k == "cachemb" || k == "readahead" || k == "gckeep" || k == "gcretentiondays" || k == "lowgb" || k == "criticalgb" ||
+         k == "lowpct" || k == "criticalpct" || k == "spacecheck") &&
             (v.empty() || v.find_first_not_of("0123456789-") != std::string::npos || v == "-"))
             return "the value of '" + k + "' must be a number";
         if ((k == "background" || k == "notify" || k == "scan" || k == "gc") && v != "0" && v != "1")

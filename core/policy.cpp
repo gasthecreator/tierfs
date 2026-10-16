@@ -373,8 +373,12 @@ bool parse_prompt(const std::string& s, int* level, int64_t* ts) {
 }  // namespace
 
 bool PolicyEngine::should_prompt(SpaceLevel level, int64_t now) {
-    int last_level = 0;
-    int64_t last_ts = 0;
+    int last_level = 0, fail_level = 0;
+    int64_t last_ts = 0, fail_ts = 0;
+    // A notification that could not be shown is tried again after a while (not at every check), unless things got worse since.
+    if (auto f = ledger_.get_meta("policy.prompt_retry"); f && parse_prompt(*f, &fail_level, &fail_ts) && fail_level != 0 &&
+                                                          static_cast<int>(level) <= fail_level && now - fail_ts < policy_.prompt_retry)
+        return false;
     auto m = ledger_.get_meta("policy.prompt");
     if (!m || !parse_prompt(*m, &last_level, &last_ts)) return true;
     if (static_cast<int>(level) > last_level) return true;                                // it got worse: say so at once
@@ -383,12 +387,12 @@ bool PolicyEngine::should_prompt(SpaceLevel level, int64_t now) {
 
 void PolicyEngine::record_prompt(SpaceLevel level, int64_t now) {
     ledger_.set_meta("policy.prompt", std::to_string(static_cast<int>(level)) + ":" + std::to_string(now));
+    ledger_.set_meta("policy.prompt_retry", "0:0");   // it was shown: nothing to retry
 }
 
 TickReport PolicyEngine::tick(const DeviceMap& devices) {
     TickReport r;
     const int64_t now = ledger_.now();
-    r.space = space();
 
     // keep the picture of the devices honest
     int64_t last_rec = 0;
@@ -402,6 +406,20 @@ TickReport PolicyEngine::tick(const DeviceMap& devices) {
     if (policy_.auto_purge) r.purged = purge_due(devices);
     r.replication = replicate_step(devices, policy_.replicate_budget_bytes);
 
+    SpaceCheck c = check_space();
+    r.space = c.space;
+    r.prompted = c.prompted;
+    r.prompt_failed = c.prompt_failed;
+    r.plan = std::move(c.plan);
+    if (r.space.level != SpaceLevel::OK && r.plan.digest.empty()) r.plan = plan(r.space.need_bytes, r.space.level == SpaceLevel::CRITICAL);
+    return r;
+}
+
+SpaceCheck PolicyEngine::check_space() {
+    std::lock_guard<std::mutex> g(prompt_mu_);
+    SpaceCheck r;
+    const int64_t now = ledger_.now();
+    r.space = space();
     if (r.space.level == SpaceLevel::OK) {
         auto m = ledger_.get_meta("policy.prompt");
         int l = 0;
@@ -409,11 +427,14 @@ TickReport PolicyEngine::tick(const DeviceMap& devices) {
         if (m && parse_prompt(*m, &l, &t) && l != 0) record_prompt(SpaceLevel::OK, now);   // forget: the next shortage prompts immediately
         return r;
     }
+    if (!notifier_ || !should_prompt(r.space.level, now)) return r;   // (the plan is made only when it is going to be shown: it reads every file)
     r.plan = plan(r.space.need_bytes, r.space.level == SpaceLevel::CRITICAL);
-    if (notifier_ && should_prompt(r.space.level, now)) {
-        notifier_->low_space(r.space, r.plan);
+    if (notifier_->low_space(r.space, r.plan)) {
         record_prompt(r.space.level, now);
         r.prompted = true;
+    } else {
+        ledger_.set_meta("policy.prompt_retry", std::to_string(static_cast<int>(r.space.level)) + ":" + std::to_string(now));
+        r.prompt_failed = true;
     }
     return r;
 }
@@ -552,13 +573,38 @@ std::string format_notification(const SpaceStatus& status, const TierPlan& plan,
            (hint.empty() ? "Review and approve to continue." : hint);
 }
 
-void OsascriptNotifier::low_space(const SpaceStatus& status, const TierPlan& plan) {
-    std::string msg = format_notification(status, plan, hint_), esc;
+bool OsascriptNotifier::low_space(const SpaceStatus& status, const TierPlan& plan) {
+    std::string msg = format_notification(status, plan, hint_ ? hint_() : ""), esc;
     for (char c : msg) { if (c == '"' || c == '\\') esc += '\\'; esc += c; }
     std::string script = "display notification \"" + esc + "\" with title \"tierfs\"";
     char* argv[] = {const_cast<char*>("osascript"), const_cast<char*>("-e"), const_cast<char*>(script.c_str()), nullptr};
     pid_t pid;
-    if (posix_spawn(&pid, "/usr/bin/osascript", nullptr, nullptr, argv, environ) == 0) waitpid(pid, nullptr, 0);
+    if (posix_spawn(&pid, program_.c_str(), nullptr, nullptr, argv, environ) != 0) return false;
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) return false;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0;   // osascript fails when there is no user session to show it in
+}
+
+std::string validate_thresholds(const TierPolicy& p) {
+    if (p.low_free_fraction < 0 || p.low_free_fraction > 0.9 || p.critical_free_fraction < 0 || p.critical_free_fraction > 0.9)
+        return "the free-space percentages must be between 0 and 90";
+    if (p.critical_free_bytes > p.low_free_bytes) return "the critical level (" + gib(p.critical_free_bytes) + ") cannot be above the low level (" + gib(p.low_free_bytes) + ")";
+    if (p.critical_free_fraction > p.low_free_fraction) return "the critical percentage cannot be above the low percentage";
+    if (p.low_free_bytes == 0 && p.low_free_fraction == 0) return "the low level is zero, so the warning could never appear: give a size or a percentage";
+    return "";
+}
+
+std::string format_space(const SpaceStatus& s, int local_snapshots, const std::string& last_notice) {
+    std::string out = std::string("Space ") + to_string(s.level) + ": " + gib(s.info.avail()) + " free of " + gib(s.info.total) + ".\n";
+    out += "  warns below " + gib(s.low_threshold) + " free, critical below " + gib(s.critical_threshold) + "; a plan aims for " + gib(s.target_free) + ".\n";
+    if (s.need_bytes) out += "  " + gib(s.need_bytes) + " would have to move off this Mac to reach the target.\n";
+    if (s.info.avail_important > s.info.avail_raw)   // (zero means the system gave no answer)
+        out += "  (macOS counts " + gib(s.info.avail_important) + " as available, including " + gib(s.info.avail_important - s.info.avail_raw) +
+               " it can reclaim by itself; that is the figure used, as in the system's own warning.)\n";
+    if (local_snapshots > 0)
+        out += "  " + std::to_string(local_snapshots) + " local Time Machine snapshot(s) exist: deleting files may not free space until they are thinned.\n";
+    out += last_notice.empty() ? "  You have not been notified about low space.\n" : "  Last notified: " + last_notice + "\n";
+    return out;
 }
 
 }  // namespace tierfs
