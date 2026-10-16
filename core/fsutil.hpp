@@ -17,8 +17,17 @@
 namespace tierfs {
 namespace fsutil {
 
+// Flushes a file to the drive, strictly: 0 on success, nonzero if it could not be done. (macOS: F_FULLFSYNC; elsewhere fsync() is the full flush.)
+inline int strict_full_sync(int fd) {
+#ifdef F_FULLFSYNC
+    return fcntl(fd, F_FULLFSYNC) == -1 ? -1 : 0;
+#else
+    return fsync(fd);
+#endif
+}
+
 inline void full_sync(int fd) {
-    if (fcntl(fd, F_FULLFSYNC) != 0) fsync(fd);
+    if (strict_full_sync(fd) != 0) fsync(fd);
 }
 
 inline void sync_dir(const std::string& path) {

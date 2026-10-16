@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "crashpoint.hpp"
+#include "fsutil.hpp"
 #include "crypto.hpp"
 #include "sqlutil.hpp"
 
@@ -36,9 +37,7 @@ bool is_lower_hex(const std::string& s, size_t n) {
 }
 
 // macOS fsync() does not force the drive to flush its cache; F_FULLFSYNC does.
-void full_sync(int fd) {
-    if (fcntl(fd, F_FULLFSYNC) != 0) fsync(fd);
-}
+void full_sync(int fd) { fsutil::full_sync(fd); }
 
 void sync_dir(const std::string& path) {
     int fd = ::open(path.c_str(), O_RDONLY);
@@ -114,7 +113,11 @@ std::unique_ptr<DeviceStore> DeviceStore::open(const std::string& dir, std::stri
     d->dir_ = dir;
     d->lock_fd_ = ::open((dir + "/lock").c_str(), O_CREAT | O_RDWR, 0600);
     if (d->lock_fd_ < 0) return bad("cannot create lock file");
-    if (flock(d->lock_fd_, LOCK_EX | LOCK_NB) != 0) return bad("device store is in use by another process");
+    if (flock(d->lock_fd_, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) return bad("device store is in use by another process");
+        // Some filesystems cannot lock at all (shared storage on a phone, some network mounts): say so, instead of blaming another process.
+        return bad(std::string("this filesystem cannot lock the store directory (") + strerror(errno) + "): put the store on a local disk");
+    }
 
     // Half-written uploads from a previous crash. They were never acknowledged, so they
     // are safe to drop; they live in tmp/ precisely so this is the only place we delete.
