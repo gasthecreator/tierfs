@@ -10,6 +10,13 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "fsutil.hpp"
 #include "wire.hpp"

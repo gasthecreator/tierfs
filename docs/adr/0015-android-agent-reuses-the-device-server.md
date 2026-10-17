@@ -34,6 +34,11 @@ store directory whose filesystem cannot lock is reported as that (not as "in use
 - Bad / trade-offs: OpenSSL and SQLite have to be built into the APK (13 MB); the debug-signed APK is for sideloading only; Android can still stop the service; a native crash takes
   the server process down (the app's UI process is separate); only arm64-v8a is built.
 
+### Later additions
+The app saves what the person chose (`State`: on, start at boot, shared storage, port) in a file read by both processes, so the service can be restarted by the system (`START_STICKY`) and by a boot receiver exactly as it was and
+stays off if it was switched off. Shared storage cannot lock files, so `DeviceStore::open` takes a separate lock directory (`--lock-dir`) kept in internal storage; the rest of the store (SQLite in WAL mode, durable file writes) works on it.
+SQLite and OpenSSL are fetched by `android/fetch-deps.sh` against hashes pinned in the script, and CI builds arm64, x86_64 and 32-bit ARM.
+
 ### Confirmation
 `make test` (the shared code); a manual run on an arm64 API 34 emulator with `tests/android_smoke.cpp` (offload to the phone and a local device, read back from the phone alone), plus
 switch off/on, force-stop and restart with the store's state intact. Not run on hardware.

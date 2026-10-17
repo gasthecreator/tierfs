@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
 
 #include "../core/pairings.hpp"
 #include "../core/securechannel.hpp"
@@ -145,7 +147,11 @@ int main() {
             lstat(e2->file.c_str(), &before);
             std::string tmp = e2->file + ".swap";
             spit(tmp, crypto::to_hex(e2->secret.data(), 32) + "\nlabel=Two\ndelete=1\ncreated=1\n");
+#ifdef __APPLE__
             struct timespec ts[2] = {before.st_atimespec, before.st_mtimespec};
+#else
+            struct timespec ts[2] = {before.st_atim, before.st_mtim};
+#endif
             utimensat(AT_FDCWD, tmp.c_str(), ts, 0);
             rename(tmp.c_str(), e2->file.c_str());
             auto swapped = pairing::refresh(*changed);
@@ -204,7 +210,9 @@ int main() {
         fs::remove(good->file);
         spit(root + "/target.key", hex + "\nlabel=Good\ndelete=0\n");
         symlink((root + "/target.key").c_str(), good->file.c_str());
-        lchmod(good->file.c_str(), 0600);  // a link that looks private still is not a regular file
+#ifdef __APPLE__
+        lchmod(good->file.c_str(), 0600);  // a link that looks private still is not a regular file (elsewhere a link has no mode of its own)
+#endif
         pr.clear();
         CHECK(pairing::list(s, &pr).empty() && any_problem(pr, "regular file") && !pairing::find(s, chan::key_id(good->secret)));
         fs::remove(good->file);

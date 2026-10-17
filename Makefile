@@ -1,4 +1,14 @@
+UNAME_S := $(shell uname -s)
+# A recipe that pipes a test through `tail` must still fail when the test fails.
+SHELL := /bin/bash
+.SHELLFLAGS := -o pipefail -c
+ifeq ($(UNAME_S),Darwin)
+MAC_FRAMEWORKS := -framework Security -framework CoreFoundation
 SQLITE_LIB := -lsqlite3 -framework CoreFoundation
+else
+MAC_FRAMEWORKS :=
+SQLITE_LIB := -lsqlite3 -pthread
+endif
 # FUSE-T installs headers/libs under /usr/local.
 CC       ?= clang
 CXX      ?= clang++
@@ -38,9 +48,14 @@ build/ledger_helper: tests/ledger_helper.cpp build/ledger.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(SQLITE_LIB)
 
 # Crypto: OpenSSL, linked statically so nothing but the macOS system libraries is needed at run time.
+ifeq ($(UNAME_S),Darwin)
 OPENSSL_DIR ?= /opt/homebrew/opt/openssl@3
 OPENSSL_INC := -I$(OPENSSL_DIR)/include
 OPENSSL_LIB := $(OPENSSL_DIR)/lib/libcrypto.a
+else
+OPENSSL_INC :=
+OPENSSL_LIB := -lcrypto
+endif
 
 build/crypto.o: core/crypto.cpp core/crypto.hpp core/wire.hpp
 	@mkdir -p build
@@ -223,7 +238,7 @@ test-deviceauth: build/deviceauth_test
 	./build/deviceauth_test
 
 build/securechannel_test: tests/securechannel_test.cpp tests/channel_kat.hpp build/securechannel.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/securechannel_test.cpp build/securechannel.o build/crypto.o -o $@ $(OPENSSL_LIB) -framework Security -framework CoreFoundation
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/securechannel_test.cpp build/securechannel.o build/crypto.o -o $@ $(OPENSSL_LIB) $(MAC_FRAMEWORKS)
 
 test-securechannel: build/securechannel_test
 	./build/securechannel_test
@@ -347,6 +362,14 @@ NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropeng
                   test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery test-fuzz
 test: $(NO_MOUNT_TESTS)
 
-.PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan
+# The device side (the server, its store, the secure channel, pairings) builds and is tested on Linux too: a Raspberry Pi or a server can be a device.
+# Needs libssl-dev and libsqlite3-dev. (The Mac side, the daemon and the filesystem driver, is macOS only.)
+linux-test: build/devicestore_test build/securechannel_test build/pairings_test build/devicenet_test build/deviceauth_test build/tierfs-device
+	@rc=0; for t in devicestore_test securechannel_test pairings_test devicenet_test deviceauth_test; do \
+	  echo "== $$t"; \
+	  if ./build/$$t > build/$$t.log 2>&1; then tail -1 build/$$t.log; else rc=1; echo "FAILED: $$t"; grep -E "^FAIL|runtime error|ERROR|SUMMARY" build/$$t.log | head -20; fi; \
+	done; exit $$rc
+
+.PHONY: all clean test linux-test $(NO_MOUNT_TESTS) test-tsan
 
 -include $(wildcard build/*.d)

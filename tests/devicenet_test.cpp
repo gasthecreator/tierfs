@@ -19,6 +19,12 @@
 #include <fstream>
 #include <set>
 #include <thread>
+#include <cerrno>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "../core/crypto.hpp"
 #include "../core/deviceclient.hpp"

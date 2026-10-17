@@ -11,6 +11,12 @@
 #include <ctime>
 #include <fstream>
 #include <sstream>
+#include <cstdint>
+#include <cstdlib>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "fsutil.hpp"
 #include "securechannel.hpp"

@@ -16,6 +16,13 @@
 
 #if __has_include(<dns_sd.h>)
 #include <dns_sd.h>
+#include <cstdint>
+#include <cstdlib>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 #define TIERFS_HAVE_DNSSD 1
 #endif
 

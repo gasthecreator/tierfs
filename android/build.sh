@@ -33,13 +33,21 @@ echo "== sqlite: $(grep -m1 'define SQLITE_VERSION ' "$SQ/sqlite3.c") sha256 $(s
 abi_triple() { case $1 in arm64-v8a) echo aarch64-linux-android;; x86_64) echo x86_64-linux-android;; armeabi-v7a) echo armv7a-linux-androideabi;; *) echo "unknown ABI $1" >&2; exit 2;; esac; }
 abi_ossl() { case $1 in arm64-v8a) echo android-arm64;; x86_64) echo android-x86_64;; armeabi-v7a) echo android-arm;; esac; }
 
+# The OpenSSL source is needed for every ABI that has no libcrypto yet; fetch it here, not inside build_openssl (which runs in a subshell, so what it set would be lost).
+need_src=no
+for ABI in $ABIS; do
+  [ -f "$ROOT/build/android/openssl-$ABI/libcrypto.a" ] && continue
+  [ "$ABI" = arm64-v8a ] && { [ -f "${OPENSSL_SRC:-/nonexistent}/libcrypto.a" ] || [ -f "$ROOT/build/android/openssl-3.6.5/libcrypto.a" ]; } && continue
+  need_src=yes
+done
+if [ "$need_src" = yes ] && [ -z "${OPENSSL_SRC:-}" ]; then eval "$("$ROOT/android/fetch-deps.sh" openssl)"; fi
+
 build_openssl() {   # ABI -> prints the directory holding libcrypto.a and include/
   local abi=$1 dir=$ROOT/build/android/openssl-$1
   if [ "$abi" = arm64-v8a ]; then   # (a tree built in place by an earlier version of this script)
     for t in "${OPENSSL_SRC:-}" "$ROOT/build/android/openssl-3.6.5"; do [ -n "$t" ] && [ -f "$t/libcrypto.a" ] && { echo "$t"; return; }; done
   fi
   if [ ! -f "$dir/libcrypto.a" ]; then
-    if [ -z "${OPENSSL_SRC:-}" ]; then eval "$("$ROOT/android/fetch-deps.sh" openssl)"; fi
     mkdir -p "$dir"
     echo "== openssl: building libcrypto for $abi" >&2
     (cd "$dir" && ANDROID_NDK_ROOT=$NDK "$OPENSSL_SRC/Configure" "$(abi_ossl "$abi")" -D__ANDROID_API__=$API no-shared no-tests no-apps no-docs no-ssl no-dtls no-comp no-engine no-legacy no-module >/dev/null \
@@ -58,7 +66,10 @@ for ABI in $ABIS; do
   O=$OBJ/$ABI
   mkdir -p "$O" "$OUT/lib/$ABI"
   [ -f "$O/sqlite3.o" ] && [ "$O/sqlite3.o" -nt "$SQ/sqlite3.c" ] || $CC -O2 -fPIC -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -c "$SQ/sqlite3.c" -o "$O/sqlite3.o"
-  CXXF="-std=c++17 -O2 -fPIC -Wall -Wextra -I$OSSL/include -I$SQ -I$ROOT/core"
+  OSSL_INC="-I$OSSL/include"
+  # (a build made outside the source tree has the generated headers in $OSSL/include and the rest in the source tree)
+  if [ -n "${OPENSSL_SRC:-}" ] && [ "$OSSL" != "$OPENSSL_SRC" ]; then OSSL_INC="$OSSL_INC -I$OPENSSL_SRC/include"; fi
+  CXXF="-std=c++17 -O2 -fPIC -Wall -Wextra $OSSL_INC -I$SQ -I$ROOT/core"
   for f in core/devicestore.cpp core/crypto.cpp core/securechannel.cpp core/discovery.cpp core/pairings.cpp; do $CXX $CXXF -c "$f" -o "$O/$(basename "$f").o"; done
   $CXX $CXXF -Wno-unused-function -c android/native/jni_shim.cpp -o "$O/jni_shim.o"
   $CXX -shared -o "$OUT/lib/$ABI/libtierfsdevice.so" "$O"/jni_shim.o "$O"/devicestore.cpp.o "$O"/crypto.cpp.o "$O"/securechannel.cpp.o "$O"/discovery.cpp.o \

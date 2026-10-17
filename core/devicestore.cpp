@@ -14,6 +14,15 @@
 #include <filesystem>
 #include <map>
 #include <thread>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <initializer_list>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "crashpoint.hpp"
 #include "fsutil.hpp"
@@ -113,7 +122,7 @@ bool DeviceFaults::parse(const std::string& csv, DeviceFaults* out, std::string*
 
 // ---------------------------------------------------------------- open / schema
 
-std::unique_ptr<DeviceStore> DeviceStore::open(const std::string& dir, std::string* err) {
+std::unique_ptr<DeviceStore> DeviceStore::open(const std::string& dir, std::string* err, const std::string& lock_dir) {
     auto bad = [&](const std::string& m) -> std::unique_ptr<DeviceStore> {
         if (err) *err = m;
         return nullptr;
@@ -126,7 +135,12 @@ std::unique_ptr<DeviceStore> DeviceStore::open(const std::string& dir, std::stri
 
     std::unique_ptr<DeviceStore> d(new DeviceStore);
     d->dir_ = dir;
-    d->lock_fd_ = ::open((dir + "/lock").c_str(), O_CREAT | O_RDWR, 0600);
+    if (!lock_dir.empty()) {
+        std::error_code lec;
+        fs::create_directories(lock_dir, lec);
+        if (lec) return bad("cannot create " + lock_dir + ": " + lec.message());
+    }
+    d->lock_fd_ = ::open(((lock_dir.empty() ? dir : lock_dir) + "/lock").c_str(), O_CREAT | O_RDWR, 0600);
     if (d->lock_fd_ < 0) return bad("cannot create lock file");
     if (flock(d->lock_fd_, LOCK_EX | LOCK_NB) != 0) {
         if (errno == EWOULDBLOCK) return bad("device store is in use by another process");

@@ -4,6 +4,12 @@
 
 #include <cerrno>
 #include <cstring>
+#include <cstdint>
+#include <initializer_list>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
 namespace tierfs {
 namespace chan {
