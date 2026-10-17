@@ -31,7 +31,7 @@ import java.net.Socket;
 public final class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private TextView status, details, code;
-    private Button toggle, show, renew;
+    private Button toggle, show, renew, addMac, macs;
     private EditText portField;
     private String dir;
     private volatile boolean running;
@@ -58,7 +58,9 @@ public final class MainActivity extends Activity {
         col.addView(portField);
         toggle = button(col, "Switch on", v -> toggle());
         show = button(col, "Show pairing code", v -> showCode());
-        renew = button(col, "Make a new pairing code", v -> confirmRenew());
+        addMac = button(col, "Add another Mac", v -> addAnotherMac());
+        macs = button(col, "Paired Macs", v -> showMacs());
+        renew = button(col, "Make a new original pairing code", v -> confirmRenew());
         code = text(col, 16);
         code.setTextIsSelectable(false);
         code.setTypeface(android.graphics.Typeface.MONOSPACE);
@@ -125,12 +127,14 @@ public final class MainActivity extends Activity {
 
     private void refresh() {
         probe(() -> {
-            String kid = Native.keyId(dir);
+            String kids = Native.keyId(dir);
+            int count = kids.isEmpty() ? 0 : kids.split("\n").length;
+            String kid = count == 0 ? "" : kids.split("\n")[0];
             status.setText(running ? "Storage is ON" : "Storage is off");
             toggle.setText(running ? "Switch off" : "Switch on");
             portField.setEnabled(!running);
             StringBuilder d = new StringBuilder();
-            d.append(kid.isEmpty() ? "Not paired yet: switching on creates the pairing code.\n" : "Key id: " + kid + "\n");
+            d.append(kid.isEmpty() ? "Not paired yet: switching on creates the pairing code.\n" : count + " Mac pairing(s); the original's key id: " + kid + "\n");
             d.append("Stores encrypted chunks in:\n").append(dir).append("\n");
             d.append("Free: ").append(new File(dir).getParentFile().getUsableSpace() / (1024 * 1024)).append(" MiB\n");
             String addr = addresses();
@@ -177,6 +181,68 @@ public final class MainActivity extends Activity {
         code.setText("Type this on the Mac:\n\n" + parts[0] + "\n\nKey id: " + parts[1]
             + "\n\nAnyone who has this code can act as the Mac towards this device.");
         refresh();
+    }
+
+    /** A pairing of its own for another Mac: it can be revoked alone, and may be allowed (or not) to delete when that Mac cleans up old versions. */
+    private void addAnotherMac() {
+        final EditText name = new EditText(this);
+        name.setHint("Name of the Mac (for you)");
+        final android.widget.CheckBox del = new android.widget.CheckBox(this);
+        del.setText("May delete (lets that Mac run garbage collection here)");
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(48, 16, 48, 0);
+        box.addView(name);
+        box.addView(del);
+        new AlertDialog.Builder(this)
+                .setTitle("Add another Mac")
+                .setView(box)
+                .setPositiveButton("Make a pairing code", (d, w) -> {
+                    String r = Native.addPairing(dir, name.getText().toString().trim(), del.isChecked());
+                    if (r.startsWith("ERR")) {
+                        code.setText(r);
+                        return;
+                    }
+                    String[] parts = r.split("\n");
+                    code.setText("Type this on the Mac called " + name.getText().toString().trim() + ":\n\n" + parts[0] + "\n\nKey id: " + parts[1]
+                            + "\n\nAnyone who has this code can act as that Mac towards this device. If the server is on, switch it off and on once so the Mac can find it by name.");
+                    refresh();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Every pairing, and a way to revoke one: the Mac is refused at once, the others carry on. */
+    private void showMacs() {
+        final String[] lines = Native.listPairings(dir).trim().isEmpty() ? new String[0] : Native.listPairings(dir).trim().split("\n");
+        if (lines.length == 0) {
+            code.setText("No Mac is paired yet.");
+            return;
+        }
+        final String[] items = new String[lines.length];
+        final String[] ids = new String[lines.length];
+        for (int i = 0; i < lines.length; i++) {
+            String[] f = lines[i].split("\t");
+            ids[i] = f[0];
+            items[i] = f[0].equals("PROBLEM") ? "Problem: " + (f.length > 1 ? f[1] : "") : f[1] + (f.length > 2 && f[2].equals("delete") ? " (may delete)" : "") + "\n" + f[0];
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Paired Macs (tap one to revoke it)")
+                .setItems(items, (d, which) -> {
+                    if (ids[which].equals("PROBLEM")) return;
+                    new AlertDialog.Builder(this)
+                            .setTitle("Revoke this Mac?")
+                            .setMessage(items[which] + "\n\nIt can no longer reach this phone. Its files are not touched; it can pair again with a new code.")
+                            .setPositiveButton("Revoke", (d2, w2) -> {
+                                String err = Native.revokePairing(dir, ids[which]);
+                                code.setText(err.isEmpty() ? "Revoked." : "Could not revoke: " + err);
+                                refresh();
+                            })
+                            .setNegativeButton("Cancel", null)
+                            .show();
+                })
+                .setNegativeButton("Close", null)
+                .show();
     }
 
     private void confirmRenew() {

@@ -35,10 +35,10 @@ fi
 echo "== native: libtierfsdevice.so"
 [ -f "$OBJ/sqlite3.o" ] || $CC -O2 -fPIC -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -c "$SQ/sqlite3.c" -o "$OBJ/sqlite3.o"
 CXXF="-std=c++17 -O2 -fPIC -Wall -Wextra -I$OPENSSL_SRC/include -I$SQ -I$ROOT/core"
-for f in core/devicestore.cpp core/crypto.cpp core/securechannel.cpp core/discovery.cpp; do $CXX $CXXF -c "$f" -o "$OBJ/$(basename "$f").o"; done
+for f in core/devicestore.cpp core/crypto.cpp core/securechannel.cpp core/discovery.cpp core/pairings.cpp; do $CXX $CXXF -c "$f" -o "$OBJ/$(basename "$f").o"; done
 $CXX $CXXF -Wno-unused-function -c android/native/jni_shim.cpp -o "$OBJ/jni_shim.o"
 mkdir -p "$OUT/lib/arm64-v8a"
-$CXX -shared -o "$OUT/lib/arm64-v8a/libtierfsdevice.so" "$OBJ"/jni_shim.o "$OBJ"/devicestore.cpp.o "$OBJ"/crypto.cpp.o "$OBJ"/securechannel.cpp.o "$OBJ"/discovery.cpp.o \
+$CXX -shared -o "$OUT/lib/arm64-v8a/libtierfsdevice.so" "$OBJ"/jni_shim.o "$OBJ"/devicestore.cpp.o "$OBJ"/crypto.cpp.o "$OBJ"/securechannel.cpp.o "$OBJ"/discovery.cpp.o "$OBJ"/pairings.cpp.o \
   "$OBJ"/sqlite3.o "$OPENSSL_SRC/libcrypto.a" -llog -static-libstdc++ -Wl,-z,max-page-size=16384 -Wl,--build-id=none
 
 echo "== app: classes.dex"

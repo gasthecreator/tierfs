@@ -12,6 +12,15 @@ final class Native {
     /** The pairing secret of the store in {@code dir} (created if there is none, replaced when {@code renew}): "CODE\nKEYID", or "ERR: reason". */
     static native String pairing(String dir, boolean renew);
 
-    /** The key id of the store's pairing secret, or "" if it has none yet. */
+    /** The key ids of every pairing in the store (the original first), one per line; "" if there is none yet. */
     static native String keyId(String dir);
+
+    /** A new pairing for another Mac: "CODE\nKEYID", or "ERR: reason". */
+    static native String addPairing(String dir, String label, boolean allowDelete);
+
+    /** One line per pairing: "KEYID\tLABEL\tdelete|nodelete"; a line "PROBLEM\t..." for a pairing file that is not acceptable. */
+    static native String listPairings(String dir);
+
+    /** Revokes a pairing: "" on success, otherwise the reason. A revoked Mac is refused at once. */
+    static native String revokePairing(String dir, String keyId);
 }

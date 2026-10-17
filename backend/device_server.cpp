@@ -36,6 +36,7 @@
 #include "../core/crypto.hpp"
 #include "../core/devicestore.hpp"
 #include "../core/fsutil.hpp"
+#include "../core/pairings.hpp"
 #include "../core/discovery.hpp"
 #include "../core/securechannel.hpp"
 #include "../core/wire.hpp"
@@ -44,19 +45,33 @@ using namespace tierfs;
 using crypto::Bytes;
 
 static DeviceStore* g_store;
-static std::optional<Bytes> g_psk;      // the pairing secret, if this device is paired
+static bool g_paired = false;           // started with at least one pairing: speaks only the authenticated channel
+static std::string g_store_dir;         // where the pairings are read from (at each handshake, and when a connection's file changes)
 static int64_t g_handshake_ms = 10000;  // a peer that has not finished the handshake by then is dropped (slow-loris)
 
 // One client connection, plain (open device) or sealed (paired device).
 struct Conn {
     int fd;
     std::unique_ptr<chan::Channel> ch;
+    std::optional<pairing::Entry> entry;   // which pairing this (paired) connection authenticated with
+    // A revoked pairing ends its connections at their next request; a changed one (its right to delete) takes effect at once.
+    bool still_valid() {
+        if (!entry) return true;
+        auto e = pairing::refresh(*entry);
+        if (!e) return false;
+        entry = e;
+        return true;
+    }
+    // A paired connection may delete only if its pairing says so; an open device's connections follow the store's own flag (--allow-delete).
+    bool may_not_delete() const { return entry && !entry->allow_delete; }
     bool send(uint8_t type, uint32_t id, const Bytes& payload) { return ch ? ch->send(type, id, payload) : send_frame(fd, type, id, payload); }
     int recv(Frame& f) { return ch ? ch->recv(f) : recv_frame(fd, f); }
 };
 static std::atomic<int> g_conns{0};
 constexpr int MAX_CONNECTIONS = 64;
 static int g_idle_s = 120;   // TIERFS_DEVICE_IDLE_S overrides (tests)
+
+static const char* NO_DELETE_RIGHT = "this pairing may not delete (add it with --pairing-allow-delete, or use the primary pairing)";
 
 static bool reply(Conn& c, uint8_t type, uint32_t id, const Writer& w) { return c.send(type | MSG_REPLY_FLAG, id, w.b); }
 static bool reply_err(Conn& c, uint32_t id, int err, const std::string& msg) {
@@ -87,6 +102,7 @@ static void put_info(Writer& w, const DevInfo& i) {
 
 // One request. Returns false to close the connection.
 static bool handle(Conn& c, const Frame& f, Reader& r) {
+    if (!c.still_valid()) return false;   // this Mac's pairing was revoked
     DeviceFaults faults = g_store->faults();
     switch (f.type) {
         case MSG_DEV_INFO: {
@@ -205,6 +221,7 @@ static bool handle(Conn& c, const Frame& f, Reader& r) {
             return reply(c, f.type, f.id, w);
         }
         case MSG_DEV_DELETE_MANIFESTS: {
+            if (c.may_not_delete()) return reply_err(c, f.id, EPERM, NO_DELETE_RIGHT);
             uint32_t n = r.u32();
             if (n < 1 || n > MAX_DELETE_ITEMS) return reply_err(c, f.id, EMSGSIZE, "between 1 and 64 manifests per request");
             std::vector<std::pair<std::string, int64_t>> items;
@@ -224,7 +241,7 @@ static bool handle(Conn& c, const Frame& f, Reader& r) {
         case MSG_DEV_GC_STATUS: {
             GcStatus g = g_store->gc_status();
             Writer w;
-            w.u8(g.deletions_allowed ? 1 : 0);
+            w.u8(g.deletions_allowed && !c.may_not_delete() ? 1 : 0);
             w.u32(g.manifests);
             w.u32(g.manifests_without_refs);
             w.u64(g.chunks);
@@ -236,6 +253,7 @@ static bool handle(Conn& c, const Frame& f, Reader& r) {
             return reply(c, f.type, f.id, w);
         }
         case MSG_DEV_SWEEP: {
+            if (c.may_not_delete()) return reply_err(c, f.id, EPERM, NO_DELETE_RIGHT);
             uint64_t min_age = r.u64();
             uint32_t max_chunks = r.u32();
             uint8_t dry = r.u8();
@@ -257,15 +275,18 @@ static bool handle(Conn& c, const Frame& f, Reader& r) {
 static void serve(int fd) {
     timeval tv{g_idle_s, 0};   // an idle or stalled connection must not hold a thread forever
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    Conn c{fd, nullptr};
-    if (g_psk) {  // a paired device speaks only the authenticated channel
+    Conn c{fd, nullptr, std::nullopt};
+    if (g_paired) {  // a paired device speaks only the authenticated channel
         std::string why;
         int first = -1;
-        auto lookup = [](const Bytes& id) -> std::optional<Bytes> {
-            if (g_psk && id == chan::key_id(*g_psk)) return g_psk;
+        std::optional<pairing::Entry> picked;
+        auto lookup = [&picked](const Bytes& id) -> std::optional<Bytes> {
+            picked = pairing::find(g_store_dir, id);   // read now: a Mac revoked a moment ago is refused
+            if (picked) return picked->secret;
             return std::nullopt;
         };
         c.ch = chan::accept_secure(fd, lookup, now_ms() + g_handshake_ms, &why, &first);
+        if (c.ch) c.entry = picked;
         if (!c.ch) {
             if (first == MSG_HELLO) {  // a plaintext client: tell it plainly what is needed, then hang up
                 Writer w;
@@ -309,69 +330,22 @@ static void serve(int fd) {
     g_conns--;
 }
 
-// ---- the pairing secret: <store>/pairing.key, 64 hex characters, mode 0600 ----
-static std::optional<Bytes> load_pairing(const std::string& store, std::string* err) {
-    std::string path = store + "/pairing.key";
-    struct stat st;
-    if (lstat(path.c_str(), &st) != 0) return std::nullopt;  // not paired
-    if (!S_ISREG(st.st_mode) || (st.st_mode & 077) != 0) {
-        *err = path + " must be a regular file readable only by its owner (chmod 600)";
-        return std::nullopt;
-    }
-    std::ifstream f(path);
-    std::string hex;
-    std::getline(f, hex);
-    auto raw = crypto::from_hex(hex);
-    if (!raw || raw->size() != chan::PSK_LEN) {
-        *err = path + " does not hold 64 hex characters";
-        return std::nullopt;
-    }
-    return raw;
-}
+// ---- the pairings (core/pairings.*): <store>/pairing.key (the original) and <store>/pairings/<keyid>.key (one per Mac)
 
-static bool write_pairing(const std::string& store, const Bytes& secret, bool replace, std::string* err) {
-    std::string path = store + "/pairing.key", tmp = path + ".new";
-    unlink(tmp.c_str());
-    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) {
-        *err = "cannot create " + tmp + ": " + strerror(errno);
-        return false;
-    }
-    std::string hex = crypto::to_hex(secret.data(), secret.size()) + "\n";
-    bool ok = write(fd, hex.data(), hex.size()) == static_cast<ssize_t>(hex.size()) && fsutil::strict_full_sync(fd) == 0;
-    close(fd);
-    if (!ok) {
-        unlink(tmp.c_str());
-        *err = "cannot write " + tmp;
-        return false;
-    }
-    struct stat st;
-    if (!replace && lstat(path.c_str(), &st) == 0) {
-        unlink(tmp.c_str());
-        *err = path + " already exists";
-        return false;
-    }
-    if (rename(tmp.c_str(), path.c_str()) != 0) {
-        unlink(tmp.c_str());
-        *err = "cannot move " + tmp + " into place";
-        return false;
-    }
-    return true;
-}
-
-static void print_pairing(const Bytes& secret) {
-    crypto::SecretKey k(secret.data());
+static void print_pairing(const pairing::Entry& e) {
+    crypto::SecretKey k(e.secret.data());
     printf(
-        "PAIRING CODE (type it on the Mac with: tierctl pair <host:port> --store keychain):\n\n    %s\n\nkey id: %s\n"
+        "PAIRING CODE (type it on the Mac with: tierctl pair <host:port> --store keychain):\n\n    %s\n\nkey id: %s\nlabel: %s, %s\n"
         "Anyone who has this code can act as the Mac towards this device. Do not photograph it or send it anywhere.\n",
-        crypto::encode_recovery(k).c_str(), chan::key_id_hex(secret).c_str());
+        crypto::encode_recovery(k).c_str(), e.key_id.c_str(), e.label.c_str(), e.allow_delete ? "may delete (garbage collection)" : "may not delete");
 }
 
 int main(int argc, char** argv) {
     std::vector<std::string> pos;
     std::string faults_csv;
     bool insecure = false, show_code = false, new_code = false, allow_delete = false, advertise = false;
-    std::string adv_name;
+    std::string adv_name, add_label, revoke_id;
+    bool add_pairing = false, pairing_delete = false, list_pairings = false, revoke = false;
     if (const char* e = getenv("TIERFS_DEVICE_FAULTS")) faults_csv = e;
     if (const char* e = getenv("TIERFS_DEVICE_IDLE_S")) g_idle_s = atoi(e) > 0 ? atoi(e) : 120;
     for (int i = 1; i < argc; i++) {
@@ -385,6 +359,16 @@ int main(int argc, char** argv) {
         else if (a.compare(0, 12, "--advertise=") == 0) {
             advertise = true;
             adv_name = a.substr(12);
+        } else if (a == "--add-pairing" || a.compare(0, 14, "--add-pairing=") == 0) {
+            add_pairing = true;
+            add_label = a.size() > 14 ? a.substr(14) : "";
+        } else if (a == "--pairing-allow-delete")
+            pairing_delete = true;
+        else if (a == "--list-pairings")
+            list_pairings = true;
+        else if (a.compare(0, 17, "--revoke-pairing=") == 0) {
+            revoke = true;
+            revoke_id = a.substr(17);
         } else if (a == "--show-pairing-code")
             show_code = true;
         else if (a == "--new-pairing-code")
@@ -392,51 +376,83 @@ int main(int argc, char** argv) {
         else pos.push_back(a);
     }
     if (pos.empty()) {
-        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n",
-                argv[0]);
+        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n"
+                "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | --revoke-pairing=KEYID\n",
+                argv[0], argv[0]);
         return 2;
     }
-    if (show_code || new_code) {  // pairing management: no server, no store needed beyond the directory
+    if (add_pairing || list_pairings || revoke) {   // pairing management for several Macs (ADR-0016): no server
         std::string perr;
-        mkdir(pos[0].c_str(), 0700);
-        auto existing = load_pairing(pos[0], &perr);
-        if (!perr.empty()) {
-            fprintf(stderr, "%s\n", perr.c_str());
+        if (add_pairing) {
+            if (add_label.empty()) {
+                fprintf(stderr, "give the Mac a name: --add-pairing=\"Gideon's MacBook\"\n");
+                return 2;
+            }
+            auto e = pairing::add(pos[0], add_label, pairing_delete, &perr);
+            if (!e) {
+                fprintf(stderr, "%s\n", perr.c_str());
+                return 1;
+            }
+            print_pairing(*e);
+            return 0;
+        }
+        if (revoke) {
+            if (!pairing::revoke(pos[0], revoke_id, &perr)) {
+                fprintf(stderr, "%s\n", perr.c_str());
+                return 1;
+            }
+            printf("revoked %s: that Mac can no longer connect (an open connection ends at its next request)\n", revoke_id.c_str());
+            return 0;
+        }
+        std::vector<std::string> problems;
+        auto all = pairing::list(pos[0], &problems);
+        for (auto& e : all)
+            printf("%s  %-40s  %s%s\n", e.key_id.c_str(), e.label.c_str(), e.allow_delete ? "may delete" : "may not delete", e.primary ? "  (the original pairing.key)" : "");
+        if (all.empty()) printf("no pairings: this device is open (loopback only)\n");
+        for (auto& pr : problems) printf("PROBLEM: %s\n", pr.c_str());
+        return problems.empty() ? 0 : 1;
+    }
+    if (show_code || new_code) {  // the original single pairing (pairing.key): shown, created if missing, or replaced
+        std::string perr;
+        std::vector<std::string> problems;
+        std::optional<pairing::Entry> existing;
+        for (auto& e : pairing::list(pos[0], &problems))
+            if (e.primary) existing = e;
+        if (!problems.empty()) {
+            for (auto& pr : problems) fprintf(stderr, "%s\n", pr.c_str());
             return 1;
         }
         if (new_code && existing) fprintf(stderr, "replacing the pairing secret: every Mac must pair again\n");
         if (new_code || !existing) {
-            Bytes secret = crypto::random_bytes(chan::PSK_LEN);
-            if (secret.size() != chan::PSK_LEN) {
-                fprintf(stderr, "the system random generator failed\n");
-                return 1;
-            }
-            if (!write_pairing(pos[0], secret, new_code, &perr)) {
+            existing = pairing::set_primary(pos[0], new_code, &perr);
+            if (!existing) {
                 fprintf(stderr, "%s\n", perr.c_str());
                 return 1;
             }
-            existing = secret;
         }
         print_pairing(*existing);
         return 0;
     }
-    std::string perr;
-    g_psk = load_pairing(pos[0], &perr);
-    if (!perr.empty()) {
-        fprintf(stderr, "%s\n", perr.c_str());
+    // An unreadable or loose pairing file must never turn a paired device into an open one: refuse to start.
+    g_store_dir = pos[0];
+    std::vector<std::string> problems;
+    auto entries = pairing::list(pos[0], &problems);
+    if (!problems.empty()) {
+        for (auto& pr : problems) fprintf(stderr, "%s\n", pr.c_str());
         return 1;
     }
+    g_paired = !entries.empty();
     if (const char* e = getenv("TIERFS_DEVICE_HANDSHAKE_MS")) g_handshake_ms = std::max(50, atoi(e));
     int port = pos.size() > 1 ? atoi(pos[1].c_str()) : 9100;
     std::string bind_addr = pos.size() > 2 ? pos[2] : "127.0.0.1";
-    if (!g_psk && !insecure && bind_addr != "127.0.0.1") {
+    if (!g_paired && !insecure && bind_addr != "127.0.0.1") {
         fprintf(stderr,
                 "refusing to listen on %s: this device is not paired, so it has no authentication. "
                 "Pair it (tierfs-device <store> --show-pairing-code), use 127.0.0.1, or pass --insecure-allow-network on a network you trust.\n",
                 bind_addr.c_str());
         return 2;
     }
-    if (advertise && !g_psk) {  // an unauthenticated device is never invited onto the network
+    if (advertise && !g_paired) {  // an unauthenticated device is never invited onto the network
         fprintf(stderr,
                 "refusing to advertise: this device is not paired, so it has no authentication (tierfs-device <store> --show-pairing-code)\n");
         return 2;
@@ -451,7 +467,7 @@ int main(int argc, char** argv) {
     if (!store) { fprintf(stderr, "cannot open store: %s\n", err.c_str()); return 1; }
     store->set_faults(faults);
     // Deleting is allowed only for a Mac that proved it knows the pairing secret, or when the operator says so (loopback experiments, tests).
-    store->set_deletions_allowed(g_psk.has_value() || allow_delete);
+    store->set_deletions_allowed(g_paired || allow_delete);   // (which pairing may actually delete is decided per connection)
     if (const char* e = getenv("TIERFS_DEVICE_MIN_SWEEP_AGE")) store->set_min_sweep_age(strtoull(e, nullptr, 10));
     g_store = store.get();
 
@@ -467,21 +483,27 @@ int main(int argc, char** argv) {
     DevInfo i = store->info();
     fprintf(stderr, "tierfs-device %s on %s:%d (epoch %llu, seq %llu, %s%s%s%s)\n", i.device_id.c_str(), bind_addr.c_str(), port,
             (unsigned long long)i.epoch, (unsigned long long)i.seq,
-            g_psk ? "PAIRED, authenticated channel required" : "NOT PAIRED: plaintext, loopback only",
-            (g_psk || allow_delete) ? ", deletions accepted" : "", faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
-    std::unique_ptr<discovery::Advertiser> announcer;  // lives as long as the server: the device disappears from the network when it stops
-    if (advertise) {
-        discovery::Advert ad;
-        ad.paired = true;
-        ad.key_id = chan::key_id_hex(*g_psk);
-        std::string aerr;
-        announcer = discovery::Advertiser::start(adv_name, static_cast<uint16_t>(port), ad, &aerr);
-        if (!announcer) {
-            fprintf(stderr, "cannot advertise on the network: %s\n", aerr.c_str());
-            return 1;
+            g_paired ? ("PAIRED, authenticated channel required, " + std::to_string(entries.size()) + " PAIRING(S)").c_str() : "NOT PAIRED: plaintext, loopback only",
+            (g_paired || allow_delete) ? ", deletions accepted for pairings that may delete" : "", faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
+    std::vector<std::unique_ptr<discovery::Advertiser>> announcers;  // live as long as the server: the device disappears from the network when it stops
+    if (advertise) {   // one announcement per pairing, each with its own key id, so each Mac finds the device by the key id it holds
+        bool first = true;
+        for (auto& e : entries) {
+            discovery::Advert ad;
+            ad.paired = true;
+            ad.key_id = e.key_id;
+            std::string name = first ? adv_name : adv_name + " (" + e.label + ")", aerr;
+            if (name.size() > 63) name.resize(63);
+            auto a = discovery::Advertiser::start(name, static_cast<uint16_t>(port), ad, &aerr);
+            if (!a) {
+                fprintf(stderr, "cannot advertise on the network: %s\n", aerr.c_str());
+                return 1;
+            }
+            fprintf(stderr, "advertising as \"%s\" (%s) with key id %s%s\n", a->name().c_str(), discovery::SERVICE_TYPE, ad.key_id.c_str(),
+                    bind_addr == "127.0.0.1" ? "; NOTE: it listens on 127.0.0.1 only, so other machines cannot reach it" : "");
+            announcers.push_back(std::move(a));
+            first = false;
         }
-        fprintf(stderr, "advertising as \"%s\" (%s) with key id %s%s\n", announcer->name().c_str(), discovery::SERVICE_TYPE, ad.key_id.c_str(),
-                bind_addr == "127.0.0.1" ? "; NOTE: it listens on 127.0.0.1 only, so other machines cannot reach it" : "");
     }
     for (;;) {
         int c = accept(ls, nullptr, nullptr);
