@@ -362,7 +362,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery test-fuzz test-pairings test-discover-cli
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery test-fuzz test-pairings test-discover-cli test-macos
 test: $(NO_MOUNT_TESTS)
 
 # The device side (the server, its store, the secure channel, pairings) builds and is tested on Linux too: a Raspberry Pi or a server can be a device.
@@ -373,6 +373,14 @@ linux-test: build/devicestore_test build/securechannel_test build/pairings_test 
 	  if ./build/$$t > build/$$t.log 2>&1; then tail -1 build/$$t.log; else rc=1; echo "FAILED: $$t"; grep -E "^FAIL|runtime error|ERROR|SUMMARY" build/$$t.log | head -20; fi; \
 	done; exit $$rc
 
-.PHONY: all clean test linux-test $(NO_MOUNT_TESTS) test-tsan
+# The menu-bar app's control client against a stand-in for tierfsd's socket (Swift; needs Xcode's command-line tools).
+build/macos/control_test: macos/TierfsControl.swift macos/tests/main.swift
+	@mkdir -p build/macos
+	swiftc -O -o $@ macos/TierfsControl.swift macos/tests/main.swift
+
+test-macos: build/macos/control_test
+	./build/macos/control_test | tail -3
+
+.PHONY: all clean test linux-test test-macos $(NO_MOUNT_TESTS) test-tsan
 
 -include $(wildcard build/*.d)

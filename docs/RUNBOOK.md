@@ -58,6 +58,14 @@ use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the
 See [android/README.md](../android/README.md): build the APK, install it, switch it on, show the pairing code on the phone, `tierctl pair <phone>:9100 --store keychain`. The phone announces itself,
 so `devices=mdns:<name>@<key id>` follows it between networks. It is one device among at least two: files only leave the Mac when two copies are verified.
 
+## The menu-bar app
+```bash
+macos/build.sh                                                   # -> build/macos/TierfsMenu.app
+open build/macos/TierfsMenu.app --args --ledger ~/.tierfs/ledger    # add it to System Settings > General > Login Items to have it at login
+```
+It shows the space level, the devices and any problem tierfsd reports, and *Review what could move…* shows the plan in the daemon's own words with a button that approves exactly that plan after one more
+confirmation. It cannot do anything `tierctl` could not, and the daemon refuses what the rules refuse. It shows `· off` while tierfsd is not running. (ADR-0019)
+
 ## Undoing a garbage collection (the device trash)
 A device keeps what a sweep or deletion removed in `<store>/trash` and removes it for good after 7 days (`--trash-days=N` when serving; 0 = at once). So disk space on the device comes back after
 that, and a collection that went wrong can be undone within that time. Stop the device, then:
