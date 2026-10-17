@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.bin binary
+*.png binary
+*.jpg binary
+*.apk binary
+*.jks binary
+*.db binary
+*.sqlite binary

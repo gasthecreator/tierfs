@@ -1,3 +1,5 @@
+> **Historical record.** Written during the early feasibility work and kept because ADRs and code comments cite it. It does not describe the current system: see [README.md](README.md).
+
 # Phase 2 (in progress): offline metadata and honest errors
 
 ## Step 1 result: why offline errors were wrong, and the fix

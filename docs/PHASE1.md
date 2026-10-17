@@ -1,3 +1,5 @@
+> **Historical record.** Written during the early feasibility work and kept because ADRs and code comments cite it. It does not describe the current system: see [README.md](README.md).
+
 # Phase 1 status: read-only mount over the network
 
 Built: protocol v1 (proto/PROTOCOL.md), C++17 backend (backend/server.cpp),

@@ -1,3 +1,5 @@
+> **Historical record.** Written during the early feasibility work and kept because ADRs and code comments cite it. It does not describe the current system: see [README.md](README.md).
+
 # Phase 0: feasibility spike
 
 Goal: prove a userspace filesystem can mount on this Mac (macOS 26.6.2, M2)
