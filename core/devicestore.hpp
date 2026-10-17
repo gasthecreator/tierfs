@@ -92,6 +92,7 @@ constexpr size_t MAX_MANIFEST_CHUNKS = 1u << 20;
 constexpr size_t MAX_AUDIT_ITEMS = 64;
 constexpr size_t MAX_DELETE_ITEMS = 64;
 constexpr size_t MAX_SWEEP_CHUNKS = 100000;
+constexpr int64_t DEFAULT_TRASH_RETENTION = 7 * 86400;   // deleted chunks and manifests are kept this long before they are really removed (ADR-0017)
 constexpr uint64_t DEFAULT_MIN_SWEEP_AGE = 3600;  // seconds a chunk must be unreferenced and untouched before it may be swept
 constexpr size_t MAX_LIST_ENTRIES = 1000;
 constexpr uint64_t MIN_FREE_RESERVE = 16u << 20;  // never fill the disk to the last byte
@@ -109,6 +110,22 @@ struct GcStatus {
     uint64_t chunks = 0, chunk_bytes = 0;
     uint64_t unreferenced_chunks = 0, unreferenced_bytes = 0;  // listed by no manifest, whatever their age
     uint64_t manifests_deleted = 0, chunks_deleted = 0;        // lifetime totals, from the device's own log
+    uint64_t trash_files = 0, trash_bytes = 0;                 // deleted things still kept for a while (ADR-0017): their space comes back when they are purged
+    int64_t trash_retention_s = 0;                             // how long (0: deletions are final at once)
+};
+
+// What the device keeps after a deletion, for a while (ADR-0017).
+struct TrashStats {
+    uint64_t chunks = 0, chunk_bytes = 0;
+    uint64_t manifests = 0, manifest_bytes = 0;   // (manifests with their chunk lists)
+    int64_t oldest = 0, newest = 0;               // when things were put there (unix time); 0 if empty
+};
+struct TrashRestoreOut {
+    int err = 0;
+    std::string msg;
+    uint64_t chunks = 0, manifests = 0;   // put back
+    uint64_t skipped = 0;                 // already present again, or not restorable
+    std::vector<std::string> notes;       // why anything was skipped
 };
 
 struct SweepOut {
@@ -155,6 +172,18 @@ public:
     // Removes exactly these manifests (and their reference lists), idempotently, and bumps the commit sequence. The chunks stay until a sweep.
     DeleteManifestsOut delete_manifests(const std::vector<std::pair<std::string, int64_t>>& items);
     GcStatus gc_status();
+
+    // --- the trash (ADR-0017) ---
+    // A deletion (sweep, delete_manifests) moves the files into <store>/trash instead of unlinking them, and they are removed for good only after
+    // this many seconds. A Mac that lied about a chunk list, or a bug, can then be undone: trash_restore puts things back through the normal
+    // upload path. 0 makes deletions final at once (the earlier behaviour). Default: 7 days.
+    void set_trash_retention(int64_t seconds);
+    int64_t trash_retention();
+    TrashStats trash_stats();
+    // Removes what has been in the trash for the retention period (or all of it with `everything`). `now` = 0 means the current time. Returns files removed.
+    uint64_t trash_purge(int64_t now = 0, bool everything = false);
+    // Puts back what went into the trash within the last `newer_than_s` seconds (0: everything in it): chunks first, then manifests with their chunk lists.
+    TrashRestoreOut trash_restore(int64_t newer_than_s);
     // Deletes chunks that no stored manifest lists and that were neither uploaded nor reported present within `min_age_s`, at most
     // `max_chunks` of them, and removes stray files older than that. Refused while any manifest lacks its reference list.
     SweepOut sweep(uint64_t min_age_s, size_t max_chunks, bool dry_run);
@@ -184,6 +213,9 @@ private:
     uint64_t min_free_ = MIN_FREE_RESERVE;
     bool deletions_allowed_ = false;
     uint64_t min_sweep_age_ = DEFAULT_MIN_SWEEP_AGE;
+    int64_t trash_retention_ = DEFAULT_TRASH_RETENTION;
+    // Moves a file into the trash under the name that records when (and what it was); false if it could not (the caller then leaves it alone).
+    bool trash_file(const std::string& from, const std::string& to);
     bool migrate_1_to_2();
     bool create_gc_schema();
     int count_refless_locked();

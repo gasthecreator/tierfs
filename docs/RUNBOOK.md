@@ -58,6 +58,17 @@ use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the
 See [android/README.md](../android/README.md): build the APK, install it, switch it on, show the pairing code on the phone, `tierctl pair <phone>:9100 --store keychain`. The phone announces itself,
 so `devices=mdns:<name>@<key id>` follows it between networks. It is one device among at least two: files only leave the Mac when two copies are verified.
 
+## Undoing a garbage collection (the device trash)
+A device keeps what a sweep or deletion removed in `<store>/trash` and removes it for good after 7 days (`--trash-days=N` when serving; 0 = at once). So disk space on the device comes back after
+that, and a collection that went wrong can be undone within that time. Stop the device, then:
+```bash
+./build/tierfs-device <store> --list-trash                # how much, and since when
+./build/tierfs-device <store> --restore-trash             # put back everything in the trash (chunks first, then manifests with their chunk lists)
+./build/tierfs-device <store> --restore-trash=3600        # ... only what went in during the last hour
+./build/tierfs-device <store> --empty-trash               # remove it all for good now (frees the space)
+```
+Then start the device again; the Mac's audits will find the chunks. A manifest can come back only if its chunk list and the chunks it needs are still in the trash; the command says what it skipped and why.
+
 ## One pairing per Mac (and taking one away)
 A device can hold a pairing for each Mac, so losing one Mac does not mean re-pairing the others:
 ```bash
