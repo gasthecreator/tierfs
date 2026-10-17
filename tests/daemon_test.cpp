@@ -255,7 +255,7 @@ static std::string talk(const std::string& sock, const std::string& line) {
 static bool ends_ok(const std::string& r) { return r.size() >= 3 && r.compare(r.size() - 3, 3, "OK\n") == 0; }
 // A disk whose free space the test controls, and a notification that only counts (nothing is ever shown on the screen).
 struct SpaceFake {
-    std::atomic<int> measures{0};   // how often the disk was looked at
+    std::atomic<int> measures{0};  // how often the disk was looked at
     std::atomic<uint64_t> avail{100ull << 30};
     std::atomic<int> calls{0};
     std::atomic<bool> deliver{true};
@@ -652,12 +652,13 @@ int main() {
         std::string plan = d->control("gc-plan");
         CHECK(ends_ok(plan) && has(plan, "plan only") && has(plan, "versions the rules would let go of: 1") && d->ledger().event_count() == events &&
               d->ledger().pruned_count() == 0);
-        CHECK(!has(plan, "in its trash"));   // nothing has been deleted on the devices yet, so there is nothing to say about a trash
+        CHECK(!has(plan, "in its trash"));  // nothing has been deleted on the devices yet, so there is nothing to say about a trash
         std::string run = d->control("gc-run");
         CHECK(ends_ok(run) && has(run, "decided now: 1") && has(run, "manifests deleted 1") && has(run, "deletions still owed by devices: 0"));
         CHECK(has(run, "file(s) (") && has(run, "are in its trash and are removed for good 7 day(s) after deletion") &&
-              has(run, "to undo, stop the device and run: tierfs-device <store> --restore-trash"));   // each device says what it keeps, for how long, and how to undo
-        {   // ... and how many files and how many bytes, as the device itself reports them
+              has(run, "to undo, stop the device and run: tierfs-device <store> --restore-trash"));  // each device says what it keeps, for how long,
+                                                                                                     // and how to undo
+        {  // ... and how many files and how many bytes, as the device itself reports them
             DeviceClient dc("127.0.0.1", PA, 3000);
             GcStatus gs;
             CHECK(dc.gc_status(gs).ok() && gs.trash_files > 0);
@@ -1154,19 +1155,19 @@ int main() {
         }
         {
             DaemonConfig k = c;
-            k.logical_prefix = "/Users/me/proj";   // no trailing slash: it is added, so "/Users/me/proj2/" cannot match
+            k.logical_prefix = "/Users/me/proj";  // no trailing slash: it is added, so "/Users/me/proj2/" cannot match
             auto d = Daemon::create(k, &err);
             CHECK(d && d->config().logical_prefix == "/Users/me/proj/");
         }
         {
             DaemonConfig k = c;
             auto d = Daemon::create(k, &err);
-            CHECK(d && d->config().logical_prefix == "/Users/me/proj/");   // already there: not doubled
+            CHECK(d && d->config().logical_prefix == "/Users/me/proj/");  // already there: not doubled
         }
         for (int secs : {0, 1, 86400}) {
             DaemonConfig k = c;
             k.space_check_seconds = secs;
-            CHECK(Daemon::create(k, &err) != nullptr);   // every period from "off" to a full day is fine
+            CHECK(Daemon::create(k, &err) != nullptr);  // every period from "off" to a full day is fine
         }
         for (int secs : {-1, 86401}) {
             DaemonConfig k = c;
@@ -1181,9 +1182,9 @@ int main() {
         {
             DaemonConfig k = c;
             k.devices = {"127.0.0.1:1", "127.0.0.1:65535"};
-            CHECK(Daemon::create(k, &err) != nullptr);   // the smallest and the largest port
+            CHECK(Daemon::create(k, &err) != nullptr);  // the smallest and the largest port
         }
-        {   // the control socket: in the ledger by default, anywhere on request, nowhere when switched off; owner only
+        {  // the control socket: in the ledger by default, anywhere on request, nowhere when switched off; owner only
             struct stat st;
             DaemonConfig k = c;
             {
@@ -1191,7 +1192,7 @@ int main() {
                 CHECK(d && d->start(&err) && stat((e.ledger + "/control.sock").c_str(), &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 077) == 0);
                 CHECK(has(talk(e.ledger + "/control.sock", "status"), "volume "));
             }
-            CHECK(!exists(e.ledger + "/control.sock"));   // gone with the daemon
+            CHECK(!exists(e.ledger + "/control.sock"));  // gone with the daemon
             k.control_socket = e.root + "/elsewhere.sock";
             {
                 auto d = Daemon::create(k, &err);
@@ -1200,9 +1201,10 @@ int main() {
             k.control_socket = "none";
             {
                 auto d = Daemon::create(k, &err);
-                CHECK(d && d->start(&err) && !exists(e.ledger + "/control.sock") && !exists("none") && has(d->control("status"), "volume "));   // (commands still work in-process, and "none" is not a file name)
+                CHECK(d && d->start(&err) && !exists(e.ledger + "/control.sock") && !exists("none") &&
+                      has(d->control("status"), "volume "));  // (commands still work in-process, and "none" is not a file name)
                 std::string st2 = d->control("status");
-                CHECK(has(st2, "space OK free") || has(st2, "space LOW free") || has(st2, "space CRITICAL free"));   // the level is part of the status
+                CHECK(has(st2, "space OK free") || has(st2, "space LOW free") || has(st2, "space CRITICAL free"));  // the level is part of the status
             }
         }
     }
@@ -1239,7 +1241,7 @@ int main() {
             };
             return c;
         };
-        {   // devices with an address are never looked up: nothing asks the network
+        {  // devices with an address are never looked up: nothing asks the network
             DaemonConfig c = base();
             c.devices = {"127.0.0.1:" + std::to_string(PA) + "@" + kida};
             auto d = Daemon::create(c, &err);
@@ -1247,7 +1249,7 @@ int main() {
             usleep(2500000);
             CHECK(looks == 0);
         }
-        {   // a mixture: only the key id that needs looking up is asked for, once even if two entries share it
+        {  // a mixture: only the key id that needs looking up is asked for, once even if two entries share it
             DaemonConfig c = base();
             c.devices = {"127.0.0.1:" + std::to_string(PA) + "@" + kida, "mdns:b@" + kidb, "mdns:b-again@" + kidb};
             auto d = Daemon::create(c, &err);
@@ -1255,7 +1257,7 @@ int main() {
             std::lock_guard<std::mutex> g(mu);
             CHECK(asked.size() == 1 && asked[0] == kidb);
         }
-        {   // a lookup that fails is said in the status, and the message goes when the next lookup works
+        {  // a lookup that fails is said in the status, and the message goes when the next lookup works
             DaemonConfig c = base();
             c.devices = {"mdns:b@" + kidb};
             {
@@ -1271,7 +1273,7 @@ int main() {
             }
             CHECK(wait_for([&] { return !has(d->control("status"), "looking for devices on the network failed"); }, 5000));
         }
-        {   // devices that are attached are not attached again at every pass (that would record the same thing over and over)
+        {  // devices that are attached are not attached again at every pass (that would record the same thing over and over)
             Env e2;
             e2.open_gates(true);
             DaemonConfig c = e2.config();
@@ -1307,11 +1309,11 @@ int main() {
         adb.key_id = kidb;
         adb.paired = true;
         adc.key_id = kidc;
-        adc.paired = false;   // announces itself as not paired
+        adc.paired = false;  // announces itself as not paired
         std::string e1, e2, e3;
         auto na = discovery::Advertiser::start(tag + "-a", 39211, ada, &e1);
         auto nc = discovery::Advertiser::start(tag + "-c", 39213, adc, &e3);
-        std::unique_ptr<discovery::Advertiser> nb;   // the second device appears while the search is already running
+        std::unique_ptr<discovery::Advertiser> nb;  // the second device appears while the search is already running
         std::thread later([&] {
             usleep(1500000);
             nb = discovery::Advertiser::start(tag + "-b", 39212, adb, &e2);
@@ -1328,20 +1330,23 @@ int main() {
             CHECK(d && d->start(&err));
             double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             std::string st = d->control("status");
-            CHECK(!has(st, "not found on the network") && has(st, ":39211") && has(st, ":39212"));   // both were found, in the one search (it waited for the second)
-            CHECK(secs >= 1.0 && secs < 6.0);                                                        // and ended as soon as it had both
+            CHECK(!has(st, "not found on the network") && has(st, ":39211") &&
+                  has(st, ":39212"));          // both were found, in the one search (it waited for the second)
+            CHECK(secs >= 1.0 && secs < 6.0);  // and ended as soon as it had both
             d.reset();
             c.devices = {"mdns:c@" + kidc};
             c.mdns_timeout_ms = 3000;
             auto d2 = Daemon::create(c, &err);
-            CHECK(d2 && d2->start(&err) && has(d2->control("status"), "not found on the network"));   // announced, but not as paired: never followed
+            CHECK(d2 && d2->start(&err) && has(d2->control("status"), "not found on the network"));  // announced, but not as paired: never followed
         }
         later.join();
     }
 
     {
-        printf("== free space: the first look is at once, the period is kept, no notifier means no looking, and a problem goes away with the shortage\n");
-        {   // at once, even with a long period
+        printf(
+            "== free space: the first look is at once, the period is kept, no notifier means no looking, and a problem goes away with the "
+            "shortage\n");
+        {  // at once, even with a long period
             Env e(false, false);
             e.open_gates(true);
             SpaceFake f;
@@ -1354,7 +1359,7 @@ int main() {
             CHECK(d && d->start(nullptr));
             CHECK(wait_for([&] { return f.calls == 1; }, 3000));
         }
-        {   // no notifier: nothing is measured by the thread (there is nothing to tell anybody)
+        {  // no notifier: nothing is measured by the thread (there is nothing to tell anybody)
             Env e(false, false);
             e.open_gates(true);
             SpaceFake f;
@@ -1369,7 +1374,7 @@ int main() {
             usleep(2600000);
             CHECK(f.measures == 0 && f.calls == 0);
         }
-        {   // a period of one second means about once a second, not as fast as the loop can go
+        {  // a period of one second means about once a second, not as fast as the loop can go
             Env e(false, false);
             e.open_gates(true);
             SpaceFake f;
@@ -1382,7 +1387,7 @@ int main() {
             usleep(3500000);
             CHECK(f.measures >= 2 && f.measures <= 8);
         }
-        {   // a problem showing the notice clears when the shortage is over; "critical" and "never notified" are worded right; the time is right
+        {  // a problem showing the notice clears when the shortage is over; "critical" and "never notified" are worded right; the time is right
             Env e(false, false);
             e.open_gates(true);
             SpaceFake f;
@@ -1396,7 +1401,7 @@ int main() {
             auto d = Daemon::create(c, nullptr);
             CHECK(d && d->start(nullptr));
             CHECK(wait_for([&] { return has(d->control("status"), "could not be shown"); }, 5000));
-            f.avail = 100ull << 30;   // plenty again, without the notice ever having been shown
+            f.avail = 100ull << 30;  // plenty again, without the notice ever having been shown
             CHECK(wait_for([&] { return !has(d->control("status"), "could not be shown"); }, 5000));
             CHECK(!has(d->control("space"), "PROBLEM"));
             // shown this time: critical
@@ -1417,14 +1422,15 @@ int main() {
                 return std::string(b);
             };
             time_t now = time(nullptr);
-            CHECK(has(sp, "Last notified: CRITICAL at ") && (has(sp, "at " + stamp(now)) || has(sp, "at " + stamp(now - 60))));   // the level, and the time
+            CHECK(has(sp, "Last notified: CRITICAL at ") &&
+                  (has(sp, "at " + stamp(now)) || has(sp, "at " + stamp(now - 60))));  // the level, and the time
             // and after the shortage is over, nobody is "last notified" any more
             f.avail = 100ull << 30;
             CHECK(wait_for([&] { return has(d->control("space"), "You have not been notified"); }, 5000));
         }
-        {   // the notification names the first thing that stands in the way, not the last
+        {  // the notification names the first thing that stands in the way, not the last
             Env e(false, false);
-            e.open_gates(false);   // the recovery phrase is not acknowledged; and there are no devices
+            e.open_gates(false);  // the recovery phrase is not acknowledged; and there are no devices
             SpaceFake f;
             f.avail = 25ull << 30;
             DaemonConfig c = e.config();
@@ -1435,7 +1441,8 @@ int main() {
             CHECK(d && d->start(nullptr));
             CHECK(wait_for([&] { return f.calls == 1; }, 4000));
             std::lock_guard<std::mutex> g(f.mu);
-            CHECK(has(f.hints[0], "Not ready to run yet: the recovery phrase has not been acknowledged") && !has(f.hints[0], "Not ready to run yet: fewer than two devices"));
+            CHECK(has(f.hints[0], "Not ready to run yet: the recovery phrase has not been acknowledged") &&
+                  !has(f.hints[0], "Not ready to run yet: fewer than two devices"));
         }
     }
 
@@ -1458,13 +1465,13 @@ int main() {
             cfg.policy.low_free_bytes = 1;
             cfg.policy.low_free_fraction = 0;
             cfg.policy.critical_free_bytes = 1;
-            cfg.policy.critical_free_fraction = 0;   // (space is always fine here, so "plan" alone has nothing to do)
+            cfg.policy.critical_free_fraction = 0;  // (space is always fine here, so "plan" alone has nothing to do)
             spit(e.path("a.bin"), pattern(2 * MiB, 11));
             auto d = make(e, nullptr, &cfg);
             CHECK(d && d->start(nullptr));
-            CHECK(has(d->control("plan 5x"), "ERR usage") && has(d->control("plan 1000001"), "ERR usage") && has(d->control("plan 2000000"), "ERR usage") &&
-                  has(d->control("plan 1e999"), "ERR usage"));
-            CHECK(ends_ok(d->control("plan 1000000")));   // the limit itself is allowed
+            CHECK(has(d->control("plan 5x"), "ERR usage") && has(d->control("plan 1000001"), "ERR usage") &&
+                  has(d->control("plan 2000000"), "ERR usage") && has(d->control("plan 1e999"), "ERR usage"));
+            CHECK(ends_ok(d->control("plan 1000000")));  // the limit itself is allowed
             std::string t20 = d->control("plan 20");
             CHECK(ends_ok(t20) && has(t20, "20.0 GiB should be freed to be comfortable again"));
             // a plan is pending; when space turns out to be fine the pending plan is withdrawn, not kept for approval
@@ -1474,9 +1481,10 @@ int main() {
             CHECK(has(d->control("plan"), "Disk space is fine"));
             CHECK(has(d->control("approve " + id), "ERR there is no plan to approve") && exists(e.path("a.bin")));
             // an id of seven characters is too short, eight is accepted as an id (and then judged)
-            CHECK(has(d->control("approve abcdef0"), "ERR give the plan id") && has(d->control("approve abcdef01"), "ERR there is no plan to approve"));
+            CHECK(has(d->control("approve abcdef0"), "ERR give the plan id") &&
+                  has(d->control("approve abcdef01"), "ERR there is no plan to approve"));
         }
-        {   // folders excluded by default are never planned
+        {  // folders excluded by default are never planned
             Env e;
             e.open_gates(true);
             DaemonConfig cfg = e.config();
@@ -1489,14 +1497,14 @@ int main() {
             std::string t = d->control("plan 0.004");
             CHECK(has(t, "moves 1 file") && !has(t, ".git") && has(t, "/Users/me/proj/a.bin"));
         }
-        {   // a device that is away at the moment: the plan says so, with the right number
+        {  // a device that is away at the moment: the plan says so, with the right number
             Env e;
             e.open_gates(true);
             DaemonConfig cfg = e.config();
             tight(cfg);
             spit(e.path("a.bin"), pattern(2 * MiB, 14));
             {
-                auto d = make(e, nullptr, &cfg);   // both devices are attached once, so the ledger knows two
+                auto d = make(e, nullptr, &cfg);  // both devices are attached once, so the ledger knows two
                 CHECK(d && d->start(nullptr) && !has(d->control("status"), "not attached"));
             }
             e.sb.stop();
@@ -1507,7 +1515,7 @@ int main() {
             std::string t = d2->control("plan 0.002");
             CHECK(has(t, "WARNING: only 1 device is connected; two are needed"));
         }
-        {   // how old a backup statement may be: to the hour
+        {  // how old a backup statement may be: to the hour
             Env e(false, false);
             e.open_gates(true);
             DaemonConfig cfg = e.config();
@@ -1518,15 +1526,15 @@ int main() {
             d->ledger().set_meta("backup_acked", "1");
             const long long day = 86400, now = static_cast<long long>(time(nullptr));
             d->ledger().set_meta("backup_acked_at", std::to_string(now - 29 * day - 23 * 3600));
-            CHECK(!has(d->control("plan 0.001"), "older than"));                       // 29 days 23 hours: still good
+            CHECK(!has(d->control("plan 0.001"), "older than"));  // 29 days 23 hours: still good
             d->ledger().set_meta("backup_acked_at", std::to_string(now - 30 * day - 3600));
-            CHECK(has(d->control("plan 0.001"), "older than 30 days"));                // 30 days 1 hour: too old
-            d->ledger().set_meta("backup_max_age_days", "0");                          // a nonsense limit means the default
+            CHECK(has(d->control("plan 0.001"), "older than 30 days"));  // 30 days 1 hour: too old
+            d->ledger().set_meta("backup_max_age_days", "0");            // a nonsense limit means the default
             d->ledger().set_meta("backup_acked_at", std::to_string(now - 10 * day));
             CHECK(!has(d->control("plan 0.001"), "older than"));
             d->ledger().set_meta("backup_max_age_days", "-5");
             CHECK(!has(d->control("plan 0.001"), "older than"));
-            d->ledger().set_meta("backup_max_age_days", "7");                          // a real limit is honoured, and named
+            d->ledger().set_meta("backup_max_age_days", "7");  // a real limit is honoured, and named
             CHECK(has(d->control("plan 0.001"), "older than 7 days"));
         }
     }

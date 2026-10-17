@@ -41,7 +41,8 @@ struct DaemonConfig {
     std::string control_socket;              // default: <ledger_dir>/control.sock; "none" disables
     int device_timeout_ms = 5000;
     // "mdns:" device entries are looked up on the network at every maintenance pass (ADR-0013). `discover` is how: given the key ids wanted, it
-    // returns what it found, and why it could not look if it could not (the default asks the system's Bonjour service for up to mdns_timeout_ms; tests give a fake).
+    // returns what it found, and why it could not look if it could not (the default asks the system's Bonjour service for up to mdns_timeout_ms;
+    // tests give a fake).
     using Discoverer = std::function<std::vector<discovery::Found>(const std::vector<std::string>& key_ids, std::string* error)>;
     Discoverer discover;
     int mdns_timeout_ms = 1500;
