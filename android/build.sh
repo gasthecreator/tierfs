@@ -77,7 +77,7 @@ cp "$OUT/base.apk" "$OUT/unaligned.apk"
 (cd "$OUT" && zip -q -u unaligned.apk classes.dex && for ABI in $ABIS; do zip -q -u -0 unaligned.apk "lib/$ABI/libtierfsdevice.so"; done)
 "$BT/zipalign" -f -p 16384 "$OUT/unaligned.apk" "$OUT/aligned.apk"
 if [ -n "${RELEASE_KEYSTORE:-}" ]; then
-  : "${RELEASE_KEY_ALIAS:?set RELEASE_KEY_ALIAS to the key's alias in the keystore}"
+  : "${RELEASE_KEY_ALIAS:?set RELEASE_KEY_ALIAS to the alias of the key in the keystore}"
   PASSARG=(--ks-pass "${RELEASE_STOREPASS_FILE:+file:$RELEASE_STOREPASS_FILE}")
   [ -n "${RELEASE_STOREPASS_FILE:-}" ] || PASSARG=(--ks-pass stdin)   # (asked for, never put on a command line or in a file here)
   "$BT/apksigner" sign --ks "$RELEASE_KEYSTORE" --ks-key-alias "$RELEASE_KEY_ALIAS" "${PASSARG[@]}" --out "$OUT/tierfs-agent.apk" "$OUT/aligned.apk"
