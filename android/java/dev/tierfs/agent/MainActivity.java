@@ -208,7 +208,7 @@ public final class MainActivity extends Activity {
                     String[] parts = r.split("\n");
                     code.setText("Type this on the Mac called " + name.getText().toString().trim() + ":\n\n" + parts[0] + "\n\nKey id: " + parts[1]
                         + ("\n\nAnyone who has this code can act as that Mac towards this device. If the server is on, switch it off and on once so "
-                           + "the Mac can find it by name."));
+                            + "the Mac can find it by name."));
                     refresh();
                 })
             .setNegativeButton("Cancel", null)
