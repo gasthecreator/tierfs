@@ -208,4 +208,8 @@ M = [
  ('trash: restore forgets a manifest that was restored', P, 'if (r.existed) out.skipped++;\n        else out.manifests++;', 'if (r.existed) out.skipped++;'),
  ('trash: restore does not report a failure', P, 'out.notes.push_back("manifest " + m.fid + " version " + m.tn.id + ": " + r.msg);', ''),
  ('trash: restore removes the directory too early', P, 'rmdir(fs::path(m.path).parent_path().c_str());', 'fs::remove_all(fs::path(m.path).parent_path());'),
+ ('trash: two things trashed in one second collide', P, 'if (!taken) return t;', 'return t;'),
+ ('trash: a taken second is skipped by a day', P, 'for (;; t++) {', 'for (;; t += 86400) {'),
+ ('trash: only the .mf name is checked', P, 'for (const char* e : exts) {\n            struct stat st;', 'for (const char* e : {exts.begin()[0]}) {\n            struct stat st;'),
+ ('trash: the move ignores the time chosen for the chunk list', P, 'std::to_string(moved_when[i]) + ".mf")))', 'std::to_string(time(nullptr) + 1) + ".mf")))'),
 ]
