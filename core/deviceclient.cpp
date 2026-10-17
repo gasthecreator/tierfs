@@ -362,6 +362,11 @@ DevRes DeviceClient::gc_status(GcStatus& out) {
         g.unreferenced_bytes = rd.u64();
         g.manifests_deleted = rd.u64();
         g.chunks_deleted = rd.u64();
+        if (rd.remaining() >= 24) {  // a device that predates the trash (ADR-0017) does not say
+            g.trash_files = rd.u64();
+            g.trash_bytes = rd.u64();
+            g.trash_retention_s = rd.i64();
+        }
         out = g;
     } catch (...) {
         return {EPROTO, "malformed reply"};

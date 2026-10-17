@@ -12,6 +12,7 @@
 #include <cstring>
 #include <algorithm>
 #include <filesystem>
+#include <map>
 #include <thread>
 
 #include "crashpoint.hpp"
@@ -28,6 +29,20 @@ namespace fs = std::filesystem;
 
 constexpr int SCHEMA_VERSION =
     2;  // 2: reference lists, the guarded delete triggers, chunk_touch and gc_log (ADR-0010); version 1 is migrated on open
+
+// A trash file's name carries the time it went in. Two things trashed in the same second must not overwrite each other (nor may a manifest and its
+// chunk list end up with different times): take the first second from `t` on for which none of the names is taken. Purging is delayed by that much,
+// no more.
+int64_t free_trash_time(const std::string& dir, const std::string& stem, int64_t t, std::initializer_list<const char*> exts) {
+    for (;; t++) {
+        bool taken = false;
+        for (const char* e : exts) {
+            struct stat st;
+            if (lstat((dir + "/" + stem + "." + std::to_string(t) + "." + e).c_str(), &st) == 0) taken = true;
+        }
+        if (!taken) return t;
+    }
+}
 
 bool is_lower_hex(const std::string& s, size_t n) {
     if (s.size() != n) return false;
@@ -684,6 +699,9 @@ DeleteManifestsOut DeviceStore::delete_manifests(const std::vector<std::pair<std
     if (!deletions_allowed_) return fail(EPERM, NO_DELETIONS);
     if (faults_.slow_ms) std::this_thread::sleep_for(std::chrono::milliseconds(faults_.slow_ms));
     std::vector<std::string> gone_paths;
+    std::vector<std::pair<std::string, int64_t>> gone_items;
+    std::vector<int64_t> gone_when(items.size(), 0);  // (per item: the second its trash files are named for)
+    std::vector<int64_t> moved_when;
     out.deleted.assign(items.size(), 0);
     uint64_t seq = strtoull(meta_get("seq").c_str(), nullptr, 10);
     {
@@ -698,6 +716,18 @@ DeleteManifestsOut DeviceStore::delete_manifests(const std::vector<std::pair<std
                 if (!q.row()) continue;  // not here (already deleted, or never was): fine, say so
                 size = q.col_num(0);
             }
+            if (trash_retention_ > 0) {  // keep the chunk list with the manifest: once the index rows are gone it exists nowhere else
+                std::string refs;
+                Stmt rq(db_, "SELECT chunk_id FROM manifest_refs WHERE file_id=?1 AND version=?2 ORDER BY chunk_id");
+                rq.text(1, items[i].first).num(2, items[i].second);
+                while (rq.row()) refs += rq.col_text(0) + "\n";
+                const std::string tdir = dir_ + "/trash/manifests/" + items[i].first;
+                const int64_t tt = free_trash_time(tdir, std::to_string(items[i].second), time(nullptr), {"mf", "refs"});
+                gone_when[i] = tt;
+                std::string rp = tdir + "/" + std::to_string(items[i].second) + "." + std::to_string(tt) + ".refs";
+                int e = durable_write(rp, std::vector<uint8_t>(refs.begin(), refs.end()));
+                if (e) return fail(e, std::string("cannot keep the chunk list in the trash: ") + strerror(e));
+            }
             Stmt r(db_, "DELETE FROM manifest_refs WHERE file_id=?1 AND version=?2");
             Stmt d(db_, "DELETE FROM refs_done WHERE file_id=?1 AND version=?2");
             Stmt m(db_, "DELETE FROM manifests WHERE file_id=?1 AND version=?2");
@@ -709,6 +739,8 @@ DeleteManifestsOut DeviceStore::delete_manifests(const std::vector<std::pair<std
             out.deleted[i] = 1;
             any = true;
             gone_paths.push_back(manifest_path(items[i].first, items[i].second));
+            gone_items.push_back(items[i]);
+            moved_when.push_back(gone_when[i]);
         }
         if (any) {
             seq++;
@@ -720,13 +752,221 @@ DeleteManifestsOut DeviceStore::delete_manifests(const std::vector<std::pair<std
         if (!t.commit()) return fail(EIO, "cannot commit the deletion");
     }
     crash_point("device.delete.after_commit");  // records gone, files still there: strays, removed below or by the next sweep
-    for (const auto& p : gone_paths) {
-        unlink(p.c_str());
+    for (size_t i = 0; i < gone_paths.size(); i++) {
+        const std::string& p = gone_paths[i];
+        const auto& it = gone_items[i];
+        if (!(trash_retention_ > 0 && moved_when[i] > 0 &&
+              trash_file(p, dir_ + "/trash/manifests/" + it.first + "/" + std::to_string(it.second) + "." + std::to_string(moved_when[i]) + ".mf")))
+            unlink(p.c_str());
         std::string parent = fs::path(p).parent_path().string();
         rmdir(parent.c_str());  // only succeeds when it is empty
     }
     if (!gone_paths.empty()) sync_dir(dir_ + "/manifests");
     out.seq = seq;
+    return out;
+}
+
+// ---------------------------------------------------------------- the trash (ADR-0017)
+//
+//   <store>/trash/chunks/<chunk id>.<unix time>.blob
+//   <store>/trash/manifests/<file id>/<version>.<unix time>.mf        the manifest, as it was stored
+//   <store>/trash/manifests/<file id>/<version>.<unix time>.refs      its chunk list, one chunk id per line (the index row is gone, so it is kept
+//   here)
+// The time is when it went into the trash. Only files are kept: restoring goes through put_chunk/put_manifest like any upload.
+
+namespace {
+
+struct TrashName {
+    std::string id;  // chunk id (64 hex) or the version number
+    int64_t at = 0;
+    std::string ext;  // "blob", "mf" or "refs"
+};
+
+bool all_digits(const std::string& s) { return !s.empty() && s.size() < 19 && s.find_first_not_of("0123456789") == std::string::npos; }
+
+bool parse_trash_name(const std::string& name, TrashName* out) {
+    size_t last = name.rfind('.');
+    if (last == std::string::npos) return false;
+    std::string ext = name.substr(last + 1), rest = name.substr(0, last);
+    size_t mid = rest.rfind('.');
+    if (mid == std::string::npos) return false;
+    std::string id = rest.substr(0, mid), at = rest.substr(mid + 1);
+    if (!all_digits(at) || (ext != "blob" && ext != "mf" && ext != "refs")) return false;
+    if (ext == "blob" ? !valid_chunk_id(id) : !all_digits(id)) return false;
+    out->id = id;
+    out->at = atoll(at.c_str());
+    out->ext = ext;
+    return true;
+}
+
+template <class F>
+void each_trash_file(const std::string& trash, F fn) {  // fn(path, kind 'c'|'m', file_id, TrashName, size)
+    std::error_code ec;
+    for (auto& f : fs::directory_iterator(trash + "/chunks", ec)) {
+        TrashName tn;
+        std::error_code e2;
+        if (!f.is_regular_file(e2) || !parse_trash_name(f.path().filename().string(), &tn) || tn.ext != "blob") continue;
+        fn(f.path().string(), 'c', std::string(), tn, static_cast<uint64_t>(f.file_size(e2)));
+    }
+    for (auto& d : fs::directory_iterator(trash + "/manifests", ec)) {
+        std::error_code e2;
+        std::string fid = d.path().filename().string();
+        if (!d.is_directory(e2) || !valid_file_id(fid)) continue;
+        for (auto& f : fs::directory_iterator(d.path(), e2)) {
+            TrashName tn;
+            std::error_code e3;
+            if (!f.is_regular_file(e3) || !parse_trash_name(f.path().filename().string(), &tn) || tn.ext == "blob") continue;
+            fn(f.path().string(), 'm', fid, tn, static_cast<uint64_t>(f.file_size(e3)));
+        }
+    }
+}
+
+}  // namespace
+
+bool DeviceStore::trash_file(const std::string& from, const std::string& to) {
+    std::string parent = fs::path(to).parent_path().string();
+    if (make_dir_durable(parent) != 0) return false;
+    if (rename(from.c_str(), to.c_str()) != 0) return false;
+    sync_dir(parent);
+    sync_dir(fs::path(from).parent_path().string());
+    return true;
+}
+
+void DeviceStore::set_trash_retention(int64_t seconds) {
+    std::lock_guard<std::mutex> lk(mu_);
+    trash_retention_ = seconds < 0 ? 0 : seconds;
+}
+int64_t DeviceStore::trash_retention() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return trash_retention_;
+}
+
+TrashStats DeviceStore::trash_stats() {
+    std::lock_guard<std::mutex> lk(mu_);
+    TrashStats s;
+    each_trash_file(dir_ + "/trash", [&](const std::string&, char kind, const std::string&, const TrashName& tn, uint64_t size) {
+        if (kind == 'c') {
+            s.chunks++;
+            s.chunk_bytes += size;
+        } else if (tn.ext == "mf") {
+            s.manifests++;
+            s.manifest_bytes += size;
+        } else {
+            s.manifest_bytes += size;
+        }
+        if (s.oldest == 0 || tn.at < s.oldest) s.oldest = tn.at;
+        if (tn.at > s.newest) s.newest = tn.at;
+    });
+    return s;
+}
+
+uint64_t DeviceStore::trash_purge(int64_t now, bool everything) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (now == 0) now = time(nullptr);
+    uint64_t removed = 0;
+    std::vector<std::string> dirs;
+    each_trash_file(dir_ + "/trash", [&](const std::string& path, char kind, const std::string& fid, const TrashName& tn, uint64_t) {
+        if (!everything && now - tn.at < trash_retention_) return;
+        if (unlink(path.c_str()) == 0) removed++;
+        if (kind == 'm') dirs.push_back(dir_ + "/trash/manifests/" + fid);
+    });
+    for (const auto& d : dirs) rmdir(d.c_str());  // (only succeeds when empty)
+    if (removed) {
+        sync_dir(dir_ + "/trash/chunks");
+        sync_dir(dir_ + "/trash/manifests");
+    }
+    return removed;
+}
+
+TrashRestoreOut DeviceStore::trash_restore(int64_t newer_than_s) {
+    TrashRestoreOut out;
+    struct Item {
+        std::string path, fid;
+        TrashName tn;
+    };
+    std::vector<Item> chunks, manifests;
+    std::map<std::string, std::string> refs_of;  // "<fid>/<ver>.<at>" -> path of the .refs file
+    const int64_t cutoff = newer_than_s > 0 ? static_cast<int64_t>(time(nullptr)) - newer_than_s : 0;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        each_trash_file(dir_ + "/trash", [&](const std::string& path, char kind, const std::string& fid, const TrashName& tn, uint64_t) {
+            if (tn.at < cutoff) return;
+            if (kind == 'c')
+                chunks.push_back({path, fid, tn});
+            else if (tn.ext == "mf")
+                manifests.push_back({path, fid, tn});
+            else
+                refs_of[fid + "/" + tn.id + "." + std::to_string(tn.at)] = path;
+        });
+    }
+    std::sort(chunks.begin(), chunks.end(),
+              [](const Item& a, const Item& b) { return a.tn.at > b.tn.at; });  // newest first: if the same one was trashed twice, that one wins
+    for (const auto& c : chunks) {
+        std::vector<uint8_t> blob;
+        if (read_file(c.path, blob) != 0) {
+            out.skipped++;
+            out.notes.push_back("chunk " + c.tn.id + ": cannot read the trashed file");
+            continue;
+        }
+        if (has_chunks({c.tn.id})[0]) {  // already back (uploaded again): the trashed copy is not needed
+            out.skipped++;
+            continue;
+        }
+        PutChunkOut r = put_chunk(c.tn.id, blob, crypto::sha256_hex(blob.data(), blob.size()));
+        if (r.err) {
+            out.skipped++;
+            out.notes.push_back("chunk " + c.tn.id + ": " + r.msg);
+            continue;
+        }
+        unlink(c.path.c_str());
+        out.chunks++;
+    }
+    for (const auto& m : manifests) {
+        auto ref = refs_of.find(m.fid + "/" + m.tn.id + "." + std::to_string(m.tn.at));
+        if (ref == refs_of.end()) {
+            out.skipped++;
+            out.notes.push_back("manifest " + m.fid + " version " + m.tn.id + ": its chunk list was not kept, so it cannot be restored");
+            continue;
+        }
+        std::vector<uint8_t> blob, rl;
+        if (read_file(m.path, blob) != 0 || read_file(ref->second, rl) != 0) {
+            out.skipped++;
+            out.notes.push_back("manifest " + m.fid + " version " + m.tn.id + ": cannot read the trashed files");
+            continue;
+        }
+        std::vector<std::string> ids;
+        std::string text(rl.begin(), rl.end()), line;
+        bool bad = false;
+        for (char ch : text + "\n") {
+            if (ch != '\n') {
+                line += ch;
+                continue;
+            }
+            if (line.empty()) continue;
+            if (!valid_chunk_id(line)) bad = true;
+            ids.push_back(line);
+            line.clear();
+        }
+        if (bad) {
+            out.skipped++;
+            out.notes.push_back("manifest " + m.fid + " version " + m.tn.id + ": its saved chunk list is damaged");
+            continue;
+        }
+        int64_t version = atoll(m.tn.id.c_str());
+        PutManifestOut r = put_manifest(m.fid, version, blob, crypto::sha256_hex(blob.data(), blob.size()), ids);
+        if (r.err) {
+            out.skipped++;
+            out.notes.push_back("manifest " + m.fid + " version " + m.tn.id + ": " + r.msg);
+            continue;
+        }
+        unlink(m.path.c_str());
+        unlink(ref->second.c_str());
+        rmdir(fs::path(m.path).parent_path().c_str());
+        if (r.existed)
+            out.skipped++;
+        else
+            out.manifests++;
+    }
     return out;
 }
 
@@ -748,6 +988,11 @@ GcStatus DeviceStore::gc_status() {
         num("SELECT COALESCE(SUM(size),0) FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM manifest_refs r WHERE r.chunk_id=c.chunk_id)");
     g.manifests_deleted = num("SELECT COUNT(*) FROM gc_log WHERE kind='manifest'");
     g.chunks_deleted = num("SELECT COUNT(*) FROM gc_log WHERE kind='chunk'");
+    g.trash_retention_s = trash_retention_;
+    each_trash_file(dir_ + "/trash", [&](const std::string&, char, const std::string&, const TrashName&, uint64_t size) {
+        g.trash_files++;
+        g.trash_bytes += size;
+    });
     return g;
 }
 
@@ -820,7 +1065,13 @@ SweepOut DeviceStore::sweep(uint64_t min_age_s, size_t max_chunks, bool dry_run)
             return fail(EIO, "cannot commit the sweep");
         }
         crash_point("device.sweep.after_commit");  // records gone, files still there: strays, removed below or by the next sweep
-        for (const auto& c : cands) unlink(chunk_path(c.id).c_str());
+        for (const auto& c : cands) {  // the records are gone: keep the file in the trash for the retention period (ADR-0017), or remove it
+            std::string path = chunk_path(c.id);
+            if (trash_retention_ > 0 && trash_file(path, dir_ + "/trash/chunks/" + c.id + "." +
+                                                             std::to_string(free_trash_time(dir_ + "/trash/chunks", c.id, now, {"blob"})) + ".blob"))
+                continue;
+            unlink(path.c_str());
+        }
         sync_dir(dir_ + "/chunks");
     }
     out.chunks_left = unref_total >= out.chunks_deleted ? unref_total - out.chunks_deleted : 0;
@@ -838,7 +1089,11 @@ SweepOut DeviceStore::sweep(uint64_t min_age_s, size_t max_chunks, bool dry_run)
             if (q.row()) continue;
             struct stat st;
             if (stat(f.path().c_str(), &st) != 0 || static_cast<int64_t>(st.st_mtime) > cutoff) continue;
-            if (!dry_run) unlink(f.path().c_str());
+            if (!dry_run && !(trash_retention_ > 0 &&
+                              trash_file(f.path().string(),
+                                         dir_ + "/trash/chunks/" + name.substr(0, 64) + "." +
+                                             std::to_string(free_trash_time(dir_ + "/trash/chunks", name.substr(0, 64), now, {"blob"})) + ".blob")))
+                unlink(f.path().c_str());
             out.strays_removed++;
         }
     }
@@ -857,7 +1112,12 @@ SweepOut DeviceStore::sweep(uint64_t min_age_s, size_t max_chunks, bool dry_run)
             if (q.row()) continue;
             struct stat st;
             if (stat(f.path().c_str(), &st) != 0 || static_cast<int64_t>(st.st_mtime) > cutoff) continue;
-            if (!dry_run) unlink(f.path().c_str());
+            if (!dry_run && !(trash_retention_ > 0 &&
+                              trash_file(f.path().string(), dir_ + "/trash/manifests/" + fid + "/" + std::to_string(ver) + "." +
+                                                                std::to_string(free_trash_time(dir_ + "/trash/manifests/" + fid, std::to_string(ver),
+                                                                                               now, {"mf", "refs"})) +
+                                                                ".mf")))
+                unlink(f.path().c_str());
             out.strays_removed++;
         }
         if (!dry_run) rmdir(sub.path().c_str());

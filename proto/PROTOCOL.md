@@ -147,6 +147,10 @@ The device protocol messages of version 3 (above) then run unchanged inside the 
 
 Known answers for the whole handshake and the first frames are in `tests/channel_kat.hpp`, generated independently by `scripts/gen_channel_kat.py`.
 
+## Trash (ADR-0017)
+`GC_STATUS` replies end with `trash_files` (u64), `trash_bytes` (u64) and `trash_retention_s` (i64): files kept after deletions and for how long (0: deletions are final). A client that predates
+them stops reading before them; a client reads them only if 24 bytes remain. Nothing else in the protocol changes: restoring is done on the device, through the normal `PUT_CHUNK` and `PUT_MANIFEST` rules.
+
 ## Pairings and rights
 A paired device may hold several pairing secrets, each with a key id (section above), a label and a right to delete (ADR-0016). The client names its key id in AUTH_INIT; the device
 looks that pairing up at that moment, so a revoked secret is refused. The right is checked on `DELETE_MANIFESTS` and `SWEEP`: without it the device answers EPERM ("this pairing may not

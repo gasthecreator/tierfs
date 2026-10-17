@@ -440,6 +440,66 @@ int main(int argc, char** argv) {
     }
 
     {
+        printf("== a garbage collection can be undone from the device's trash (ADR-0017)\n");
+        World w;
+        std::string fid = w.add("big.bin", 10);
+        for (uint8_t s = 20; s < 24; s++) w.edit(fid, "big.bin", s);
+        w.later();
+        GcReport r = w.G->run(w.devs);
+        CHECK(r.decided == 3 && r.manifests_deleted() == 6 && r.chunks_swept() == 12);
+        GcStatus gs;
+        CHECK(w.da->gc_status(gs).ok() && gs.trash_retention_s == 7 * 86400 && gs.trash_files > 0 && gs.trash_bytes > 0);
+        // the files are kept on the device, outside the live store
+        CHECK(w.manifests_on(w.dir_a) == 2 && w.chunks_on(w.dir_a) == 5 && fs::exists(w.dir_a + "/trash/chunks") &&
+              fs::exists(w.dir_a + "/trash/manifests"));
+        // the operator stops the device, looks, restores, starts it again
+        w.sa.stop();
+        auto run = [&](const std::string& args) {
+            std::string cmd = std::string(getenv("TIERFS_DEVICE_SERVER") ? getenv("TIERFS_DEVICE_SERVER") : "./build/tierfs-device") + " '" +
+                              w.dir_a + "' " + args + " 2>&1";
+            FILE* f = popen(cmd.c_str(), "r");
+            std::string out;
+            char buf[512];
+            while (f && fgets(buf, sizeof buf, f)) out += buf;
+            int st = f ? pclose(f) : -1;
+            return std::make_pair(WIFEXITED(st) ? WEXITSTATUS(st) : -1, out);
+        };
+        auto listed = run("--list-trash");
+        CHECK(listed.first == 0 && has(listed.second.c_str(), "trash: 6 chunk(s)") && has(listed.second.c_str(), "3 manifest(s)") &&
+              has(listed.second.c_str(), "kept 7 day(s)"));
+        auto restored = run("--restore-trash");
+        CHECK(restored.first == 0 && has(restored.second.c_str(), "restored 6 chunk(s) and 3 manifest(s); 0 skipped"));
+        CHECK(w.manifests_on(w.dir_a) == 5 && w.chunks_on(w.dir_a) == 11);  // exactly as before the collection
+        CHECK(w.sa.start(w.dir_a));
+        for (int v = 1; v <= 5; v++) CHECK(w.listed(*w.da, fid, v) && w.intact(fid, v, *w.da));
+        CHECK(w.da->gc_status(gs).ok() && gs.trash_files == 0);
+        // emptying the trash is for good
+        CHECK(w.db->gc_status(gs).ok() && gs.trash_files > 0);
+        w.sb.stop();
+        auto emptied_b = std::make_pair(0, std::string());
+        {
+            std::string cmd = std::string(getenv("TIERFS_DEVICE_SERVER") ? getenv("TIERFS_DEVICE_SERVER") : "./build/tierfs-device") + " '" +
+                              w.dir_b + "' --empty-trash 2>&1";
+            FILE* f = popen(cmd.c_str(), "r");
+            char buf[512];
+            while (f && fgets(buf, sizeof buf, f)) emptied_b.second += buf;
+            int st = f ? pclose(f) : -1;
+            emptied_b.first = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        }
+        CHECK(emptied_b.first == 0 && has(emptied_b.second.c_str(), "emptied the trash: 12 file(s) removed for good"));
+        CHECK(!fs::exists(w.dir_b + "/trash/chunks") || fs::is_empty(w.dir_b + "/trash/chunks"));
+        // a device with --trash-days=0 deletes for good at once
+        CHECK(w.sb.start(w.dir_b, {"--allow-delete"}));
+        w.sa.stop();
+        CHECK(w.sa.start(w.dir_a, {"--trash-days=0"}));
+        w.edit(fid, "big.bin", 50);
+        w.later();
+        GcReport r2 = w.G->run(w.devs);
+        CHECK(r2.manifests_deleted() > 0 && w.da->gc_status(gs).ok() && gs.trash_retention_s == 0 && gs.trash_files == 0);
+        CHECK(w.L->fsck().empty());
+    }
+
+    {
         printf("== a device that is away keeps owing its deletions; one that comes back with a forgotten manifest is not trusted with it\n");
         World w;
         std::string fid = w.add("away.bin", 10);
