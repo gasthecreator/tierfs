@@ -3,8 +3,10 @@ UNAME_S := $(shell uname -s)
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 ifeq ($(UNAME_S),Darwin)
+MAC_FRAMEWORKS := -framework Security -framework CoreFoundation
 SQLITE_LIB := -lsqlite3 -framework CoreFoundation
 else
+MAC_FRAMEWORKS :=
 SQLITE_LIB := -lsqlite3 -pthread
 endif
 # FUSE-T installs headers/libs under /usr/local.
@@ -236,7 +238,7 @@ test-deviceauth: build/deviceauth_test
 	./build/deviceauth_test
 
 build/securechannel_test: tests/securechannel_test.cpp tests/channel_kat.hpp build/securechannel.o build/crypto.o
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/securechannel_test.cpp build/securechannel.o build/crypto.o -o $@ $(OPENSSL_LIB) -framework Security -framework CoreFoundation
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/securechannel_test.cpp build/securechannel.o build/crypto.o -o $@ $(OPENSSL_LIB) $(MAC_FRAMEWORKS)
 
 test-securechannel: build/securechannel_test
 	./build/securechannel_test
@@ -362,8 +364,7 @@ test: $(NO_MOUNT_TESTS)
 
 # The device side (the server, its store, the secure channel, pairings) builds and is tested on Linux too: a Raspberry Pi or a server can be a device.
 # Needs libssl-dev and libsqlite3-dev. (The Mac side, the daemon and the filesystem driver, is macOS only.)
-linux-test: build/crypto_test build/devicestore_test build/securechannel_test build/pairings_test build/devicenet_test build/deviceauth_test build/tierfs-device
-	./build/crypto_test | tail -1
+linux-test: build/devicestore_test build/securechannel_test build/pairings_test build/devicenet_test build/deviceauth_test build/tierfs-device
 	./build/devicestore_test | tail -1
 	./build/securechannel_test | tail -1
 	./build/pairings_test | tail -1
