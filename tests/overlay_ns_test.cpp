@@ -854,7 +854,7 @@ int main() {
             uint64_t h1 = 0, h2 = 0;
             CHECK(ov.open("/a.bin", O_RDWR, &h1) == 0 && ov.open("/a2.bin", O_RDWR, &h2) == 0);
             CHECK(ov.setlk(h1, 100, {LockType::Write, 0, 10}) == 0);
-            CHECK(ov.setlk(h2, 200, {LockType::Write, 5, 1}) == -EAGAIN);      // the other name sees the lock
+            CHECK(ov.setlk(h2, 200, {LockType::Write, 5, 1}) == -EAGAIN);  // the other name sees the lock
             CHECK(ov.setlk(h2, 200, {LockType::Write, 10, 1}) == 0);
             LockInfo lk{LockType::Write, 0, 20, 0};
             CHECK(ov.getlk(h2, 200, &lk) == 0 && lk.type == LockType::Write && lk.owner == 100);
@@ -864,20 +864,22 @@ int main() {
         // a link that fails does not move anything: the lock stays where it was
         {
             uint64_t q1 = 0, q2 = 0;
-            CHECK(ov.open("/a.bin", O_RDWR, &q1) == 0 && ov.open("/a2.bin", O_RDWR, &q2) == 0);   // (a.bin has two names here)
+            CHECK(ov.open("/a.bin", O_RDWR, &q1) == 0 && ov.open("/a2.bin", O_RDWR, &q2) == 0);  // (a.bin has two names here)
             CHECK(ov.release(q1) == 0 && ov.release(q2) == 0);
             w.make("one.bin", MiB + 3, 7);
             uint64_t o1 = 0, o2 = 0;
             CHECK(ov.open("/one.bin", O_RDWR, &o1) == 0 && ov.setlk(o1, 100, {LockType::Write, 0, 10}) == 0);
             CHECK(ov.link("/one.bin", "/nodir/x") < 0);
-            CHECK(ov.open("/one.bin", O_RDWR, &o2) == 0 && ov.setlk(o2, 200, {LockType::Write, 5, 1}) == -EAGAIN);   // still held, and seen by a new handle
+            CHECK(ov.open("/one.bin", O_RDWR, &o2) == 0 &&
+                  ov.setlk(o2, 200, {LockType::Write, 5, 1}) == -EAGAIN);  // still held, and seen by a new handle
             CHECK(ov.release(o1) == 0 && ov.release(o2) == 0 && ov.locks().count() == 0);
         }
         // a lock taken BEFORE the second name existed is carried over to the identity both names share
         {
             uint64_t k1 = 0, k2 = 0;
             w.make("lk.bin", MiB + 8, 6);
-            CHECK(ov.open("/lk.bin", O_RDWR, &k1) == 0 && ov.setlk(k1, 100, {LockType::Write, 0, 10}) == 0 && ov.flock_op(k1, 5, LockType::Read) == 0);
+            CHECK(ov.open("/lk.bin", O_RDWR, &k1) == 0 && ov.setlk(k1, 100, {LockType::Write, 0, 10}) == 0 &&
+                  ov.flock_op(k1, 5, LockType::Read) == 0);
             CHECK(ov.link("/lk.bin", "/lk2.bin") == 0 && ov.open("/lk2.bin", O_RDWR, &k2) == 0);
             CHECK(ov.setlk(k2, 200, {LockType::Write, 5, 1}) == -EAGAIN && ov.flock_op(k2, 6, LockType::Write) == -EAGAIN);
             CHECK(ov.release(k1) == 0 && ov.setlk(k2, 200, {LockType::Write, 5, 1}) == 0 && ov.release(k2) == 0 && ov.locks().count() == 0);
@@ -972,21 +974,23 @@ int main() {
         Item& a = w.make("a.bin", MiB + 5, 1);
         Item& r = w.make("r.bin", MiB + 6, 2);
         w.make("sub/x.bin", MiB + 7, 3);
-        {   // a file the ledger does not know yet: made behind the overlay's back
+        {  // a file the ledger does not know yet: made behind the overlay's back
             std::ofstream(w.path("raw.bin")) << "not yet scanned";
         }
         symlink("a.bin", w.path("link").c_str());
         // a name the ledger still has as a file, but that is a directory now: it must show the number of the directory, not of the old file
-        w.make("MixedCase.bin", 100, 5);   // (names are folded to compare: a tracked file with capitals must still be found by its listing)
+        w.make("MixedCase.bin", 100, 5);  // (names are folded to compare: a tracked file with capitals must still be found by its listing)
         w.make("ghost", 100, 4);
         fs::remove(w.path("ghost"));
         fs::create_directory(w.path("ghost"));
         Overlay ov(*w.L, *w.keys, devmap(w), cfg_for(w, 300), w.E.get());
         OvStat sa, sr, sd, sx, sl, sroot, sraw;
-        CHECK(ov.getattr("/a.bin", &sa) == 0 && ov.getattr("/r.bin", &sr) == 0 && ov.getattr("/sub", &sd) == 0 && ov.getattr("/sub/x.bin", &sx) == 0 &&
-              ov.getattr("/link", &sl) == 0 && ov.getattr("/", &sroot) == 0 && ov.getattr("/raw.bin", &sraw) == 0);
+        CHECK(ov.getattr("/a.bin", &sa) == 0 && ov.getattr("/r.bin", &sr) == 0 && ov.getattr("/sub", &sd) == 0 &&
+              ov.getattr("/sub/x.bin", &sx) == 0 && ov.getattr("/link", &sl) == 0 && ov.getattr("/", &sroot) == 0 &&
+              ov.getattr("/raw.bin", &sraw) == 0);
         // a tracked file with one name: the number of its file id
-        CHECK(sa.ino == Overlay::file_inode(a.fid) && sr.ino == Overlay::file_inode(r.fid) && sx.ino == Overlay::file_inode(w.L->get_file_by_path("/Users/me/proj/sub/x.bin")->file_id));
+        CHECK(sa.ino == Overlay::file_inode(a.fid) && sr.ino == Overlay::file_inode(r.fid) &&
+              sx.ino == Overlay::file_inode(w.L->get_file_by_path("/Users/me/proj/sub/x.bin")->file_id));
         CHECK(Overlay::file_inode(a.fid) != Overlay::file_inode(r.fid));
         // directories, links and untracked files: the number of their place in the origin
         struct stat st;
@@ -997,14 +1001,15 @@ int main() {
         // never 0 or 1, and all different
         std::set<uint64_t> all = {sa.ino, sr.ino, sd.ino, sx.ino, sl.ino, sroot.ino, sraw.ino};
         CHECK(all.size() == 7 && all.count(0) == 0 && all.count(1) == 0);
-        {   // the listing of a directory whose entries cannot be examined still gives each a number, and the same one every time
+        {  // the listing of a directory whose entries cannot be examined still gives each a number, and the same one every time
             fs::create_directory(w.path("noaccess"));
             std::ofstream(w.path("noaccess/f1")) << "x";
             std::ofstream(w.path("noaccess/f2")) << "x";
-            chmod(w.path("noaccess").c_str(), 0600);   // readable, but not searchable
+            chmod(w.path("noaccess").c_str(), 0600);  // readable, but not searchable
             std::vector<OvEntry> a1, a2;
             CHECK(ov.readdir("/noaccess", &a1) == 0 && a1.size() == 2 && ov.readdir("/noaccess", &a2) == 0 && a2.size() == 2);
-            CHECK(a1[0].ino > 1 && a1[1].ino > 1 && a1[0].ino != a1[1].ino && a1[0].ino == a2[0].ino && a1[1].ino == a2[1].ino && a1[0].kind == OvKind::Other);
+            CHECK(a1[0].ino > 1 && a1[1].ino > 1 && a1[0].ino != a1[1].ino && a1[0].ino == a2[0].ino && a1[1].ino == a2[1].ino &&
+                  a1[0].kind == OvKind::Other);
             chmod(w.path("noaccess").c_str(), 0700);
         }
         OvStat sghost;
@@ -1018,7 +1023,8 @@ int main() {
             CHECK(ov.getattr("/" + e.name, &g) == 0 && e.ino == g.ino && e.ino > 1);
         }
         CHECK(find_entry(es, "ghost") && find_entry(es, "ghost")->kind == OvKind::Dir && find_entry(es, "ghost")->ino == sghost.ino);
-        CHECK(find_entry(es, "MixedCase.bin") && find_entry(es, "MixedCase.bin")->ino == Overlay::file_inode(w.L->get_file_by_path("/Users/me/proj/MixedCase.bin")->file_id));
+        CHECK(find_entry(es, "MixedCase.bin") &&
+              find_entry(es, "MixedCase.bin")->ino == Overlay::file_inode(w.L->get_file_by_path("/Users/me/proj/MixedCase.bin")->file_id));
         CHECK(ov.readdir("/sub", &es) == 0 && es.size() == 1 && es[0].ino == sx.ino);
         // rename keeps the number (the file is the same file)
         CHECK(ov.rename("/a.bin", "/renamed.bin") == 0);
@@ -1036,9 +1042,10 @@ int main() {
         // a new Overlay (a restart) gives the same numbers
         Overlay again(*w.L, *w.keys, devmap(w), cfg_for(w, 300), w.E.get());
         OvStat s2;
-        CHECK(again.getattr("/r.bin", &s2) == 0 && s2.ino == sr.ino && again.getattr("/sub", &s2) == 0 && s2.ino == sd.ino && again.getattr("/sub/moved.bin", &s2) == 0 &&
-              s2.ino == sa.ino);
-        // hard links: every name shows the number of the place in the origin, so (device, inode) pairs compare equal, as tools such as tar and rsync expect
+        CHECK(again.getattr("/r.bin", &s2) == 0 && s2.ino == sr.ino && again.getattr("/sub", &s2) == 0 && s2.ino == sd.ino &&
+              again.getattr("/sub/moved.bin", &s2) == 0 && s2.ino == sa.ino);
+        // hard links: every name shows the number of the place in the origin, so (device, inode) pairs compare equal, as tools such as tar and rsync
+        // expect
         CHECK(ov.link("/r.bin", "/r2.bin") == 0);
         OvStat l1, l2;
         CHECK(ov.getattr("/r.bin", &l1) == 0 && ov.getattr("/r2.bin", &l2) == 0 && l1.nlink == 2 && l1.ino == l2.ino);
@@ -1050,15 +1057,18 @@ int main() {
         OvStat none;
         CHECK(ov.getattr("/nope", &none) == -ENOENT);
         // the numbers are a pure function of what they come from
-        CHECK(Overlay::file_inode("abc") == Overlay::file_inode("abc") && Overlay::file_inode("abc") != Overlay::file_inode("abd") && Overlay::file_inode("abc") > 1);
+        CHECK(Overlay::file_inode("abc") == Overlay::file_inode("abc") && Overlay::file_inode("abc") != Overlay::file_inode("abd") &&
+              Overlay::file_inode("abc") > 1);
         CHECK(Overlay::origin_inode(1, 2) == Overlay::origin_inode(1, 2) && Overlay::origin_inode(1, 2) != Overlay::origin_inode(2, 1) &&
               Overlay::origin_inode(1, 2) != Overlay::origin_inode(1, 3) && Overlay::origin_inode(0, 0) > 1);
-        CHECK(Overlay::file_inode("1:2") != Overlay::origin_inode(1, 2));   // (two kinds of source never collide by construction)
-        CHECK(Overlay::origin_inode(1, 2) != Overlay::origin_inode(2, 2) && Overlay::origin_inode(1, 23) != Overlay::origin_inode(12, 3));   // the device counts, and the two parts do not run together
+        CHECK(Overlay::file_inode("1:2") != Overlay::origin_inode(1, 2));  // (two kinds of source never collide by construction)
+        CHECK(Overlay::origin_inode(1, 2) != Overlay::origin_inode(2, 2) &&
+              Overlay::origin_inode(1, 23) != Overlay::origin_inode(12, 3));  // the device counts, and the two parts do not run together
         // the edges of the number made from a hash: eight bytes, big-endian, never 0 or 1
         CHECK(Overlay::inode_from_hash({0, 0, 0, 0, 0, 0, 0, 0}) == 2 && Overlay::inode_from_hash({0, 0, 0, 0, 0, 0, 0, 1}) == 3 &&
               Overlay::inode_from_hash({0, 0, 0, 0, 0, 0, 0, 2}) == 2 && Overlay::inode_from_hash({0, 0, 0, 0, 0, 0, 0, 3}) == 3);
-        CHECK(Overlay::inode_from_hash({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) == 0x0102030405060708ull && Overlay::inode_from_hash({0xff, 0, 0, 0, 0, 0, 0, 0}) == 0xff00000000000000ull);
+        CHECK(Overlay::inode_from_hash({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}) == 0x0102030405060708ull &&
+              Overlay::inode_from_hash({0xff, 0, 0, 0, 0, 0, 0, 0}) == 0xff00000000000000ull);
         CHECK(Overlay::inode_from_hash({0, 0, 0, 0, 0, 0, 1, 0}) == 256 && Overlay::inode_from_hash({0, 0, 0, 0, 0, 0, 0, 0xff}) == 255);
     }
 

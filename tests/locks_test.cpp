@@ -284,13 +284,15 @@ int main() {
         printf("== rekey: what a key holds moves to another key\n");
         LockTable t;
         CHECK(t.set("a", 1, {LockType::Write, 0, 10}) && t.set("a", 2, {LockType::Read, 20, 5}) && t.flock_try("a", 3, LockType::Read));
-        CHECK(t.set("b", 4, {LockType::Read, 30, 5}) && t.flock_try("b", 3, LockType::Write));   // (b already holds things; owner 3's flock on b stays what it was)
+        CHECK(t.set("b", 4, {LockType::Read, 30, 5}) &&
+              t.flock_try("b", 3, LockType::Write));  // (b already holds things; owner 3's flock on b stays what it was)
         t.rekey("a", "b");
         CHECK(!t.held("a") && t.list("a").empty());
         auto lb = t.list("b");
-        CHECK(lb.size() == 3 && lb[0].owner == 1 && lb[0].start == 0 && lb[0].len == 10 && lb[1].owner == 2 && lb[1].start == 20 && lb[2].owner == 4 && lb[2].start == 30);
-        CHECK(!t.set("b", 9, {LockType::Write, 5, 1}) && t.set("b", 9, {LockType::Write, 15, 1}));   // the moved lock is in force under the new key
-        CHECK(!t.flock_try("b", 5, LockType::Read));                                                 // owner 3 kept its exclusive flock on b
+        CHECK(lb.size() == 3 && lb[0].owner == 1 && lb[0].start == 0 && lb[0].len == 10 && lb[1].owner == 2 && lb[1].start == 20 &&
+              lb[2].owner == 4 && lb[2].start == 30);
+        CHECK(!t.set("b", 9, {LockType::Write, 5, 1}) && t.set("b", 9, {LockType::Write, 15, 1}));  // the moved lock is in force under the new key
+        CHECK(!t.flock_try("b", 5, LockType::Read));                                                // owner 3 kept its exclusive flock on b
         CHECK(t.count() == 5);
         // neighbours of one owner that now touch become one
         LockTable m;

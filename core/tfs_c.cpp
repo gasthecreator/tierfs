@@ -92,7 +92,8 @@ int tfs_readdir(tfs_ctx *c, const char *path, tfs_dir_cb cb, void *cbctx) {
         std::vector<OvEntry> es;
         int r = c->ov().readdir(path, &es);
         if (r != 0) return r;
-        for (auto& e : es) if (cb(cbctx, e.name.c_str(), kind_code(e.kind), e.remote, e.ino)) break;
+        for (auto& e : es)
+            if (cb(cbctx, e.name.c_str(), kind_code(e.kind), e.remote, e.ino)) break;
         return 0;
     });
 }

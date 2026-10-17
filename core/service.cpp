@@ -43,10 +43,10 @@ bool clean_text(const std::string& s) {
 }
 
 const std::set<std::string>& known_options() {
-    static const std::set<std::string> k = {"origin",    "prefix",      "ledger",     "keyfile",         "devices",      "control",
-                                            "maint",     "waitms",      "background", "notify",          "scan",         "cachemb",
-                                            "readahead", "gc",          "gckeep",     "gcretentiondays", "lowgb",        "criticalgb",
-                                            "lowpct",    "criticalpct", "spacecheck", "useino",  "namedattr",       "noappledouble"};
+    static const std::set<std::string> k = {"origin",    "prefix",      "ledger",     "keyfile",         "devices",   "control",
+                                            "maint",     "waitms",      "background", "notify",          "scan",      "cachemb",
+                                            "readahead", "gc",          "gckeep",     "gcretentiondays", "lowgb",     "criticalgb",
+                                            "lowpct",    "criticalpct", "spacecheck", "useino",          "namedattr", "noappledouble"};
     return k;
 }
 

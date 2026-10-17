@@ -66,7 +66,7 @@ struct OvEntry {
     std::string name;
     OvKind kind = OvKind::File;
     bool remote = false;
-    uint64_t ino = 0;   // the same number getattr gives for this name
+    uint64_t ino = 0;  // the same number getattr gives for this name
 };
 
 struct OverlayRecovery {
@@ -81,10 +81,10 @@ public:
     Overlay(Ledger& ledger, const crypto::Keys& keys, DeviceMap devices, OverlayConfig cfg, DropEngine* engine = nullptr);
     ~Overlay();
 
-    // Inode numbers (ADR-0018). A tracked file with one name has the number of its file id, so it keeps it when it is renamed, offloaded and brought back
-    // (the bytes in the origin are a different inode each time). A file with several names, a directory and anything the ledger does not track yet have
-    // the number of their place in the origin (device and inode), which is what makes hard links show one number. Never 0 or 1 (0 means "none", and 1
-    // is the root of a FUSE mount).
+    // Inode numbers (ADR-0018). A tracked file with one name has the number of its file id, so it keeps it when it is renamed, offloaded and brought
+    // back (the bytes in the origin are a different inode each time). A file with several names, a directory and anything the ledger does not track
+    // yet have the number of their place in the origin (device and inode), which is what makes hard links show one number. Never 0 or 1 (0 means
+    // "none", and 1 is the root of a FUSE mount).
     static uint64_t file_inode(const std::string& file_id);
     // The number made from the first eight bytes of a hash: big-endian, and never 0 or 1 (shifted up by two). Public so the edges can be tested.
     static uint64_t inode_from_hash(const std::vector<uint8_t>& hash);

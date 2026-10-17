@@ -40,7 +40,8 @@ public:
     // The owner closed the file: all its byte-range locks on it go (POSIX: closing any descriptor of the file releases the process's locks).
     void release_owner(const std::string& key, uint64_t owner);
 
-    // Everything held on `from` now belongs to `to` (a file got a second name: its locks move to the identity both names share). What `to` already holds stays.
+    // Everything held on `from` now belongs to `to` (a file got a second name: its locks move to the identity both names share). What `to` already
+    // holds stays.
     void rekey(const std::string& from, const std::string& to);
 
     // flock: LockType::Read is LOCK_SH, Write is LOCK_EX. False if another owner holds a conflicting lock. Unlock always succeeds.

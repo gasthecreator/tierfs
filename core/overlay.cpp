@@ -84,9 +84,7 @@ uint64_t Overlay::inode_from_hash(const std::vector<uint8_t>& h) {
 }
 
 namespace {
-uint64_t inode_hash(const std::string& s) {
-    return Overlay::inode_from_hash(crypto::sha256(reinterpret_cast<const uint8_t*>(s.data()), s.size()));
-}
+uint64_t inode_hash(const std::string& s) { return Overlay::inode_from_hash(crypto::sha256(reinterpret_cast<const uint8_t*>(s.data()), s.size())); }
 }  // namespace
 
 uint64_t Overlay::file_inode(const std::string& file_id) { return inode_hash("tfs-ino-f:" + file_id); }
@@ -107,8 +105,9 @@ int Overlay::getattr(const std::string& path, OvStat* out) {
         if (s.kind == OvKind::File) {
             if (auto f = ledger_.get_file_by_path(lp)) s.file_id = f->file_id;
         }
-        s.ino = (s.kind == OvKind::File && !s.file_id.empty() && s.nlink == 1) ? file_inode(s.file_id)
-                                                                              : origin_inode(static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino));
+        s.ino = (s.kind == OvKind::File && !s.file_id.empty() && s.nlink == 1)
+                    ? file_inode(s.file_id)
+                    : origin_inode(static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino));
         if (out) *out = s;
         return 0;
     }
@@ -137,7 +136,7 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
     if (!d) return -errno;
     std::string dirprefix = lp.empty() || lp.back() == '/' ? lp : lp + "/";
     std::vector<FileRec> under = ledger_.list_files_under(dirprefix);
-    std::map<std::string, std::string> tracked;   // folded name -> file id, for the files directly in this directory
+    std::map<std::string, std::string> tracked;  // folded name -> file id, for the files directly in this directory
     for (const auto& f : under) {
         std::string name = f.path.substr(dirprefix.size());
         if (!name.empty() && name.find('/') == std::string::npos) tracked[ledger_.fold_path(name)] = f.file_id;
@@ -155,7 +154,7 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
         oe.kind = have ? kind_of(st.st_mode) : OvKind::Other;
         auto tr = tracked.find(ledger_.fold_path(name));
         if (!have)
-            oe.ino = inode_hash("tfs-ino-n:" + dirprefix + name);   // (could not be examined: a number that is at least the same each time)
+            oe.ino = inode_hash("tfs-ino-n:" + dirprefix + name);  // (could not be examined: a number that is at least the same each time)
         else if (oe.kind == OvKind::File && tr != tracked.end() && st.st_nlink == 1)
             oe.ino = file_inode(tr->second);
         else
@@ -1052,11 +1051,11 @@ int Overlay::link(const std::string& from, const std::string& to) {
             if (need) continue;  // it was dropped meanwhile: it is remote now, bring it back and look again
         }
         int rc = ::link(sop.c_str(), dop.c_str()) == 0 ? 0 : -errno;
-        if (rc == 0 && !id.empty()) {   // the locks of the first name move to the identity both names now share
+        if (rc == 0 && !id.empty()) {  // the locks of the first name move to the identity both names now share
             auto sf = ledger_.get_file_by_path(slp);
             if (sf)
-                locks_.rekey("f:" + sf->file_id,
-                             "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino)));
+                locks_.rekey("f:" + sf->file_id, "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" +
+                                                     std::to_string(static_cast<unsigned long long>(st.st_ino)));
         }
         if (rc == 0) {
             struct stat now;
@@ -1075,14 +1074,16 @@ int Overlay::link(const std::string& from, const std::string& to) {
     return -EIO;
 }
 
-// What a lock belongs to. A file with one name: its file id (the same whether its bytes are in the origin or on the devices, and through a rename). A file with
-// several names: the place of its bytes in the origin (device and inode), which every name shares; when the second name is made the locks held under the
-// file id move there (link). One that the ledger does not track yet: its place.
+// What a lock belongs to. A file with one name: its file id (the same whether its bytes are in the origin or on the devices, and through a rename). A
+// file with several names: the place of its bytes in the origin (device and inode), which every name shares; when the second name is made the locks
+// held under the file id move there (link). One that the ledger does not track yet: its place.
 std::string Overlay::lock_key(Handle& h) {
     struct stat st;
     const bool have = h.fd >= 0 && fstat(h.fd, &st) == 0;
-    auto place = [&] { return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino)); };
-    if (have && st.st_nlink > 1) return place();   // several names: the place is what they share
+    auto place = [&] {
+        return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino));
+    };
+    if (have && st.st_nlink > 1) return place();  // several names: the place is what they share
     if (!h.file_id.empty()) return "f:" + h.file_id;
     if (have) return place();
     return "h:" + std::to_string(reinterpret_cast<uintptr_t>(&h));  // (no identity at all: a private key, so nothing conflicts)

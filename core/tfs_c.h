@@ -51,7 +51,7 @@ typedef struct tfs_fsstat {
     uint64_t block_size, blocks, blocks_free, blocks_avail, files, files_free;
 } tfs_fsstat;
 
-typedef int (*tfs_dir_cb)(void *ctx, const char *name, int kind, int remote, uint64_t ino);
+typedef int (*tfs_dir_cb)(void* ctx, const char* name, int kind, int remote, uint64_t ino);
 
 /* Creates the daemon and starts it (recovery, scan, threads). NULL with a message in err on failure. */
 tfs_ctx *tfs_open(const tfs_options *o, char *err, size_t errlen);

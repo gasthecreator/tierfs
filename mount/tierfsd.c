@@ -74,7 +74,7 @@ static int t_readlink(const char *path, char *buf, size_t size) { return tfs_rea
 
 struct dir_ctx { void *buf; fuse_fill_dir_t fill; };
 
-static int dir_cb(void *ctx, const char *name, int kind, int remote, uint64_t ino) {
+static int dir_cb(void* ctx, const char* name, int kind, int remote, uint64_t ino) {
     struct dir_ctx *d = ctx;
     struct stat st;
     (void)remote;
