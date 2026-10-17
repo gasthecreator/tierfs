@@ -51,6 +51,7 @@ static void fill_stat(struct stat *st, const tfs_stat *a) {
         break;
     }
     st->st_blocks = (blkcnt_t)((a->size + 511) / 512);
+    st->st_ino = (ino_t)a->ino; /* stable (ADR-0018); used by the kernel because of -o use_ino */
 }
 
 static int g_trace;
@@ -73,12 +74,13 @@ static int t_readlink(const char *path, char *buf, size_t size) { return tfs_rea
 
 struct dir_ctx { void *buf; fuse_fill_dir_t fill; };
 
-static int dir_cb(void *ctx, const char *name, int kind, int remote) {
+static int dir_cb(void *ctx, const char *name, int kind, int remote, uint64_t ino) {
     struct dir_ctx *d = ctx;
     struct stat st;
     (void)remote;
     memset(&st, 0, sizeof st);
     st.st_mode = kind == 0 ? S_IFDIR : kind == 2 ? S_IFLNK : S_IFREG;
+    st.st_ino = (ino_t)ino;
     return d->fill(d->buf, name, &st, 0) != 0; /* nonzero: the buffer is full */
 }
 
@@ -276,7 +278,7 @@ static struct fuse_operations ops = {
 
 struct opts {
     char *origin, *prefix, *ledger, *keyfile, *devices, *control;
-    int maint, wait_ms, background, notify, scan, cache_mb, readahead, gc, gc_keep, gc_retention_days;
+    int maint, wait_ms, background, notify, scan, cache_mb, readahead, gc, gc_keep, gc_retention_days, use_ino;
     int low_gb, critical_gb, low_pct, critical_pct, space_check;
 };
 
@@ -294,6 +296,7 @@ static struct fuse_opt specs[] = {OPT("origin=%s", origin),
                                   OPT("scan=%d", scan),
                                   OPT("cachemb=%d", cache_mb),
                                   OPT("readahead=%d", readahead),
+                                  OPT("useino=%d", use_ino),
                                   OPT("gc=%d", gc),
                                   OPT("gckeep=%d", gc_keep),
                                   OPT("gcretentiondays=%d", gc_retention_days),
@@ -308,6 +311,7 @@ int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct opts o = {0};
     o.readahead = -1;
+    o.use_ino = 1;
     o.space_check = -1;
     o.maint = 60;
     o.background = 1;
@@ -322,6 +326,7 @@ int main(int argc, char *argv[]) {
     }
     g_trace = getenv("TIERFS_TRACE") != NULL;
     fuse_opt_add_arg(&args, "-f"); /* the daemon owns threads: never fork after they exist */
+    if (o.use_ino) fuse_opt_add_arg(&args, "-ouse_ino"); /* inode numbers come from the ledger, not from libfuse's per-lookup node ids (ADR-0018) */
     tfs_options t = {0};
     t.ledger = o.ledger; t.origin = o.origin; t.prefix = o.prefix; t.keyfile = o.keyfile; t.devices = o.devices;
     t.control = o.control; t.maint_seconds = o.maint; t.write_wait_ms = o.wait_ms; t.background = o.background;

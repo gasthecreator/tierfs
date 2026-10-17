@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <cstring>
 #include <chrono>
+#include <map>
 #include <set>
 
 #include "crashpoint.hpp"
@@ -76,6 +77,21 @@ bool Overlay::is_remote_state(const FileRec& f) {
 
 // ---------------------------------------------------------------- metadata
 
+uint64_t Overlay::inode_from_hash(const std::vector<uint8_t>& h) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8 && i < static_cast<int>(h.size()); i++) v = (v << 8) | h[static_cast<size_t>(i)];
+    return v < 2 ? v + 2 : v;
+}
+
+namespace {
+uint64_t inode_hash(const std::string& s) {
+    return Overlay::inode_from_hash(crypto::sha256(reinterpret_cast<const uint8_t*>(s.data()), s.size()));
+}
+}  // namespace
+
+uint64_t Overlay::file_inode(const std::string& file_id) { return inode_hash("tfs-ino-f:" + file_id); }
+uint64_t Overlay::origin_inode(uint64_t dev, uint64_t ino) { return inode_hash("tfs-ino-o:" + std::to_string(dev) + ":" + std::to_string(ino)); }
+
 int Overlay::getattr(const std::string& path, OvStat* out) {
     std::string op, lp, rel;
     if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
@@ -91,6 +107,8 @@ int Overlay::getattr(const std::string& path, OvStat* out) {
         if (s.kind == OvKind::File) {
             if (auto f = ledger_.get_file_by_path(lp)) s.file_id = f->file_id;
         }
+        s.ino = (s.kind == OvKind::File && !s.file_id.empty() && s.nlink == 1) ? file_inode(s.file_id)
+                                                                              : origin_inode(static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino));
         if (out) *out = s;
         return 0;
     }
@@ -106,6 +124,7 @@ int Overlay::getattr(const std::string& path, OvStat* out) {
         s.mode = f->mode & 0777;
         s.remote = true;
         s.file_id = f->file_id;
+        s.ino = file_inode(f->file_id);
         *out = s;
     }
     return 0;
@@ -116,6 +135,13 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
     if (!resolve(path, &op, &lp, &rel)) return -ENOENT;
     DIR* d = opendir(op.c_str());
     if (!d) return -errno;
+    std::string dirprefix = lp.empty() || lp.back() == '/' ? lp : lp + "/";
+    std::vector<FileRec> under = ledger_.list_files_under(dirprefix);
+    std::map<std::string, std::string> tracked;   // folded name -> file id, for the files directly in this directory
+    for (const auto& f : under) {
+        std::string name = f.path.substr(dirprefix.size());
+        if (!name.empty() && name.find('/') == std::string::npos) tracked[ledger_.fold_path(name)] = f.file_id;
+    }
     std::set<std::string> seen;
     std::vector<OvEntry> entries;
     while (struct dirent* e = ::readdir(d)) {
@@ -125,17 +151,20 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
         OvEntry oe;
         oe.name = name;
         struct stat st;
-        oe.kind = (fstatat(dirfd(d), name.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0) ? kind_of(st.st_mode) : OvKind::Other;
+        const bool have = fstatat(dirfd(d), name.c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0;
+        oe.kind = have ? kind_of(st.st_mode) : OvKind::Other;
+        auto tr = tracked.find(ledger_.fold_path(name));
+        if (!have)
+            oe.ino = inode_hash("tfs-ino-n:" + dirprefix + name);   // (could not be examined: a number that is at least the same each time)
+        else if (oe.kind == OvKind::File && tr != tracked.end() && st.st_nlink == 1)
+            oe.ino = file_inode(tr->second);
+        else
+            oe.ino = origin_inode(static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino));
         seen.insert(ledger_.fold_path(name));
         entries.push_back(std::move(oe));
     }
     closedir(d);
 
-    std::string dirprefix = lp.empty() || lp.back() == '/' ? lp : lp + "/";
-    std::vector<FileRec> under;
-    {
-        under = ledger_.list_files_under(dirprefix);
-    }
     for (const auto& f : under) {
         std::string name = f.path.substr(dirprefix.size());
         if (name.empty() || name.find('/') != std::string::npos) continue;   // deeper: belongs to a subdirectory's listing
@@ -144,6 +173,7 @@ int Overlay::readdir(const std::string& path, std::vector<OvEntry>* out) {
         oe.name = name;
         oe.kind = OvKind::File;
         oe.remote = true;
+        oe.ino = file_inode(f.file_id);
         seen.insert(ledger_.fold_path(name));
         entries.push_back(std::move(oe));
     }
@@ -1022,6 +1052,12 @@ int Overlay::link(const std::string& from, const std::string& to) {
             if (need) continue;  // it was dropped meanwhile: it is remote now, bring it back and look again
         }
         int rc = ::link(sop.c_str(), dop.c_str()) == 0 ? 0 : -errno;
+        if (rc == 0 && !id.empty()) {   // the locks of the first name move to the identity both names now share
+            auto sf = ledger_.get_file_by_path(slp);
+            if (sf)
+                locks_.rekey("f:" + sf->file_id,
+                             "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino)));
+        }
         if (rc == 0) {
             struct stat now;
             if (lstat(dop.c_str(), &now) == 0) {
@@ -1039,11 +1075,16 @@ int Overlay::link(const std::string& from, const std::string& to) {
     return -EIO;
 }
 
+// What a lock belongs to. A file with one name: its file id (the same whether its bytes are in the origin or on the devices, and through a rename). A file with
+// several names: the place of its bytes in the origin (device and inode), which every name shares; when the second name is made the locks held under the
+// file id move there (link). One that the ledger does not track yet: its place.
 std::string Overlay::lock_key(Handle& h) {
-    if (!h.file_id.empty()) return "f:" + h.file_id;
     struct stat st;
-    if (h.fd >= 0 && fstat(h.fd, &st) == 0)
-        return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino));
+    const bool have = h.fd >= 0 && fstat(h.fd, &st) == 0;
+    auto place = [&] { return "i:" + std::to_string(static_cast<long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino)); };
+    if (have && st.st_nlink > 1) return place();   // several names: the place is what they share
+    if (!h.file_id.empty()) return "f:" + h.file_id;
+    if (have) return place();
     return "h:" + std::to_string(reinterpret_cast<uintptr_t>(&h));  // (no identity at all: a private key, so nothing conflicts)
 }
 
