@@ -365,11 +365,10 @@ test: $(NO_MOUNT_TESTS)
 # The device side (the server, its store, the secure channel, pairings) builds and is tested on Linux too: a Raspberry Pi or a server can be a device.
 # Needs libssl-dev and libsqlite3-dev. (The Mac side, the daemon and the filesystem driver, is macOS only.)
 linux-test: build/devicestore_test build/securechannel_test build/pairings_test build/devicenet_test build/deviceauth_test build/tierfs-device
-	./build/devicestore_test | tail -1
-	./build/securechannel_test | tail -1
-	./build/pairings_test | tail -1
-	./build/devicenet_test | tail -1
-	./build/deviceauth_test | tail -1
+	@rc=0; for t in devicestore_test securechannel_test pairings_test devicenet_test deviceauth_test; do \
+	  echo "== $$t"; \
+	  if ./build/$$t > build/$$t.log 2>&1; then tail -1 build/$$t.log; else rc=1; echo "FAILED: $$t"; grep -E "^FAIL|runtime error|ERROR|SUMMARY" build/$$t.log | head -20; fi; \
+	done; exit $$rc
 
 .PHONY: all clean test linux-test $(NO_MOUNT_TESTS) test-tsan
 

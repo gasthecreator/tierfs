@@ -50,6 +50,7 @@ static bool failfast() {  // the mutation runner stops a test at its first failu
     } while (0)
 
 // Safe element access for assertions: a failed earlier check must not become a crash that hides it.
+static bool at(const std::vector<bool>& v, size_t i) { return i < v.size() ? v[i] : false; }   // (a vector<bool> has no elements to refer to)
 template <class T> static const T& at(const std::vector<T>& v, size_t i) { static const T dummy{}; return i < v.size() ? v[i] : dummy; }
 static bool has(const std::string& s, const char* n) { return s.find(n) != std::string::npos; }
 static std::string tmpdir() {
