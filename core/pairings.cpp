@@ -59,7 +59,7 @@ std::optional<Entry> parse_file(const std::string& path, bool primary, std::stri
     e.inode = st.st_ino;
     if (primary) {
         e.label = "primary";
-        e.allow_delete = true;   // the original single secret has always been allowed to delete: existing devices behave as before
+        e.allow_delete = true;  // the original single secret has always been allowed to delete: existing devices behave as before
     } else {
         std::string name = path.substr(path.rfind('/') + 1);
         if (name != e.key_id + ".key") return fail("the file name is not the key id of the secret inside (" + e.key_id + ".key)");
@@ -78,7 +78,7 @@ std::optional<Entry> parse_file(const std::string& path, bool primary, std::stri
             } else if (k == "created" && !v.empty() && v.find_first_not_of("0123456789") == std::string::npos && v.size() < 18) {
                 e.created = atoll(v.c_str());
             } else {
-                return fail("unrecognised line '" + line.substr(0, 40) + "'");   // a typo must not silently change what a Mac may do
+                return fail("unrecognised line '" + line.substr(0, 40) + "'");  // a typo must not silently change what a Mac may do
             }
         }
         if (!saw_label || !saw_delete) return fail("needs both a label= and a delete= line");
@@ -139,23 +139,27 @@ std::vector<Entry> list(const std::string& store, std::vector<std::string>* prob
         std::string path = store + "/pairing.key";
         struct stat st;
         if (lstat(path.c_str(), &st) == 0) {
-            if (auto e = parse_file(path, true, &why)) add_unique(*e);
-            else note(why);
+            if (auto e = parse_file(path, true, &why))
+                add_unique(*e);
+            else
+                note(why);
         }
     }
     std::vector<std::string> names;
     if (DIR* d = opendir(dir_of(store).c_str())) {
         while (dirent* de = readdir(d)) {
             std::string n = de->d_name;
-            if (n.size() > 4 && n.compare(n.size() - 4, 4, ".key") == 0) names.push_back(n);   // (anything else in the directory is not a pairing)
+            if (n.size() > 4 && n.compare(n.size() - 4, 4, ".key") == 0) names.push_back(n);  // (anything else in the directory is not a pairing)
         }
         closedir(d);
     }
     std::sort(names.begin(), names.end());
     for (const auto& n : names) {
         std::string why;
-        if (auto e = parse_file(dir_of(store) + "/" + n, false, &why)) add_unique(*e);
-        else note(why);
+        if (auto e = parse_file(dir_of(store) + "/" + n, false, &why))
+            add_unique(*e);
+        else
+            note(why);
     }
     return out;
 }
@@ -174,7 +178,7 @@ std::optional<Entry> find(const std::string& store, const crypto::Bytes& key_id)
 
 std::optional<Entry> refresh(const Entry& e) {
     struct stat st;
-    if (lstat(e.file.c_str(), &st) != 0) return std::nullopt;   // revoked
+    if (lstat(e.file.c_str(), &st) != 0) return std::nullopt;  // revoked
     if (mtime_ns_of(st) == e.mtime_ns && st.st_ino == e.inode) return e;
     auto again = parse_file(e.file, e.primary, nullptr);
     if (!again || again->key_id != e.key_id) return std::nullopt;

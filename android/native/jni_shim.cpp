@@ -84,7 +84,8 @@ JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_addPairing(JNIEnv* env, j
 JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_listPairings(JNIEnv* env, jclass, jstring dir) {
     std::vector<std::string> problems;
     std::string out;
-    for (auto& e : pairing::list(to_std(env, dir), &problems)) out += e.key_id + "\t" + e.label + "\t" + (e.allow_delete ? "delete" : "nodelete") + "\n";
+    for (auto& e : pairing::list(to_std(env, dir), &problems))
+        out += e.key_id + "\t" + e.label + "\t" + (e.allow_delete ? "delete" : "nodelete") + "\n";
     for (auto& p : problems) out += "PROBLEM\t" + p + "\n";
     return env->NewStringUTF(out.c_str());
 }
@@ -95,7 +96,8 @@ JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_revokePairing(JNIEnv* env
     return env->NewStringUTF(pairing::revoke(to_std(env, dir), to_std(env, keyId), &err) ? "" : err.c_str());
 }
 
-// The key ids of every pairing (the first is the original), one per line; "" if the store is not paired yet. (Public: they are announced on the network.)
+// The key ids of every pairing (the first is the original), one per line; "" if the store is not paired yet. (Public: they are announced on the
+// network.)
 JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_keyId(JNIEnv* env, jclass, jstring dir) {
     std::string out;
     for (auto& e : pairing::list(to_std(env, dir))) out += (out.empty() ? "" : "\n") + e.key_id;

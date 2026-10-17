@@ -652,15 +652,16 @@ int main() {
         CHECK(run_device({st3, "--show-pairing-code"}, &oa) == 0);
         Bytes sec_primary = secret_from_code(oa);
         CHECK(has(oa, "label: primary") && has(oa, "may delete"));
-        CHECK(run_device({st3, "--add-pairing=Alpha Mac", "--pairing-allow-delete"}, &ob) == 0 && has(ob, "label: Alpha Mac") && has(ob, "may delete"));
+        CHECK(run_device({st3, "--add-pairing=Alpha Mac", "--pairing-allow-delete"}, &ob) == 0 && has(ob, "label: Alpha Mac") &&
+              has(ob, "may delete"));
         CHECK(run_device({st3, "--add-pairing=Beta Mac"}, &oc) == 0 && has(oc, "label: Beta Mac") && has(oc, "may not delete"));
         Bytes sec_a = secret_from_code(ob), sec_b = secret_from_code(oc);
         CHECK(sec_a.size() == 32 && sec_b.size() == 32 && sec_a != sec_b && sec_a != sec_primary && sec_b != sec_primary);
         std::string kid_a = chan::key_id_hex(sec_a), kid_b = chan::key_id_hex(sec_b), kid_p = chan::key_id_hex(sec_primary);
         CHECK(has(ob, "key id: " + kid_a) && has(oc, "key id: " + kid_b));
         struct stat sf;
-        CHECK(stat((st3 + "/pairings/" + kid_a + ".key").c_str(), &sf) == 0 && (sf.st_mode & 07777) == 0600 && stat((st3 + "/pairings").c_str(), &sf) == 0 &&
-              (sf.st_mode & 07777) == 0700);
+        CHECK(stat((st3 + "/pairings/" + kid_a + ".key").c_str(), &sf) == 0 && (sf.st_mode & 07777) == 0600 &&
+              stat((st3 + "/pairings").c_str(), &sf) == 0 && (sf.st_mode & 07777) == 0700);
         CHECK(run_device({st3, "--list-pairings"}, &ol) == 0 && has(ol, kid_p) && has(ol, kid_a + "  Alpha Mac") && has(ol, kid_b + "  Beta Mac") &&
               has(ol, "(the original pairing.key)") && !has(ol, "PROBLEM"));
         // labels and counts are checked
@@ -677,7 +678,7 @@ int main() {
         CHECK(has(read_all(multi.log), "3 PAIRING(S)"));
         DeviceClient cp("127.0.0.1", P + 10, 3000, sec_primary), ca("127.0.0.1", P + 10, 3000, sec_a), cb("127.0.0.1", P + 10, 3000, sec_b);
         DevInfo di;
-        CHECK(cp.info(di).ok() && ca.info(di).ok() && cb.info(di).ok());   // each Mac gets in with its own secret
+        CHECK(cp.info(di).ok() && ca.info(di).ok() && cb.info(di).ok());  // each Mac gets in with its own secret
         // who may delete
         std::vector<uint8_t> gone;
         GcStatus g1;
@@ -689,8 +690,8 @@ int main() {
         DevRes sw = cb.sweep(3600, 10, true, so);
         CHECK(sw.err == EPERM && has(sw.msg, "may not delete"));
         CHECK(ca.gc_status(g1).ok() && g1.deletions_allowed);
-        CHECK(cb.gc_status(g1).ok() && !g1.deletions_allowed);   // the status tells each Mac the truth about itself
-        CHECK(cb.info(di).ok());                                  // and being refused does not close its connection
+        CHECK(cb.gc_status(g1).ok() && !g1.deletions_allowed);  // the status tells each Mac the truth about itself
+        CHECK(cb.info(di).ok());                                // and being refused does not close its connection
 
         // revoking one Mac: its open connection ends at the next request, a new one is refused, the others carry on
         std::string orv;

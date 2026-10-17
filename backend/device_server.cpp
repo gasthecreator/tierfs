@@ -53,7 +53,7 @@ static int64_t g_handshake_ms = 10000;  // a peer that has not finished the hand
 struct Conn {
     int fd;
     std::unique_ptr<chan::Channel> ch;
-    std::optional<pairing::Entry> entry;   // which pairing this (paired) connection authenticated with
+    std::optional<pairing::Entry> entry;  // which pairing this (paired) connection authenticated with
     // A revoked pairing ends its connections at their next request; a changed one (its right to delete) takes effect at once.
     bool still_valid() {
         if (!entry) return true;
@@ -102,7 +102,7 @@ static void put_info(Writer& w, const DevInfo& i) {
 
 // One request. Returns false to close the connection.
 static bool handle(Conn& c, const Frame& f, Reader& r) {
-    if (!c.still_valid()) return false;   // this Mac's pairing was revoked
+    if (!c.still_valid()) return false;  // this Mac's pairing was revoked
     DeviceFaults faults = g_store->faults();
     switch (f.type) {
         case MSG_DEV_INFO: {
@@ -281,7 +281,7 @@ static void serve(int fd) {
         int first = -1;
         std::optional<pairing::Entry> picked;
         auto lookup = [&picked](const Bytes& id) -> std::optional<Bytes> {
-            picked = pairing::find(g_store_dir, id);   // read now: a Mac revoked a moment ago is refused
+            picked = pairing::find(g_store_dir, id);  // read now: a Mac revoked a moment ago is refused
             if (picked) return picked->secret;
             return std::nullopt;
         };
@@ -376,12 +376,14 @@ int main(int argc, char** argv) {
         else pos.push_back(a);
     }
     if (pos.empty()) {
-        fprintf(stderr, "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n"
-                "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | --revoke-pairing=KEYID\n",
+        fprintf(stderr,
+                "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n"
+                "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | "
+                "--revoke-pairing=KEYID\n",
                 argv[0], argv[0]);
         return 2;
     }
-    if (add_pairing || list_pairings || revoke) {   // pairing management for several Macs (ADR-0016): no server
+    if (add_pairing || list_pairings || revoke) {  // pairing management for several Macs (ADR-0016): no server
         std::string perr;
         if (add_pairing) {
             if (add_label.empty()) {
@@ -407,7 +409,8 @@ int main(int argc, char** argv) {
         std::vector<std::string> problems;
         auto all = pairing::list(pos[0], &problems);
         for (auto& e : all)
-            printf("%s  %-40s  %s%s\n", e.key_id.c_str(), e.label.c_str(), e.allow_delete ? "may delete" : "may not delete", e.primary ? "  (the original pairing.key)" : "");
+            printf("%s  %-40s  %s%s\n", e.key_id.c_str(), e.label.c_str(), e.allow_delete ? "may delete" : "may not delete",
+                   e.primary ? "  (the original pairing.key)" : "");
         if (all.empty()) printf("no pairings: this device is open (loopback only)\n");
         for (auto& pr : problems) printf("PROBLEM: %s\n", pr.c_str());
         return problems.empty() ? 0 : 1;
@@ -467,7 +470,7 @@ int main(int argc, char** argv) {
     if (!store) { fprintf(stderr, "cannot open store: %s\n", err.c_str()); return 1; }
     store->set_faults(faults);
     // Deleting is allowed only for a Mac that proved it knows the pairing secret, or when the operator says so (loopback experiments, tests).
-    store->set_deletions_allowed(g_paired || allow_delete);   // (which pairing may actually delete is decided per connection)
+    store->set_deletions_allowed(g_paired || allow_delete);  // (which pairing may actually delete is decided per connection)
     if (const char* e = getenv("TIERFS_DEVICE_MIN_SWEEP_AGE")) store->set_min_sweep_age(strtoull(e, nullptr, 10));
     g_store = store.get();
 
@@ -483,10 +486,13 @@ int main(int argc, char** argv) {
     DevInfo i = store->info();
     fprintf(stderr, "tierfs-device %s on %s:%d (epoch %llu, seq %llu, %s%s%s%s)\n", i.device_id.c_str(), bind_addr.c_str(), port,
             (unsigned long long)i.epoch, (unsigned long long)i.seq,
-            g_paired ? ("PAIRED, authenticated channel required, " + std::to_string(entries.size()) + " PAIRING(S)").c_str() : "NOT PAIRED: plaintext, loopback only",
-            (g_paired || allow_delete) ? ", deletions accepted for pairings that may delete" : "", faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
-    std::vector<std::unique_ptr<discovery::Advertiser>> announcers;  // live as long as the server: the device disappears from the network when it stops
-    if (advertise) {   // one announcement per pairing, each with its own key id, so each Mac finds the device by the key id it holds
+            g_paired ? ("PAIRED, authenticated channel required, " + std::to_string(entries.size()) + " PAIRING(S)").c_str()
+                     : "NOT PAIRED: plaintext, loopback only",
+            (g_paired || allow_delete) ? ", deletions accepted for pairings that may delete" : "",
+            faults_csv.empty() ? "" : ", FAULTS: ", faults_csv.c_str());
+    std::vector<std::unique_ptr<discovery::Advertiser>>
+        announcers;   // live as long as the server: the device disappears from the network when it stops
+    if (advertise) {  // one announcement per pairing, each with its own key id, so each Mac finds the device by the key id it holds
         bool first = true;
         for (auto& e : entries) {
             discovery::Advert ad;

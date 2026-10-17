@@ -134,7 +134,8 @@ public final class MainActivity extends Activity {
             toggle.setText(running ? "Switch off" : "Switch on");
             portField.setEnabled(!running);
             StringBuilder d = new StringBuilder();
-            d.append(kid.isEmpty() ? "Not paired yet: switching on creates the pairing code.\n" : count + " Mac pairing(s); the original's key id: " + kid + "\n");
+            d.append(kid.isEmpty() ? "Not paired yet: switching on creates the pairing code.\n"
+                                   : count + " Mac pairing(s); the original's key id: " + kid + "\n");
             d.append("Stores encrypted chunks in:\n").append(dir).append("\n");
             d.append("Free: ").append(new File(dir).getParentFile().getUsableSpace() / (1024 * 1024)).append(" MiB\n");
             String addr = addresses();
@@ -195,9 +196,10 @@ public final class MainActivity extends Activity {
         box.addView(name);
         box.addView(del);
         new AlertDialog.Builder(this)
-                .setTitle("Add another Mac")
-                .setView(box)
-                .setPositiveButton("Make a pairing code", (d, w) -> {
+            .setTitle("Add another Mac")
+            .setView(box)
+            .setPositiveButton("Make a pairing code",
+                (d, w) -> {
                     String r = Native.addPairing(dir, name.getText().toString().trim(), del.isChecked());
                     if (r.startsWith("ERR")) {
                         code.setText(r);
@@ -205,11 +207,12 @@ public final class MainActivity extends Activity {
                     }
                     String[] parts = r.split("\n");
                     code.setText("Type this on the Mac called " + name.getText().toString().trim() + ":\n\n" + parts[0] + "\n\nKey id: " + parts[1]
-                            + "\n\nAnyone who has this code can act as that Mac towards this device. If the server is on, switch it off and on once so the Mac can find it by name.");
+                        + ("\n\nAnyone who has this code can act as that Mac towards this device. If the server is on, switch it off and on once so "
+                           + "the Mac can find it by name."));
                     refresh();
                 })
-                .setNegativeButton("Cancel", null)
-                .show();
+            .setNegativeButton("Cancel", null)
+            .show();
     }
 
     /** Every pairing, and a way to revoke one: the Mac is refused at once, the others carry on. */
@@ -224,25 +227,29 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < lines.length; i++) {
             String[] f = lines[i].split("\t");
             ids[i] = f[0];
-            items[i] = f[0].equals("PROBLEM") ? "Problem: " + (f.length > 1 ? f[1] : "") : f[1] + (f.length > 2 && f[2].equals("delete") ? " (may delete)" : "") + "\n" + f[0];
+            items[i] = f[0].equals("PROBLEM") ? "Problem: " + (f.length > 1 ? f[1] : "")
+                                              : f[1] + (f.length > 2 && f[2].equals("delete") ? " (may delete)" : "") + "\n" + f[0];
         }
         new AlertDialog.Builder(this)
-                .setTitle("Paired Macs (tap one to revoke it)")
-                .setItems(items, (d, which) -> {
+            .setTitle("Paired Macs (tap one to revoke it)")
+            .setItems(items,
+                (d, which) -> {
                     if (ids[which].equals("PROBLEM")) return;
                     new AlertDialog.Builder(this)
-                            .setTitle("Revoke this Mac?")
-                            .setMessage(items[which] + "\n\nIt can no longer reach this phone. Its files are not touched; it can pair again with a new code.")
-                            .setPositiveButton("Revoke", (d2, w2) -> {
+                        .setTitle("Revoke this Mac?")
+                        .setMessage(
+                            items[which] + "\n\nIt can no longer reach this phone. Its files are not touched; it can pair again with a new code.")
+                        .setPositiveButton("Revoke",
+                            (d2, w2) -> {
                                 String err = Native.revokePairing(dir, ids[which]);
                                 code.setText(err.isEmpty() ? "Revoked." : "Could not revoke: " + err);
                                 refresh();
                             })
-                            .setNegativeButton("Cancel", null)
-                            .show();
+                        .setNegativeButton("Cancel", null)
+                        .show();
                 })
-                .setNegativeButton("Close", null)
-                .show();
+            .setNegativeButton("Close", null)
+            .show();
     }
 
     private void confirmRenew() {

@@ -62,8 +62,9 @@ public final class DeviceService extends Service {
     }
 
     /**
-     * Announces the device on the local network, once per pairing (each with its own key id, so each Mac finds the device by the key id it holds). Only a
-     * locator: a Mac still has to prove it holds the pairing secret (ADR-0013). A pairing added while the server runs is announced after the next start.
+     * Announces the device on the local network, once per pairing (each with its own key id, so each Mac finds the device by the key id it holds).
+     * Only a locator: a Mac still has to prove it holds the pairing secret (ADR-0013). A pairing added while the server runs is announced after the
+     * next start.
      */
     private void announce(int port, String dir) {
         nsd = (NsdManager) getSystemService(Context.NSD_SERVICE);
@@ -78,14 +79,22 @@ public final class DeviceService extends Service {
             info.setServiceName(name.length() > 63 ? name.substring(0, 63) : name);
             info.setServiceType(SERVICE_TYPE);
             info.setPort(port);
-            info.setAttribute("v", "1");        // the record format of core/discovery.hpp
-            info.setAttribute("auth", "1");     // this device only speaks the authenticated channel
+            info.setAttribute("v", "1"); // the record format of core/discovery.hpp
+            info.setAttribute("auth", "1"); // this device only speaks the authenticated channel
             info.setAttribute("kid", f[0]);
             NsdManager.RegistrationListener l = new NsdManager.RegistrationListener() {
-                @Override public void onServiceRegistered(NsdServiceInfo i) { Log.i(TAG, "announced as " + i.getServiceName()); }
-                @Override public void onRegistrationFailed(NsdServiceInfo i, int code) { Log.w(TAG, "could not announce on the network (" + code + "); Macs need the address"); }
-                @Override public void onServiceUnregistered(NsdServiceInfo i) {}
-                @Override public void onUnregistrationFailed(NsdServiceInfo i, int code) {}
+                @Override
+                public void onServiceRegistered(NsdServiceInfo i) {
+                    Log.i(TAG, "announced as " + i.getServiceName());
+                }
+                @Override
+                public void onRegistrationFailed(NsdServiceInfo i, int code) {
+                    Log.w(TAG, "could not announce on the network (" + code + "); Macs need the address");
+                }
+                @Override
+                public void onServiceUnregistered(NsdServiceInfo i) {}
+                @Override
+                public void onUnregistrationFailed(NsdServiceInfo i, int code) {}
             };
             try {
                 nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, l);
@@ -99,7 +108,8 @@ public final class DeviceService extends Service {
     @Override
     public void onDestroy() {
         try {
-            if (nsd != null) for (NsdManager.RegistrationListener l : registrations) nsd.unregisterService(l);
+            if (nsd != null)
+                for (NsdManager.RegistrationListener l : registrations) nsd.unregisterService(l);
         } catch (RuntimeException ignored) {
         }
         if (wake != null && wake.isHeld()) wake.release();
