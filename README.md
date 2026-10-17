@@ -18,6 +18,7 @@ Written in C/C++17 on FUSE-T (no kernel extension).
   a file is moved off the Mac only after enough copies pass a fresh audit and a backup is on record.
 - **Survives crashes.** Every step of an offload, restore and recall is journaled in a ledger and finished or undone at the next start.
 - **Tells you when the disk is filling** (checked every 30 seconds) and shows, in plain words, what it would move; nothing moves until you approve that exact plan.
+- **Has a menu-bar app** that shows the state and approves exactly the plan you have read (`macos/`).
 - **Finds its devices on the network** (Bonjour) when their addresses change; an announcement is only a locator, every device still has to prove it holds the pairing secret.
 - **Runs on an Android phone** as one of the devices (the same server, built with the NDK; see [android/](android/)); so far tried only on an emulator.
 - **Recovers from the phrase alone.** `tierctl restore` rebuilds your files from the devices if the Mac is lost, without overwriting anything.
