@@ -145,7 +145,7 @@ void Daemon::refresh_mdns() {
     std::vector<discovery::Found> found;
     std::string err;
     if (cfg_.discover) {
-        found = cfg_.discover(kids);
+        found = cfg_.discover(kids, &err);
     } else {
         std::set<std::string> missing(kids.begin(), kids.end());
         found = discovery::browse(cfg_.mdns_timeout_ms, &err, [&](const discovery::Found& f) {  // done as soon as every wanted device has been seen
