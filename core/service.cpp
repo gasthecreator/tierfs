@@ -28,8 +28,8 @@ bool valid_utf8(const std::string& s) {
             if ((t & 0xC0) != 0x80) return false;
             cp = (cp << 6) | (t & 0x3F);
         }
-        if ((n == 3 && cp < 0x800) || (n == 4 && cp < 0x10000) || cp > 0x10FFFF) return false;   // not the shortest form, or too large
-        if (cp >= 0xD800 && cp <= 0xDFFF) return false;                                           // a surrogate
+        if ((n == 3 && cp < 0x800) || (n == 4 && cp < 0x10000) || cp > 0x10FFFF) return false;  // not the shortest form, or too large
+        if (cp >= 0xD800 && cp <= 0xDFFF) return false;                                         // a surrogate
         if (cp == 0xFFFE || cp == 0xFFFF) return false;
         i += n;
     }

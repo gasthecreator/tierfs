@@ -160,8 +160,9 @@ inline bool write_full(int fd, const void* buf, size_t n, int64_t deadline_ms = 
     return true;
 }
 
-// Reads exactly `len` bytes into `out`, but only commits memory as the bytes arrive: a peer that announces a 16 MiB frame and sends nothing costs us 64 KiB,
-// not 16 MiB (a few dozen such connections would otherwise be a cheap way to exhaust a small device; found by fuzzing). Same return values as read_full.
+// Reads exactly `len` bytes into `out`, but only commits memory as the bytes arrive: a peer that announces a 16 MiB frame and sends nothing costs us
+// 64 KiB, not 16 MiB (a few dozen such connections would otherwise be a cheap way to exhaust a small device; found by fuzzing). Same return values as
+// read_full.
 inline int read_grow(int fd, std::vector<uint8_t>& out, size_t len, int64_t deadline_ms) {
     out.clear();
     while (out.size() < len) {

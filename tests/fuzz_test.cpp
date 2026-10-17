@@ -1,10 +1,12 @@
-// Fuzzing of everything that reads bytes or text from outside: the wire reader, frame decoder, secure-channel handshake and sealed frames, the recovery
-// phrase, the discovery record and device entries, service options, the control socket, and the device server itself (open and paired, over real sockets).
+// Fuzzing of everything that reads bytes or text from outside: the wire reader, frame decoder, secure-channel handshake and sealed frames, the
+// recovery phrase, the discovery record and device entries, service options, the control socket, and the device server itself (open and paired, over
+// real sockets).
 //
-// This is a deterministic fuzzer, not libFuzzer (Apple's clang does not ship it): a seeded generator makes inputs from valid examples by structure-aware
-// mutation (bit flips, extreme lengths, truncation, splicing) and from nothing. It runs under ASan/UBSan, so an out-of-bounds read or an undefined shift is
-// a failure even when the program would carry on. Besides "does not crash" it checks PROPERTIES: what a parser accepts must be valid and re-encode to the same
-// thing; no single flipped bit of a sealed frame is accepted; no single typo in a recovery phrase is accepted; a server survives everything and still answers.
+// This is a deterministic fuzzer, not libFuzzer (Apple's clang does not ship it): a seeded generator makes inputs from valid examples by
+// structure-aware mutation (bit flips, extreme lengths, truncation, splicing) and from nothing. It runs under ASan/UBSan, so an out-of-bounds read or
+// an undefined shift is a failure even when the program would carry on. Besides "does not crash" it checks PROPERTIES: what a parser accepts must be
+// valid and re-encode to the same thing; no single flipped bit of a sealed frame is accepted; no single typo in a recovery phrase is accepted; a
+// server survives everything and still answers.
 //
 //   TIERFS_FUZZ_SEED=N      (default: time-based; always printed, so a failure can be replayed)
 //   TIERFS_FUZZ_SCALE=N     multiplies the iteration counts (default 1; about a minute under ASan)
@@ -63,11 +65,11 @@ static bool failfast() {
     } while (0)
 // For properties checked thousands of times: report the first few violations, count them all, print one PASS line for the lot.
 static std::atomic<int> g_prop_bad{0};
-#define PROP(cond, what)                                                                   \
-    do {                                                                                   \
-        if (!(cond)) {                                                                     \
+#define PROP(cond, what)                                                                     \
+    do {                                                                                     \
+        if (!(cond)) {                                                                       \
             if (g_prop_bad++ < 5) printf("      violated at line %d: %s\n", __LINE__, what); \
-        }                                                                                  \
+        }                                                                                    \
     } while (0)
 static void report(const char* name, long runs) {
     static time_t last = time(nullptr);
@@ -82,7 +84,10 @@ static void report(const char* name, long runs) {
 
 struct Rng {
     uint64_t s;
-    explicit Rng(uint64_t seed) : s(seed * 0x9E3779B97F4A7C15ull + 0x1234567) { next(); next(); }
+    explicit Rng(uint64_t seed) : s(seed * 0x9E3779B97F4A7C15ull + 0x1234567) {
+        next();
+        next();
+    }
     uint64_t next() {
         s ^= s << 13;
         s ^= s >> 7;
@@ -98,7 +103,8 @@ struct Rng {
     }
 };
 
-static const uint32_t EXTREME[] = {0, 1, 2, 0x7f, 0x80, 0xff, 0x100, 0xffff, 0x10000, 0x7fffffff, 0x80000000u, 0xfffffffe, 0xffffffffu, 1u << 24, (16u << 20) + 1};
+static const uint32_t EXTREME[] = {0,       1,          2,           0x7f,       0x80,        0xff,     0x100,          0xffff,
+                                   0x10000, 0x7fffffff, 0x80000000u, 0xfffffffe, 0xffffffffu, 1u << 24, (16u << 20) + 1};
 
 // One to four structure-blind mutations of a valid example.
 static Bytes mutate(Bytes v, Rng& r) {
@@ -111,7 +117,7 @@ static Bytes mutate(Bytes v, Rng& r) {
             case 1:
                 if (!v.empty()) v[r.below(v.size())] = static_cast<uint8_t>(r.next());
                 break;
-            case 2: {   // a length-like field overwritten with an extreme value
+            case 2: {  // a length-like field overwritten with an extreme value
                 if (v.size() >= 4) {
                     size_t at = r.below(v.size() - 3);
                     uint32_t x = EXTREME[r.below(sizeof EXTREME / sizeof EXTREME[0])];
@@ -121,7 +127,7 @@ static Bytes mutate(Bytes v, Rng& r) {
                 break;
             }
             case 3:
-                v.resize(r.below(v.size() + 1));   // truncation
+                v.resize(r.below(v.size() + 1));  // truncation
                 break;
             case 4: {
                 Bytes ins = r.bytes(1 + r.below(16));
@@ -135,7 +141,7 @@ static Bytes mutate(Bytes v, Rng& r) {
                 }
                 break;
             case 6:
-                if (!v.empty()) {   // splice a piece of itself somewhere else
+                if (!v.empty()) {  // splice a piece of itself somewhere else
                     size_t a = r.below(v.size()), len = 1 + r.below(std::min<size_t>(16, v.size() - a));
                     Bytes piece(v.begin() + static_cast<long>(a), v.begin() + static_cast<long>(a + len));
                     v.insert(v.begin() + static_cast<long>(r.below(v.size() + 1)), piece.begin(), piece.end());
@@ -188,7 +194,10 @@ struct Server {
         if (rc != 0) return false;
         for (int i = 0; i < 100; i++) {
             int fd = raw_connect();
-            if (fd >= 0) { close(fd); return true; }
+            if (fd >= 0) {
+                close(fd);
+                return true;
+            }
             usleep(50000);
         }
         return false;
@@ -204,8 +213,11 @@ struct Server {
         a.sin_family = AF_INET;
         a.sin_port = htons(port);
         inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
-        if (connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) { close(fd); return -1; }
-        timeval tv{0, 30000};   // never wait long for a reply: the server may rightly say nothing
+        if (connect(fd, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0) {
+            close(fd);
+            return -1;
+        }
+        timeval tv{0, 30000};  // never wait long for a reply: the server may rightly say nothing
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         return fd;
     }
@@ -226,7 +238,7 @@ static Bytes frame(uint8_t type, uint32_t id, const Bytes& payload) {
     w.bytes(payload.data(), payload.size());
     return w.b;
 }
-static void drain(int fd) {   // read and discard whatever the server says, briefly
+static void drain(int fd) {  // read and discard whatever the server says, briefly
     uint8_t buf[4096];
     for (int i = 0; i < 2; i++)
         if (read(fd, buf, sizeof buf) <= 0) break;
@@ -243,20 +255,87 @@ static void send_all(int fd, const Bytes& b) {
 // Valid request payloads of every device message, to mutate.
 static std::vector<std::pair<uint8_t, Bytes>> request_seeds() {
     std::vector<std::pair<uint8_t, Bytes>> v;
-    auto hash = [](Writer& w) { for (int i = 0; i < 32; i++) w.u8(static_cast<uint8_t>(i)); };
-    { Writer w; w.u16(DEVICE_PROTO_VERSION); v.push_back({MSG_HELLO, w.b}); }
+    auto hash = [](Writer& w) {
+        for (int i = 0; i < 32; i++) w.u8(static_cast<uint8_t>(i));
+    };
+    {
+        Writer w;
+        w.u16(DEVICE_PROTO_VERSION);
+        v.push_back({MSG_HELLO, w.b});
+    }
     v.push_back({MSG_DEV_INFO, {}});
-    { Writer w; w.str(std::string(32, 'a')); v.push_back({MSG_DEV_BIND, w.b}); }
-    { Writer w; w.u32(2); w.str(std::string(64, 'a')); w.str(std::string(64, 'b')); v.push_back({MSG_DEV_HAS_CHUNKS, w.b}); }
-    { Writer w; w.str(std::string(64, 'c')); hash(w); Bytes blob(100, 7); w.blob(blob.data(), blob.size()); v.push_back({MSG_DEV_PUT_CHUNK, w.b}); }
-    { Writer w; w.str(std::string(64, 'c')); v.push_back({MSG_DEV_GET_CHUNK, w.b}); }
-    { Writer w; w.str(std::string(32, 'f')); w.i64(1); hash(w); Bytes blob(60, 9); w.blob(blob.data(), blob.size()); w.u32(1); w.str(std::string(64, 'c')); v.push_back({MSG_DEV_PUT_MANIFEST, w.b}); }
-    { Writer w; w.str(std::string(32, 'f')); w.i64(1); v.push_back({MSG_DEV_GET_MANIFEST, w.b}); }
-    { Writer w; w.u64(0); w.u32(100); v.push_back({MSG_DEV_LIST_MANIFESTS, w.b}); }
-    { Writer w; w.u32(1); w.u8(0); w.str(std::string(64, 'c')); w.i64(0); for (int i = 0; i < 32; i++) w.u8(1); v.push_back({MSG_DEV_AUDIT, w.b}); }
-    { Writer w; w.u32(1); w.str(std::string(32, 'f')); w.i64(1); v.push_back({MSG_DEV_DELETE_MANIFESTS, w.b}); }
+    {
+        Writer w;
+        w.str(std::string(32, 'a'));
+        v.push_back({MSG_DEV_BIND, w.b});
+    }
+    {
+        Writer w;
+        w.u32(2);
+        w.str(std::string(64, 'a'));
+        w.str(std::string(64, 'b'));
+        v.push_back({MSG_DEV_HAS_CHUNKS, w.b});
+    }
+    {
+        Writer w;
+        w.str(std::string(64, 'c'));
+        hash(w);
+        Bytes blob(100, 7);
+        w.blob(blob.data(), blob.size());
+        v.push_back({MSG_DEV_PUT_CHUNK, w.b});
+    }
+    {
+        Writer w;
+        w.str(std::string(64, 'c'));
+        v.push_back({MSG_DEV_GET_CHUNK, w.b});
+    }
+    {
+        Writer w;
+        w.str(std::string(32, 'f'));
+        w.i64(1);
+        hash(w);
+        Bytes blob(60, 9);
+        w.blob(blob.data(), blob.size());
+        w.u32(1);
+        w.str(std::string(64, 'c'));
+        v.push_back({MSG_DEV_PUT_MANIFEST, w.b});
+    }
+    {
+        Writer w;
+        w.str(std::string(32, 'f'));
+        w.i64(1);
+        v.push_back({MSG_DEV_GET_MANIFEST, w.b});
+    }
+    {
+        Writer w;
+        w.u64(0);
+        w.u32(100);
+        v.push_back({MSG_DEV_LIST_MANIFESTS, w.b});
+    }
+    {
+        Writer w;
+        w.u32(1);
+        w.u8(0);
+        w.str(std::string(64, 'c'));
+        w.i64(0);
+        for (int i = 0; i < 32; i++) w.u8(1);
+        v.push_back({MSG_DEV_AUDIT, w.b});
+    }
+    {
+        Writer w;
+        w.u32(1);
+        w.str(std::string(32, 'f'));
+        w.i64(1);
+        v.push_back({MSG_DEV_DELETE_MANIFESTS, w.b});
+    }
     v.push_back({MSG_DEV_GC_STATUS, {}});
-    { Writer w; w.u64(3600); w.u32(10); w.u8(1); v.push_back({MSG_DEV_SWEEP, w.b}); }
+    {
+        Writer w;
+        w.u64(3600);
+        w.u32(10);
+        w.u8(1);
+        v.push_back({MSG_DEV_SWEEP, w.b});
+    }
     return v;
 }
 
@@ -277,14 +356,29 @@ int main() {
             try {
                 for (int op = 0; op < 24; op++) {
                     switch (r.below(8)) {
-                        case 0: rd.u8(); break;
-                        case 1: rd.u16(); break;
-                        case 2: rd.u32(); break;
-                        case 3: rd.u64(); break;
-                        case 4: rd.str(); break;
-                        case 5: rd.blob(r.chance(50) ? 64 : (1u << 20)); break;
-                        case 6: rd.i64(); break;
-                        default: rd.need(r.below(100));
+                        case 0:
+                            rd.u8();
+                            break;
+                        case 1:
+                            rd.u16();
+                            break;
+                        case 2:
+                            rd.u32();
+                            break;
+                        case 3:
+                            rd.u64();
+                            break;
+                        case 4:
+                            rd.str();
+                            break;
+                        case 5:
+                            rd.blob(r.chance(50) ? 64 : (1u << 20));
+                            break;
+                        case 6:
+                            rd.i64();
+                            break;
+                        default:
+                            rd.need(r.below(100));
                     }
                     PROP(rd.pos <= rd.n, "the reader moved past the end");
                 }
@@ -307,11 +401,14 @@ int main() {
             close(sv[0]);
             close(sv[1]);
         }
-        {   // the peer goes away part-way: an error, not a short buffer; away at the start: a clean 0
+        {  // the peer goes away part-way: an error, not a short buffer; away at the start: a clean 0
             int sv[2];
             CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
             Bytes part = r.bytes(70000);
-            std::thread w([&] { send_all(sv[0], part); close(sv[0]); });   // (a socket holds far less than 70000 bytes: it needs a reader to finish)
+            std::thread w([&] {
+                send_all(sv[0], part);
+                close(sv[0]);
+            });  // (a socket holds far less than 70000 bytes: it needs a reader to finish)
             std::vector<uint8_t> got;
             errno = 0;
             CHECK(read_grow(sv[1], got, 100000, now_ms() + 5000) == -1 && errno == ECONNRESET);
@@ -339,7 +436,7 @@ int main() {
             Bytes in = r.chance(50) ? r.bytes(r.below(64)) : mutate(frame(MSG_DEV_PUT_CHUNK, 7, r.bytes(r.below(40))), r);
             if (in.size() > 60000) in.resize(60000);
             send_all(sv[0], in);
-            close(sv[0]);   // EOF after the bytes: a short frame must end the read, not wait
+            close(sv[0]);  // EOF after the bytes: a short frame must end the read, not wait
             Frame f;
             int rc = recv_frame(sv[1], f, now_ms() + 2000);
             PROP(rc == 1 || rc == 0 || rc == -1, "odd result");
@@ -364,7 +461,8 @@ int main() {
                 PROP(!a.paired || !a.key_id.empty(), "accepted a paired device without a key id");
                 Bytes again = discovery::encode_txt(a);
                 discovery::Advert b;
-                PROP(!again.empty() && discovery::parse_txt(again.data(), again.size(), &b) && b.key_id == a.key_id && b.paired == a.paired, "does not round-trip");
+                PROP(!again.empty() && discovery::parse_txt(again.data(), again.size(), &b) && b.key_id == a.key_id && b.paired == a.paired,
+                     "does not round-trip");
             }
             std::string spec = r.chance(25) ? std::string("mdns:") + rtext(r, r.below(30)) : mutate_text("mdns:kitchen-pi@0123456789abcdef", r);
             std::string err;
@@ -386,7 +484,8 @@ int main() {
                 f.paired = r.chance(60);
                 found.push_back(f);
             }
-            if (auto p = discovery::pick(found, "0123456789abcdef")) PROP(p->paired && p->key_id == "0123456789abcdef" && !p->host.empty() && p->port != 0, "picked a device it must not");
+            if (auto p = discovery::pick(found, "0123456789abcdef"))
+                PROP(p->paired && p->key_id == "0123456789abcdef" && !p->host.empty() && p->port != 0, "picked a device it must not");
             std::string nm = discovery::instance_name_from_host(rtext(r, r.below(100)));
             PROP(discovery::valid_instance_name(nm), "made an invalid instance name");
         }
@@ -419,7 +518,9 @@ int main() {
             for (int t = 0; t < 40; t++, runs++) {
                 std::string junk = r.chance(50) ? mutate_text(phrase, r) : rtext(r, r.below(120));
                 auto got = crypto::decode_recovery(junk, &err);
-                if (got) PROP(junk.find_first_not_of("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789- \t\r\nabcdefghijklmnopqrstuvwxyzOIL") == std::string::npos, "accepted stray characters");
+                if (got)
+                    PROP(junk.find_first_not_of("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789- \t\r\nabcdefghijklmnopqrstuvwxyzOIL") == std::string::npos,
+                         "accepted stray characters");
             }
         }
         report("recovery phrase", runs);
@@ -449,7 +550,8 @@ int main() {
                 PROP(!sh.on_finish(r.bytes(r.below(100))), "finished a handshake that never started");
             }
         }
-        // sealed frames: every single bit flip of the whole wire form is refused (a fresh session pair each time: opening a bad frame kills a session)
+        // sealed frames: every single bit flip of the whole wire form is refused (a fresh session pair each time: opening a bad frame kills a
+        // session)
         {
             auto pair = [&](std::optional<chan::Session>& client, std::optional<chan::Session>& server) {
                 chan::ClientHandshake ch(psk);
@@ -468,10 +570,14 @@ int main() {
                 Bytes wire0 = c0->seal(MSG_DEV_INFO, 10 + msg, payload);
                 CHECK(!wire0.empty());
                 Frame ok;
-                CHECK(s0->open(wire0.data(), wire0.data() + 4, wire0.size() - 4, ok) && ok.type == MSG_DEV_INFO && ok.id == static_cast<uint32_t>(10 + msg) && ok.payload == payload);
+                CHECK(s0->open(wire0.data(), wire0.data() + 4, wire0.size() - 4, ok) && ok.type == MSG_DEV_INFO &&
+                      ok.id == static_cast<uint32_t>(10 + msg) && ok.payload == payload);
                 for (size_t bit = 0; bit < wire0.size() * 8 && flipped < 800 * scale; bit++, flipped++, runs++) {
                     std::optional<chan::Session> c, s;
-                    if (!pair(c, s)) { PROP(false, "could not set up a session"); continue; }
+                    if (!pair(c, s)) {
+                        PROP(false, "could not set up a session");
+                        continue;
+                    }
                     Bytes w = c->seal(MSG_DEV_INFO, 10 + msg, payload);
                     w[bit / 8] ^= static_cast<uint8_t>(1u << (bit % 8));
                     Frame out;
@@ -483,11 +589,11 @@ int main() {
             CHECK(pair(c, s));
             Bytes one = c->seal(MSG_DEV_INFO, 1, {1}), two = c->seal(MSG_DEV_INFO, 2, {2});
             Frame f;
-            CHECK(!s->open(two.data(), two.data() + 4, two.size() - 4, f));   // out of order
+            CHECK(!s->open(two.data(), two.data() + 4, two.size() - 4, f));  // out of order
             std::optional<chan::Session> c2, s2;
             CHECK(pair(c2, s2));
             Bytes a1 = c2->seal(MSG_DEV_INFO, 1, {1});
-            CHECK(s2->open(a1.data(), a1.data() + 4, a1.size() - 4, f) && !s2->open(a1.data(), a1.data() + 4, a1.size() - 4, f));   // replayed
+            CHECK(s2->open(a1.data(), a1.data() + 4, a1.size() - 4, f) && !s2->open(a1.data(), a1.data() + 4, a1.size() - 4, f));  // replayed
             // random wire bytes on a live session
             for (int i = 0; i < 2000 * scale; i++, runs++) {
                 std::optional<chan::Session> cc, ss;
@@ -510,8 +616,10 @@ int main() {
             s.binary = r.chance(80) ? "/Users/me/tierfsd" : mutate_text("/Users/me/tierfsd", r);
             s.mountpoint = r.chance(80) ? "/Users/me/Projects" : mutate_text("/Users/me/Projects", r);
             s.log_dir = r.chance(80) ? "/Users/me/logs" : mutate_text("/Users/me/logs", r);
-            std::vector<std::pair<std::string, std::string>> o = {{"origin", "/Users/me/.tierfs/real"}, {"prefix", "/Users/me/Projects/"},
-                                                                   {"ledger", "/Users/me/.tierfs/ledger"}, {"keyfile", "keychain"}};
+            std::vector<std::pair<std::string, std::string>> o = {{"origin", "/Users/me/.tierfs/real"},
+                                                                  {"prefix", "/Users/me/Projects/"},
+                                                                  {"ledger", "/Users/me/.tierfs/ledger"},
+                                                                  {"keyfile", "keychain"}};
             for (auto& kv : o) {
                 if (r.chance(15)) kv.second = mutate_text(kv.second, r);
                 if (r.chance(5)) kv.first = mutate_text(kv.first, r);
@@ -531,7 +639,9 @@ int main() {
                         std::string hex;
                         for (unsigned char ch : s.name + "|" + s.binary + "|" + s.mountpoint + "|" + s.log_dir)
                             hex += (ch >= 0x20 && ch < 0x7f) ? std::string(1, static_cast<char>(ch)) : "\\x" + std::to_string(ch);
-                        for (auto& kv : s.options) for (unsigned char ch : kv.first + "=" + kv.second) hex += (ch >= 0x20 && ch < 0x7f) ? std::string(1, static_cast<char>(ch)) : "\\x" + std::to_string(ch);
+                        for (auto& kv : s.options)
+                            for (unsigned char ch : kv.first + "=" + kv.second)
+                                hex += (ch >= 0x20 && ch < 0x7f) ? std::string(1, static_cast<char>(ch)) : "\\x" + std::to_string(ch);
                         printf("      plist rejected for: %s\n", hex.c_str());
                     }
                     PROP(lint_ok, "the system's plist parser rejects a validated plist");
@@ -570,18 +680,29 @@ int main() {
         auto d = Daemon::create(c, &err);
         CHECK(d && d->start(&err));
         if (d) {
-            const char* verbs[] = {"status", "scan", "replicate", "offload", "hydrate", "undelete", "tick", "plan", "approve", "gc-plan", "gc-run", "space", "",
-                                   "PLAN", "plan free-now", "approve 0000000000000000", "offload /", "offload /../..", "hydrate /a.bin", "offload /a.bin"};
+            const char* verbs[] = {
+                "status",    "scan",           "replicate",      "offload",       "hydrate", "undelete", "tick",          "plan",
+                "approve",   "gc-plan",        "gc-run",         "space",         "",        "PLAN",     "plan free-now", "approve 0000000000000000",
+                "offload /", "offload /../..", "hydrate /a.bin", "offload /a.bin"};
             for (int i = 0; i < 1500 * scale; i++, runs++) {
                 std::string line = verbs[r.below(sizeof verbs / sizeof verbs[0])];
                 if (r.chance(60)) {
                     line += " ";
                     switch (r.below(5)) {
-                        case 0: line += "/a.bin"; break;
-                        case 1: line += std::to_string(static_cast<int64_t>(r.next())); break;
-                        case 2: line += "1e999"; break;
-                        case 3: line += "../../etc/passwd"; break;
-                        default: line += rtext(r, r.below(40));
+                        case 0:
+                            line += "/a.bin";
+                            break;
+                        case 1:
+                            line += std::to_string(static_cast<int64_t>(r.next()));
+                            break;
+                        case 2:
+                            line += "1e999";
+                            break;
+                        case 3:
+                            line += "../../etc/passwd";
+                            break;
+                        default:
+                            line += rtext(r, r.below(40));
                     }
                 }
                 if (r.chance(20)) line = mutate_text(line, r);
@@ -609,25 +730,28 @@ int main() {
             std::atomic<long> total{0};
             std::vector<std::thread> workers;
             for (int t = 0; t < 4; t++)
-                workers.emplace_back([&, t] {   // four attackers at once, each with a generator of its own
+                workers.emplace_back([&, t] {  // four attackers at once, each with a generator of its own
                     Rng rt(seed * 31 + static_cast<uint64_t>(t) + 1);
                     for (int i = 0; i < 1500 * scale; i++, total++) {
                         int fd = srv.raw_connect();
-                        if (fd < 0) { PROP(false, "could not connect"); break; }
+                        if (fd < 0) {
+                            PROP(false, "could not connect");
+                            break;
+                        }
                         int nframes = 1 + static_cast<int>(rt.below(4));
-                        if (rt.chance(85)) send_all(fd, frame(MSG_HELLO, 1, seeds[0].second));   // mostly greeted, sometimes not
+                        if (rt.chance(85)) send_all(fd, frame(MSG_HELLO, 1, seeds[0].second));  // mostly greeted, sometimes not
                         for (int k = 0; k < nframes; k++) {
                             auto& sd = seeds[rt.below(seeds.size())];
                             Bytes p = rt.chance(10) ? rt.bytes(rt.below(200)) : mutate(sd.second, rt);
                             uint8_t type = rt.chance(10) ? static_cast<uint8_t>(rt.next()) : sd.first;
                             Bytes fr = frame(type, static_cast<uint32_t>(2 + k), p);
-                            if (rt.chance(10)) fr = mutate(fr, rt);   // and sometimes the framing itself
+                            if (rt.chance(10)) fr = mutate(fr, rt);  // and sometimes the framing itself
                             if (fr.size() > 100000) fr.resize(100000);
                             send_all(fd, fr);
                         }
                         drain(fd);
                         close(fd);
-                        if (i % 100 == 99) {   // it is still there and still right
+                        if (i % 100 == 99) {  // it is still there and still right
                             PROP(srv.alive(), "the server died");
                             int h = srv.raw_connect();
                             bool ok = false;
@@ -649,7 +773,7 @@ int main() {
             srv.stop();
         }
         std::string err;
-        auto st = DeviceStore::open(root + "/dev", &err);   // opens only if the store passes its own integrity check
+        auto st = DeviceStore::open(root + "/dev", &err);  // opens only if the store passes its own integrity check
         PROP(st != nullptr, "the store is damaged after the attack");
         report("open device", runs);
         fs::remove_all(root);
@@ -674,15 +798,18 @@ int main() {
             auto seeds = request_seeds();
             for (int i = 0; i < 1500 * scale; i++, runs++) {
                 int fd = srv.raw_connect();
-                if (fd < 0) { PROP(false, "could not connect"); break; }
+                if (fd < 0) {
+                    PROP(false, "could not connect");
+                    break;
+                }
                 switch (r.below(3)) {
                     case 0:
                         send_all(fd, r.bytes(r.below(300)));
                         break;
-                    case 1:   // an altered AUTH_INIT inside a proper frame
+                    case 1:  // an altered AUTH_INIT inside a proper frame
                         send_all(fd, frame(chan::T_AUTH_INIT, 1, mutate(seed_init, r)));
                         break;
-                    default: {   // authenticate for real, then send altered requests through the channel
+                    default: {  // authenticate for real, then send altered requests through the channel
                         std::string why;
                         auto ch = chan::connect_secure(fd, psk, now_ms() + 5000, &why);
                         PROP(ch != nullptr, "could not authenticate with the right secret");
