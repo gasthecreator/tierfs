@@ -22,7 +22,15 @@ protected and what is explicitly not.
 
 Out of scope: third-party software (FUSE-T, macOS), and attacks that require an attacker who already controls the Mac.
 
-Known limitation, not a vulnerability: the device server has no authentication and is loopback-only unless explicitly overridden.
+Also in scope: the device protocol's secure channel and pairings (`core/securechannel.*`, `core/pairings.*`, ADR-0016), the device trash
+(ADR-0017), and the Android agent (`android/`).
+
+Known limitations, not vulnerabilities (all stated in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)):
+- An *unpaired* device server speaks plaintext without a login and is loopback-only unless `--insecure-allow-network` is given. A *paired*
+  device authenticates and encrypts every connection (protocol v4); use pairing for any device reached over a network.
+- Anyone holding a pairing secret can act as that Mac until the pairing is revoked (`--revoke-pairing`).
+- Service announcements (Bonjour) are only locators and prove nothing.
+- The FUSE mount layer is unproven and the project says so: do not use it on data you cannot lose.
 
 ## Safe harbor
 Good-faith research that follows this policy will not be pursued legally.
