@@ -250,7 +250,7 @@ static bool handle(Conn& c, const Frame& f, Reader& r) {
             w.u64(g.unreferenced_bytes);
             w.u64(g.manifests_deleted);
             w.u64(g.chunks_deleted);
-            w.u64(g.trash_files);   // (added in ADR-0017; a client that predates it ignores what follows)
+            w.u64(g.trash_files);  // (added in ADR-0017; a client that predates it ignores what follows)
             w.u64(g.trash_bytes);
             w.i64(g.trash_retention_s);
             return reply(c, f.type, f.id, w);
@@ -390,12 +390,13 @@ int main(int argc, char** argv) {
         else pos.push_back(a);
     }
     if (pos.empty()) {
-        fprintf(stderr,
-                "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n"
-                "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | "
-                "--revoke-pairing=KEYID\n"
-                "       %s <store-dir> --list-trash | --restore-trash[=SECONDS] | --empty-trash   (stop the device first); --trash-days=N when serving\n",
-                argv[0], argv[0], argv[0]);
+        fprintf(
+            stderr,
+            "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n"
+            "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | "
+            "--revoke-pairing=KEYID\n"
+            "       %s <store-dir> --list-trash | --restore-trash[=SECONDS] | --empty-trash   (stop the device first); --trash-days=N when serving\n",
+            argv[0], argv[0], argv[0]);
         return 2;
     }
     if (add_pairing || list_pairings || revoke) {  // pairing management for several Macs (ADR-0016): no server
@@ -430,7 +431,7 @@ int main(int argc, char** argv) {
         for (auto& pr : problems) printf("PROBLEM: %s\n", pr.c_str());
         return problems.empty() ? 0 : 1;
     }
-    if (list_trash || restore_trash || empty_trash) {   // the trash (ADR-0017): needs the device stopped (the store is locked while it runs)
+    if (list_trash || restore_trash || empty_trash) {  // the trash (ADR-0017): needs the device stopped (the store is locked while it runs)
         std::string terr;
         auto st = DeviceStore::open(pos[0], &terr);
         if (!st) {
@@ -444,13 +445,15 @@ int main(int argc, char** argv) {
         }
         if (restore_trash) {
             TrashRestoreOut r = st->trash_restore(restore_window);
-            printf("restored %llu chunk(s) and %llu manifest(s); %llu skipped\n", (unsigned long long)r.chunks, (unsigned long long)r.manifests, (unsigned long long)r.skipped);
+            printf("restored %llu chunk(s) and %llu manifest(s); %llu skipped\n", (unsigned long long)r.chunks, (unsigned long long)r.manifests,
+                   (unsigned long long)r.skipped);
             for (auto& n : r.notes) printf("  %s\n", n.c_str());
             return r.skipped && r.chunks + r.manifests == 0 ? 1 : 0;
         }
         TrashStats ts = st->trash_stats();
-        printf("trash: %llu chunk(s) (%llu bytes), %llu manifest(s) (%llu bytes); kept %lld day(s) after deletion\n", (unsigned long long)ts.chunks, (unsigned long long)ts.chunk_bytes,
-               (unsigned long long)ts.manifests, (unsigned long long)ts.manifest_bytes, (long long)(st->trash_retention() / 86400));
+        printf("trash: %llu chunk(s) (%llu bytes), %llu manifest(s) (%llu bytes); kept %lld day(s) after deletion\n", (unsigned long long)ts.chunks,
+               (unsigned long long)ts.chunk_bytes, (unsigned long long)ts.manifests, (unsigned long long)ts.manifest_bytes,
+               (long long)(st->trash_retention() / 86400));
         if (ts.oldest) printf("oldest put there at unix time %lld, newest at %lld\n", (long long)ts.oldest, (long long)ts.newest);
         return 0;
     }
@@ -508,12 +511,13 @@ int main(int argc, char** argv) {
     auto store = DeviceStore::open(pos[0], &err);
     if (!store) { fprintf(stderr, "cannot open store: %s\n", err.c_str()); return 1; }
     store->set_faults(faults);
-    {   // how long deleted things are kept before they are really removed (ADR-0017): --trash-days, else TIERFS_DEVICE_TRASH_SECONDS (tests), else 7 days
+    {  // how long deleted things are kept before they are really removed (ADR-0017): --trash-days, else TIERFS_DEVICE_TRASH_SECONDS (tests), else 7
+       // days
         int64_t keep = DEFAULT_TRASH_RETENTION;
         if (const char* e = getenv("TIERFS_DEVICE_TRASH_SECONDS")) keep = atoll(e);
         if (trash_days >= 0) keep = std::min<int64_t>(trash_days, 3650) * 86400;
         store->set_trash_retention(keep);
-        store->trash_purge();   // what has been there long enough goes now, and again every hour
+        store->trash_purge();  // what has been there long enough goes now, and again every hour
     }
     // Deleting is allowed only for a Mac that proved it knows the pairing secret, or when the operator says so (loopback experiments, tests).
     store->set_deletions_allowed(g_paired || allow_delete);  // (which pairing may actually delete is decided per connection)

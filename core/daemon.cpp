@@ -517,11 +517,12 @@ std::string Daemon::cmd_gc(bool run) {
     GcReport r = run ? gc_->run(devs) : gc_->plan(devs);
     if (run) ledger_->set_meta("gc_last_run", std::to_string(time(nullptr)));
     std::string out = format_gc_report(r);
-    for (const auto& kv : devs) {   // a device keeps what it deleted for a while (ADR-0017): say so, so that freed space is not expected at once
+    for (const auto& kv : devs) {  // a device keeps what it deleted for a while (ADR-0017): say so, so that freed space is not expected at once
         GcStatus st;
         if (!kv.second->gc_status(st).ok() || st.trash_files == 0) continue;
-        out += "  device " + kv.first.substr(0, 8) + ": " + std::to_string(st.trash_files) + " file(s) (" + human_bytes(st.trash_bytes) + ") are in its trash and are removed for good " +
-               std::to_string(st.trash_retention_s / 86400) + " day(s) after deletion; to undo, stop the device and run: tierfs-device <store> --restore-trash\n";
+        out += "  device " + kv.first.substr(0, 8) + ": " + std::to_string(st.trash_files) + " file(s) (" + human_bytes(st.trash_bytes) +
+               ") are in its trash and are removed for good " + std::to_string(st.trash_retention_s / 86400) +
+               " day(s) after deletion; to undo, stop the device and run: tierfs-device <store> --restore-trash\n";
     }
     return out + "OK\n";
 }

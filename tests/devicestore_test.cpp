@@ -1060,7 +1060,7 @@ next_block:
         auto d = open_store(dir);
         d->set_deletions_allowed(true);
         d->set_min_sweep_age(0);
-        CHECK(d->trash_retention() == DEFAULT_TRASH_RETENTION);   // seven days unless told otherwise
+        CHECK(d->trash_retention() == DEFAULT_TRASH_RETENTION);  // seven days unless told otherwise
         d->set_trash_retention(3600);
         Sealed a = seal(pattern(1500, 71)), b = seal(pattern(1600, 72)), c = seal(pattern(1700, 73));
         for (auto* x : {&a, &b, &c}) put(*d, *x);
@@ -1090,7 +1090,7 @@ next_block:
             std::ifstream r(refs_path);
             std::string refs((std::istreambuf_iterator<char>(r)), std::istreambuf_iterator<char>());
             std::string want = a.id < b.id ? a.id + "\n" + b.id + "\n" : b.id + "\n" + a.id + "\n";
-            CHECK(got == m1 && refs == want);   // the manifest as stored, and its chunk list, one id a line, in order
+            CHECK(got == m1 && refs == want);  // the manifest as stored, and its chunk list, one id a line, in order
         }
         // a sweep keeps the chunk it removes
         SweepOut sw = d->sweep(0, 10, false);
@@ -1103,8 +1103,8 @@ next_block:
             CHECK(got == a.blob);
         }
         TrashStats ts = d->trash_stats();
-        CHECK(ts.chunks == 1 && ts.chunk_bytes == a.blob.size() && ts.manifests == 1 && ts.manifest_bytes >= m1.size() && ts.oldest >= t0 && ts.newest >= ts.oldest &&
-              ts.newest <= time(nullptr));
+        CHECK(ts.chunks == 1 && ts.chunk_bytes == a.blob.size() && ts.manifests == 1 && ts.manifest_bytes >= m1.size() && ts.oldest >= t0 &&
+              ts.newest >= ts.oldest && ts.newest <= time(nullptr));
         GcStatus gs = d->gc_status();
         CHECK(gs.trash_files == 3 && gs.trash_bytes == ts.chunk_bytes + ts.manifest_bytes && gs.trash_retention_s == 3600);
         // purging respects the retention exactly
@@ -1117,22 +1117,23 @@ next_block:
         std::vector<uint8_t> got;
         std::string msg;
         CHECK(at(d->has_chunks({a.id}), 0) && d->get_chunk(a.id, got, &msg) == 0 && got == a.blob);
-        CHECK(d->get_manifest(FID1, 1, got, &msg) == 0 && got == m1 && d->info().seq == seq_before + 1);   // a restored manifest is a new commit
+        CHECK(d->get_manifest(FID1, 1, got, &msg) == 0 && got == m1 && d->info().seq == seq_before + 1);  // a restored manifest is a new commit
         CHECK(d->trash_stats().chunks == 0 && d->trash_stats().manifests == 0 && trash_files("chunks").empty() && trash_files("manifests").empty());
         CHECK(!fs::exists(dir + "/trash/manifests/" + FID1));
         GcStatus back = d->gc_status();
-        CHECK(back.manifests_without_refs == 0 && back.unreferenced_chunks == 0);   // its chunk list is back, so a sweep takes nothing that it needs
+        CHECK(back.manifests_without_refs == 0 && back.unreferenced_chunks == 0);  // its chunk list is back, so a sweep takes nothing that it needs
         CHECK(d->sweep(0, 10, false).chunks_deleted == 0 && at(d->has_chunks({a.id}), 0) && at(d->has_chunks({b.id}), 0));
-        CHECK(d->trash_restore(0).chunks == 0);   // nothing left to restore
+        CHECK(d->trash_restore(0).chunks == 0);  // nothing left to restore
 
         // the window: only what went in recently
         CHECK(d->delete_manifests({{FID1, 1}}).deleted[0] == 1 && d->sweep(0, 10, false).chunks_deleted == 1);
-        for (auto& f : trash_files("chunks")) {   // pretend the chunk went in a day ago
+        for (auto& f : trash_files("chunks")) {  // pretend the chunk went in a day ago
             std::string old_name = fs::path(f).parent_path().string() + "/" + a.id + "." + std::to_string(time(nullptr) - 86400) + ".blob";
             fs::rename(f, old_name);
         }
         TrashRestoreOut win = d->trash_restore(600);
-        CHECK(win.chunks == 0 && win.manifests == 0 && !at(d->has_chunks({a.id}), 0));   // the manifest is recent but its chunk is too old; it needs the chunk
+        CHECK(win.chunks == 0 && win.manifests == 0 &&
+              !at(d->has_chunks({a.id}), 0));  // the manifest is recent but its chunk is too old; it needs the chunk
         CHECK(win.skipped == 1 && !win.notes.empty() && win.notes[0].find("not present") != std::string::npos);
         TrashRestoreOut all = d->trash_restore(2 * 86400);
         CHECK(all.chunks == 1 && all.manifests == 1 && at(d->has_chunks({a.id}), 0) && d->get_manifest(FID1, 1, got, &msg) == 0);
@@ -1144,11 +1145,13 @@ next_block:
         CHECK(dup.chunks == 0 && dup.manifests == 1 && dup.skipped == 1 && at(d->has_chunks({a.id}), 0));
 
         // the chunk list was lost or damaged: the manifest is not restored, and the reason is given
-        CHECK(d->trash_purge(0, true) > 0 && d->trash_stats().chunks == 0);   // (start from an empty trash)
+        CHECK(d->trash_purge(0, true) > 0 && d->trash_stats().chunks == 0);  // (start from an empty trash)
         CHECK(d->delete_manifests({{FID1, 1}}).deleted[0] == 1);
-        for (auto& f : trash_files("manifests")) if (f.size() > 5 && f.compare(f.size() - 5, 5, ".refs") == 0) fs::remove(f);
+        for (auto& f : trash_files("manifests"))
+            if (f.size() > 5 && f.compare(f.size() - 5, 5, ".refs") == 0) fs::remove(f);
         TrashRestoreOut norefs = d->trash_restore(0);
-        CHECK(norefs.manifests == 0 && norefs.skipped == 1 && norefs.notes.size() == 1 && norefs.notes[0].find("chunk list was not kept") != std::string::npos);
+        CHECK(norefs.manifests == 0 && norefs.skipped == 1 && norefs.notes.size() == 1 &&
+              norefs.notes[0].find("chunk list was not kept") != std::string::npos);
         for (auto& f : trash_files("manifests")) fs::remove(f);
         CHECK(d->delete_manifests({{FID2, 1}}).deleted[0] == 1);
         for (auto& f : trash_files("manifests"))
@@ -1173,7 +1176,7 @@ next_block:
         CHECK(d->trash_stats().manifests == 1);
         CHECK(d->trash_purge(time(nullptr) + 3599) == 0 && d->trash_stats().manifests == 1);
         CHECK(d->trash_purge(time(nullptr) + 3601) == 2 && d->trash_stats().manifests == 0 && !fs::exists(dir + "/trash/manifests/" + FID1));
-        CHECK(fs::exists(dir + "/trash/chunks/notes.txt"));   // still not ours, still there
+        CHECK(fs::exists(dir + "/trash/chunks/notes.txt"));  // still not ours, still there
         fs::remove_all(dir);
     }
 
@@ -1184,22 +1187,22 @@ next_block:
         d->set_deletions_allowed(true);
         d->set_min_sweep_age(0);
         d->set_trash_retention(3600);
-        const int64_t T = 1000000000;   // a fixed time long ago: names are written by hand below
+        const int64_t T = 1000000000;  // a fixed time long ago: names are written by hand below
         fs::create_directories(dir + "/trash/chunks");
         fs::create_directories(dir + "/trash/manifests/" + FID1);
         std::string c64(64, 'a'), c64b(64, 'b');
         auto make = [&](const std::string& path, const std::string& text = "x") { std::ofstream(path, std::ios::binary) << text; };
         // none of these is a trash file of ours: not counted, not restored, not purged
         std::vector<std::string> foreign = {
-            dir + "/trash/chunks/" + c64 + ".5.bak",                   // another extension
-            dir + "/trash/chunks/" + c64 + ".blob",                    // no time
-            dir + "/trash/chunks/" + c64 + "..blob",                   // an empty time
-            dir + "/trash/chunks/" + c64 + ".x5.blob",                 // a time that is not a number
-            dir + "/trash/chunks/" + c64 + "." + std::string(25, '7') + ".blob",   // a number too long to be a time
-            dir + "/trash/chunks/" + std::string(64, 'g') + ".5.blob",  // not hex
-            dir + "/trash/chunks/" + std::string(63, 'a') + ".5.blob",  // too short
+            dir + "/trash/chunks/" + c64 + ".5.bak",                              // another extension
+            dir + "/trash/chunks/" + c64 + ".blob",                               // no time
+            dir + "/trash/chunks/" + c64 + "..blob",                              // an empty time
+            dir + "/trash/chunks/" + c64 + ".x5.blob",                            // a time that is not a number
+            dir + "/trash/chunks/" + c64 + "." + std::string(25, '7') + ".blob",  // a number too long to be a time
+            dir + "/trash/chunks/" + std::string(64, 'g') + ".5.blob",            // not hex
+            dir + "/trash/chunks/" + std::string(63, 'a') + ".5.blob",            // too short
             dir + "/trash/chunks/5.blob",
-            dir + "/trash/chunks/1.5.mf",                              // a manifest file among the chunks
+            dir + "/trash/chunks/1.5.mf",  // a manifest file among the chunks
             dir + "/trash/chunks/1.5.refs",
             dir + "/trash/manifests/" + FID1 + "/" + c64 + ".5.blob",  // a chunk among the manifests
             dir + "/trash/manifests/" + FID1 + "/x.5.mf",              // a version that is not a number
@@ -1209,9 +1212,9 @@ next_block:
             dir + "/trash/manifests/" + FID1 + "/.5.mf",
         };
         for (auto& f : foreign) make(f);
-        fs::create_directories(dir + "/trash/chunks/" + c64b + ".7.blob");   // a directory with a trash file's name
+        fs::create_directories(dir + "/trash/chunks/" + c64b + ".7.blob");  // a directory with a trash file's name
         make(dir + "/trash/chunks/" + c64b + ".7.blob/inside.txt");
-        fs::create_directories(dir + "/trash/manifests/" + std::string(31, 'a'));   // not a file id
+        fs::create_directories(dir + "/trash/manifests/" + std::string(31, 'a'));  // not a file id
         make(dir + "/trash/manifests/" + std::string(31, 'a') + "/1.5.mf");
         fs::create_directories(dir + "/trash/manifests/" + std::string(32, 'G'));
         make(dir + "/trash/manifests/" + std::string(32, 'G') + "/1.5.mf");
@@ -1219,11 +1222,12 @@ next_block:
         CHECK(none.chunks == 0 && none.manifests == 0 && none.chunk_bytes == 0 && none.manifest_bytes == 0 && none.oldest == 0 && none.newest == 0);
         CHECK(d->gc_status().trash_files == 0 && d->trash_purge(T + 10000000000ll, false) == 0);
         for (auto& f : foreign) CHECK(fs::exists(f));
-        CHECK(fs::exists(dir + "/trash/chunks/" + c64b + ".7.blob/inside.txt") && fs::exists(dir + "/trash/manifests/" + std::string(31, 'a') + "/1.5.mf") &&
+        CHECK(fs::exists(dir + "/trash/chunks/" + c64b + ".7.blob/inside.txt") &&
+              fs::exists(dir + "/trash/manifests/" + std::string(31, 'a') + "/1.5.mf") &&
               fs::exists(dir + "/trash/manifests/" + std::string(32, 'G') + "/1.5.mf"));
         TrashRestoreOut nothing = d->trash_restore(0);
         CHECK(nothing.chunks == 0 && nothing.manifests == 0 && nothing.skipped == 0);
-        CHECK(d->trash_purge(0, true) == 0 && fs::exists(foreign[0]));   // not even "everything" touches what is not ours
+        CHECK(d->trash_purge(0, true) == 0 && fs::exists(foreign[0]));  // not even "everything" touches what is not ours
 
         // real ones, with times written by hand: the oldest and the newest, and the exact moment of purging
         Sealed a = seal(pattern(1500, 91)), b = seal(pattern(1600, 92));
@@ -1231,8 +1235,8 @@ next_block:
         make(dir + "/trash/chunks/" + b.id + "." + std::to_string(T + 500) + ".blob", std::string(b.blob.begin(), b.blob.end()));
         TrashStats two = d->trash_stats();
         CHECK(two.chunks == 2 && two.oldest == T && two.newest == T + 500 && two.chunk_bytes == a.blob.size() + b.blob.size());
-        CHECK(d->trash_purge(T + 3599) == 0 && d->trash_stats().chunks == 2);   // not yet
-        CHECK(d->trash_purge(T + 3600) == 1 && d->trash_stats().chunks == 1);   // exactly the retention: gone
+        CHECK(d->trash_purge(T + 3599) == 0 && d->trash_stats().chunks == 2);  // not yet
+        CHECK(d->trash_purge(T + 3600) == 1 && d->trash_stats().chunks == 1);  // exactly the retention: gone
         CHECK(d->trash_purge(T + 4099) == 0 && d->trash_stats().chunks == 1);
         CHECK(d->trash_purge(T + 4100) == 1 && d->trash_stats().chunks == 0);
         // a file that cannot be removed is not counted as removed
@@ -1249,38 +1253,42 @@ next_block:
         std::vector<uint8_t> got;
         std::string msg;
         CHECK(twice.chunks == 1 && twice.skipped == 1 && d->get_chunk(a.id, got, &msg) == 0 && got == a.blob);
-        d->trash_purge(0, true);   // (the older copy was skipped and is still there: clear it away)
+        d->trash_purge(0, true);  // (the older copy was skipped and is still there: clear it away)
         // a chunk that cannot be read is skipped, and the reason is given
         make(dir + "/trash/chunks/" + b.id + "." + std::to_string(T) + ".blob", std::string(b.blob.begin(), b.blob.end()));
         chmod((dir + "/trash/chunks/" + b.id + "." + std::to_string(T) + ".blob").c_str(), 0);
         TrashRestoreOut unread = d->trash_restore(0);
-        CHECK(unread.chunks == 0 && unread.skipped == 1 && unread.notes.size() == 1 && unread.notes[0].find("cannot read the trashed file") != std::string::npos);
+        CHECK(unread.chunks == 0 && unread.skipped == 1 && unread.notes.size() == 1 &&
+              unread.notes[0].find("cannot read the trashed file") != std::string::npos);
         chmod((dir + "/trash/chunks/" + b.id + "." + std::to_string(T) + ".blob").c_str(), 0600);
         CHECK(d->trash_restore(0).chunks == 1);
 
-        // a manifest whose saved chunk list has no final newline still restores every chunk in it; and one that was uploaded again is not counted twice
+        // a manifest whose saved chunk list has no final newline still restores every chunk in it; and one that was uploaded again is not counted
+        // twice
         Bytes mblob = pattern(300, 93);
         make(dir + "/trash/manifests/" + FID1 + "/3." + std::to_string(T) + ".mf", std::string(mblob.begin(), mblob.end()));
-        make(dir + "/trash/manifests/" + FID1 + "/3." + std::to_string(T) + ".refs", a.id + "\n" + b.id);   // (no newline at the end)
+        make(dir + "/trash/manifests/" + FID1 + "/3." + std::to_string(T) + ".refs", a.id + "\n" + b.id);  // (no newline at the end)
         TrashRestoreOut m = d->trash_restore(0);
         CHECK(m.manifests == 1 && m.skipped == 0 && d->get_manifest(FID1, 3, got, &msg) == 0 && got == mblob);
         CHECK(d->delete_manifests({{FID1, 3}}).deleted[0] == 1);
-        CHECK(d->sweep(0, 10, false).chunks_deleted == 2);   // only because the restored manifest's list had BOTH chunks, a sweep after deleting it takes both
-        CHECK(put_man(*d, FID1, 3, mblob, {a.id, b.id}).err != 0);   // (the chunks are in the trash now, so this cannot be uploaded)
+        CHECK(d->sweep(0, 10, false).chunks_deleted ==
+              2);  // only because the restored manifest's list had BOTH chunks, a sweep after deleting it takes both
+        CHECK(put_man(*d, FID1, 3, mblob, {a.id, b.id}).err != 0);  // (the chunks are in the trash now, so this cannot be uploaded)
         TrashRestoreOut back = d->trash_restore(0);
         CHECK(back.chunks == 2 && back.manifests == 1);
         CHECK(d->delete_manifests({{FID1, 3}}).deleted[0] == 1);
-        CHECK(put_man(*d, FID1, 3, mblob, {a.id, b.id}).err == 0);       // uploaded again by the Mac before anyone restores
+        CHECK(put_man(*d, FID1, 3, mblob, {a.id, b.id}).err == 0);  // uploaded again by the Mac before anyone restores
         TrashRestoreOut dup = d->trash_restore(0);
         CHECK(dup.manifests == 0 && dup.skipped == 1);
         // restoring one manifest does not take the trash of another of the same file with it
         CHECK(d->delete_manifests({{FID1, 3}}).deleted[0] == 1);
-        make(dir + "/trash/manifests/" + FID1 + "/4." + std::to_string(T) + ".mf", std::string(mblob.begin(), mblob.end()));   // (no chunk list: cannot be restored)
+        make(dir + "/trash/manifests/" + FID1 + "/4." + std::to_string(T) + ".mf",
+             std::string(mblob.begin(), mblob.end()));  // (no chunk list: cannot be restored)
         TrashRestoreOut partial = d->trash_restore(0);
         CHECK(partial.manifests == 1 && partial.skipped == 1 && fs::exists(dir + "/trash/manifests/" + FID1 + "/4." + std::to_string(T) + ".mf"));
         // a deletion that cannot keep the chunk list in the trash does not happen at all
         CHECK(put_man(*d, FID2, 1, mblob, {a.id, b.id}).err == 0);
-        chmod((dir + "/trash/manifests").c_str(), 0500);   // (nothing can be created in it, and FID2 has no directory there yet)
+        chmod((dir + "/trash/manifests").c_str(), 0500);  // (nothing can be created in it, and FID2 has no directory there yet)
         DeleteManifestsOut nokeep = d->delete_manifests({{FID2, 1}});
         CHECK(nokeep.err != 0 && has(nokeep.msg.c_str(), "cannot keep the chunk list in the trash") && d->get_manifest(FID2, 1, got, &msg) == 0);
         chmod((dir + "/trash/manifests").c_str(), 0700);
@@ -1300,9 +1308,10 @@ next_block:
         put(*d, b);
         CHECK(put_man(*d, FID1, 1, pattern(300, 83), {a.id}).err == 0);
         CHECK(d->delete_manifests({{FID1, 1}}).deleted[0] == 1 && d->sweep(0, 10, false).chunks_deleted == 2);
-        CHECK(!fs::exists(dir + "/trash") && d->trash_stats().chunks == 0 && d->gc_status().trash_files == 0 && d->gc_status().trash_retention_s == 0);
+        CHECK(!fs::exists(dir + "/trash") && d->trash_stats().chunks == 0 && d->gc_status().trash_files == 0 &&
+              d->gc_status().trash_retention_s == 0);
         d->set_trash_retention(-5);
-        CHECK(d->trash_retention() == 0);   // never negative
+        CHECK(d->trash_retention() == 0);  // never negative
         d->set_trash_retention(86400);
         CHECK(d->trash_retention() == 86400 && d->gc_status().trash_retention_s == 86400);
         // a stray (no index row) older than the age goes to the trash too, not away for good
