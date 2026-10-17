@@ -37,7 +37,7 @@ TARGETS = {
                    extra_objs=[('core/discovery.cpp', 'discovery'), ('core/keysource.cpp', 'keysource'), ('core/keychain_mac.cpp', 'keychain_mac'), ('core/scanner.cpp', 'scanner'),
                                ('core/policy.cpp', 'policy'), ('core/spaceprobe.cpp', 'spaceprobe'), ('core/overlay.cpp', 'overlay')],
                    tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
-    'tierctl': dict(mutants='tierctl_mutants', mutated='tools/tierctl.cpp', tests=['tests/discover_cli_test.py'],
+    'tierctl': dict(mutants='tierctl_mutants', mutated='tools/tierctl.cpp', tests=['tests/discover_cli_test.py', 'tests/service_cli_test.py'],
                     extra_objs=[('core/discovery.cpp', 'discovery'), ('core/service.cpp', 'service'), ('core/chunkcache.cpp', 'chunkcache'), ('core/recovery.cpp', 'recovery'),
                                 ('core/keysource.cpp', 'keysource'), ('core/keychain_mac.cpp', 'keychain_mac'), ('core/pairings.cpp', 'pairings')],
                     tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL'), ('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], mutated_tool=0,

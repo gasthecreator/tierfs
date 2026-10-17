@@ -27,6 +27,8 @@ try:
     env.pop('TIERFS_I_ACCEPT_A_REBOOT', None)
     def tc(args, extra=None):
         e = {**os.environ, **env, **(extra or {})}
+        for k, v in (extra or {}).items():
+            if v is None: e.pop(k, None)   # (None: the variable is not set at all)
         if extra is None or 'TIERFS_I_ACCEPT_A_REBOOT' not in extra: e.pop('TIERFS_I_ACCEPT_A_REBOOT', None)
         return subprocess.run([TC, 'service', *args], capture_output=True, text=True, env=e, timeout=60)
     def called():
@@ -108,6 +110,39 @@ try:
     r = tc(['uninstall', '--name', 'proj', '--agents-dir', agents])
     check('a file that is not this service\'s plist is left alone', r.returncode == 1 and os.path.exists(plist_file) and 'leaving it alone' in r.stderr)
     check('uninstall needs a sane name', tc(['uninstall', '--agents-dir', agents]).returncode == 2 and tc(['uninstall', '--name', '.x', '--agents-dir', agents]).returncode == 2)
+
+    # --- more of what the command line does
+    r = tc(['bogus', '--name', 'proj'])
+    check('an unknown action is refused with the usage', r.returncode == 2 and 'usage: tierctl service' in r.stderr)
+    r = tc(['plist', '--name'])
+    check('an option without its value says so', r.returncode == 2 and 'needs a value' in r.stderr)
+    r = tc(['plist', *base, '--bogus'])
+    check('an unknown option is named', r.returncode == 2 and 'unknown option --bogus' in r.stderr)
+    withequals = [a if not a.startswith('prefix=') else 'prefix=/Users/me/p=x/' for a in base]
+    r = tc(['plist', *withequals])
+    p2 = plistlib.loads(r.stdout.encode()) if r.returncode == 0 else {}
+    check('an = inside a value stays in the value', r.returncode == 0 and 'prefix=/Users/me/p=x/' in p2.get('ProgramArguments', [''] * 3)[2])
+    nolog = [a for i, a in enumerate(base) if a != '--log-dir' and (i == 0 or base[i - 1] != '--log-dir')]
+    r = tc(['plist', *nolog])
+    p3 = plistlib.loads(r.stdout.encode()) if r.returncode == 0 else {}
+    check('the log goes to ~/Library/Logs/tierfs by default', p3.get('StandardOutPath') == HOME + '/Library/Logs/tierfs/proj.log')
+    r = tc(['plist', *base[:base.index('--agents-dir')], *base[base.index('--agents-dir') + 2:]], {'HOME': None})
+    check('without a home directory the agents folder must be given', r.returncode == 2 and 'no home directory' in r.stderr)
+    r = tc(['plist', *base[:base.index('--agents-dir')], *base[base.index('--agents-dir') + 2:]], {'HOME': HOME})
+    check('with a home directory it is ~/Library/LaunchAgents (a plist needs no folder to exist)', r.returncode == 0)
+    check('uninstall refuses a name with a slash', tc(['uninstall', '--name', 'a/b', '--agents-dir', agents]).returncode == 2 and tc(['status', '--name', 'a/b', '--agents-dir', agents]).returncode == 2)
+    r = tc(['install', *[a if a != tierfsd else d for a in base]])
+    check('a directory is not a binary', r.returncode == 1 and 'not an executable' in r.stderr)
+    # installing again: nothing is rewritten, even with --force when the content is the same
+    os.makedirs(agents, exist_ok=True)
+    if os.path.exists(plist_file): os.remove(plist_file)
+    tc(['install', *base])
+    before = os.stat(plist_file).st_mtime_ns
+    import time; time.sleep(0.05)
+    r = tc(['install', *base])
+    check('the same plist is left untouched (not even rewritten)', r.returncode == 0 and r.stdout.count('installed') == 1 and 'already installed' in r.stdout and os.stat(plist_file).st_mtime_ns == before)
+    r = tc(['install', *base, '--force'])
+    check('--force with the same content says nothing and writes nothing', r.returncode == 0 and 'already installed' not in r.stdout and 'installed' not in r.stdout and os.stat(plist_file).st_mtime_ns == before)
 finally:
     shutil.rmtree(d, ignore_errors=True)
 print('\n%s (%d failures)' % ('FAILED' if fails else 'ALL PASSED', fails))

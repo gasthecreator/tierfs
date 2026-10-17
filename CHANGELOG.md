@@ -6,6 +6,7 @@ once 1.0 is reached. Until then, anything may change.
 ## [Unreleased]
 
 ### Added
+- `tierctl service` is mutation-tested (`scripts/tierctl_mutants.py`, 40 more mutants): 12 gaps found and closed in `tests/service_cli_test.py` (unknown actions and options, a value missing, an `=` inside a value, the default log folder, no home directory, names with a slash, a directory as the binary, an unchanged plist left untouched); one documented equivalent.
 - `tierctl discover` is tested against a real announcing device (`tests/discover_cli_test.py`, part of `make test`) and mutation-tested (`scripts/tierctl_mutants.py`, 27 mutants, all killed); the mutation runner can run Python tests. `tests/pairings_test.cpp` was not part of `make test` by mistake and is now.
 - The daemon is mutation-tested (`scripts/daemon_mutants.py`, 135 mutants): the first run found 46 survivors, now closed with tests for the configuration checks, the control socket, devices that are looked up (including on the real network), the free-space thread, the plan/approve flow, backup age boundaries and the garbage-collection report; the 8 left are documented equivalents. `DaemonConfig::discover` can now report why it could not look.
 - A menu-bar app (ADR-0019, `macos/`): the space level, the devices and any problem at a glance, and a review window that shows the plan in the daemon's words with a button that approves exactly that plan (after one more confirmation). It only talks to the control socket; the control client is tested against a stand-in daemon (`make test-macos`).
