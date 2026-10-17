@@ -14,7 +14,7 @@ stop_mount() { umount "$M" 2>/dev/null; pkill -f "build/tierfsd" 2>/dev/null; sl
 stop_devices() { pkill -f "tierfs-device $ROOT/" 2>/dev/null; sleep 0.7; }
 start_devices() { for x in A B; do p=$PA; [ $x = B ] && p=$PB; ./build/tierfs-device "$ROOT/dev$x" $p 127.0.0.1 >>"$ROOT/dev.log" 2>&1 & done; sleep 1.2; }
 start_mount() { ./build/tierfsd -f -o origin="$ORIGIN",prefix=$PREFIX,ledger="$LEDGER",keyfile="$KEY",devices=127.0.0.1:$PA+127.0.0.1:$PB,maint=0,notify=0,waitms=5000,namedattr,noappledouble "$M" >>"$ROOT/daemon.log" 2>&1 &
-  for i in $(seq 1 40); do mount | grep -q "$M" && return 0; sleep 0.5; done; return 1; }
+  for _ in $(seq 1 40); do mount | grep -q "$M" && return 0; sleep 0.5; done; return 1; }
 ctl() { ./build/tierctl control "$LEDGER" "$@"; }
 trap 'stop_mount; stop_devices' EXIT
 stop_mount; stop_devices
