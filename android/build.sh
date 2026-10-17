@@ -56,7 +56,7 @@ build_openssl() {   # ABI -> prints the directory holding libcrypto.a and includ
   echo "$dir"
 }
 
-rm -rf "$OUT/lib"
+rm -rf "${OUT:?}/lib"
 for ABI in $ABIS; do
   TRIPLE=$(abi_triple "$ABI")
   CXX=$TC/$TRIPLE$API-clang++
@@ -79,7 +79,7 @@ done
 echo "== app: classes.dex"
 rm -rf "$OUT/classes" && mkdir -p "$OUT/classes"
 javac --release 11 -Xlint:all -classpath "$PLATFORM" -d "$OUT/classes" android/java/dev/tierfs/agent/*.java
-"$BT/d8" --min-api $API --lib "$PLATFORM" --output "$OUT" $(find "$OUT/classes" -name '*.class')
+find "$OUT/classes" -name '*.class' -print0 | xargs -0 "$BT/d8" --min-api $API --lib "$PLATFORM" --output "$OUT"
 
 echo "== apk"
 rm -f "$OUT/base.apk" "$OUT/unaligned.apk" "$OUT/aligned.apk" "$OUT/tierfs-agent.apk"

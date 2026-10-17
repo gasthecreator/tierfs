@@ -1,0 +1,45 @@
+name: release
+# Runs when a version tag is pushed (git tag -a v0.1.0 && git push origin v0.1.0). See docs/RELEASING.md.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: build, attest and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write       # create the release
+      id-token: write       # sign the provenance
+      attestations: write   # store the provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
+      - name: Test and build the device server (Linux)
+        run: make linux-test
+      - name: Collect the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir dist
+          cp build/tierfs-device "dist/tierfs-device-$TAG-linux-x86_64"
+          git archive --format=tar.gz --prefix="tierfs-$TAG/" -o "dist/tierfs-$TAG-source.tar.gz" "$TAG"
+          gh api "repos/$GITHUB_REPOSITORY/dependency-graph/sbom" --jq .sbom > "dist/tierfs-$TAG.spdx.json"
+          (cd dist && sha256sum ./* > SHA256SUMS)
+      - name: Attest where the files came from (SLSA build provenance)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/* --verify-tag --title "$TAG" --generate-notes --prerelease

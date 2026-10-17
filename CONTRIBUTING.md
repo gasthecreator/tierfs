@@ -4,7 +4,8 @@ Thanks for helping. tierfs is a data-safety project: a bug can destroy the only 
 page is the shortest path from clone to merged change.
 
 ## Setup
-Requires macOS on Apple silicon, Xcode command-line tools, and Homebrew.
+Requires macOS on Apple silicon, Xcode command-line tools, and Homebrew. (Only the device server builds on Linux: `make linux-test`;
+the Android agent needs the Android SDK and NDK: see [android/README.md](android/README.md).)
 ```bash
 git clone https://github.com/gasthecreator/tierfs.git && cd tierfs
 brew install openssl@3
@@ -27,7 +28,7 @@ FUSE-T is needed only to build the mount drivers (`brew install --cask fuse-t`).
 - **Tests:** new behavior needs tests, including failure paths (a crash at each step, a bad or lying device, a racing writer). A bug fix starts
   with a failing test. Tests must look things up by id, not list position, and must not use fixed ports or paths: use the environment overrides
   (`TIERFS_TEST_PORT`, `TIERFS_TEST_TMP`).
-- **Mutation testing:** for changes under `core/` that guard data (`ledger`, `crypto`, `dropengine`, `recovery`, `overlay`, `scanner`), run
+- **Mutation testing:** for changes under `core/` that guard data (`ledger`, `crypto`, `dropengine`, `recovery`, `overlay`, `scanner`, `policy`, `locks`, `service`, `discovery`, `pairings`, `daemon`, `devicestore`, `gc`...: see `TARGETS` in `scripts/mutate_par.py`), run
   `python3 scripts/mutate_par.py <target> -j 4` and either kill the survivors with tests or tag them in the mutant list with the reason they are
   equivalent (`[reason] name`). A change that leaves unexplained survivors is not done.
 - **Concurrency:** anything with threads also runs under ThreadSanitizer (`make test-ledger-tsan test-overlay-tsan test-ns-tsan`).

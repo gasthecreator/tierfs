@@ -1,7 +1,7 @@
 #!/bin/bash
 # Chunk cache through the real mount, with real tools. Touches only build/ and scratch-mnt.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PORT=9095; MNT=$PWD/scratch-mnt; LIVE=$PWD/build/live3
 pass=0; fail=0
 check() { if [ "$2" = "0" ]; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1"; fail=$((fail+1)); fi; }

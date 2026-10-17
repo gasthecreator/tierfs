@@ -8,6 +8,7 @@ Start here. Pages are grouped by what you are trying to do.
 | Get started, step by step, and know where to stop | [QUICKSTART.md](QUICKSTART.md) |
 | Operate it, recover from a failure, or know what is unsafe | [RUNBOOK.md](RUNBOOK.md) |
 | Understand the design (ledger, crypto, replication, offload, policy, overlay) | [DURABLE_STORE.md](DURABLE_STORE.md) |
+| Cut a release and verify a download | [RELEASING.md](RELEASING.md) |
 | Know why a major decision was made | [adr/](adr/) |
 | Know what is protected against, and what is not | [THREAT_MODEL.md](THREAT_MODEL.md) |
 | Implement a storage device | [../proto/PROTOCOL.md](../proto/PROTOCOL.md) |

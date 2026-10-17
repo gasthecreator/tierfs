@@ -23,6 +23,11 @@ Written in C/C++17 on FUSE-T (no kernel extension).
 - **Runs on an Android phone** as one of the devices (the same server, built with the NDK; see [android/](android/)); so far tried only on an emulator.
 - **Recovers from the phrase alone.** `tierctl restore` rebuilds your files from the devices if the Mac is lost, without overwriting anything.
 
+## Design in one paragraph
+A ledger (SQLite, hash-chained history, full-fsync) is the source of truth for what exists where. The overlay joins an *origin folder* (local bytes), the
+ledger, and the devices into one namespace. Offloading is a two-step, journaled move into a quarantine folder that can be undone for days; deleting the
+last local copy is a separate, gated step. See `docs/DURABLE_STORE.md`.
+
 ## Layout
 | Path | What |
 |---|---|
@@ -40,7 +45,9 @@ Requires macOS on Apple silicon, Xcode command-line tools, and `brew install ope
 make test        # everything that does not mount a filesystem (this is exactly what CI runs)
 ```
 The tests build with AddressSanitizer and UBSan. `make test-ledger-tsan test-overlay-tsan test-ns-tsan` run ThreadSanitizer builds.
-Mutation testing of the safety-critical files: `python3 scripts/mutate_par.py <ledger|recovery|overlay|scanner> -j 4`.
+The device server alone (no FUSE, no Keychain) also builds and tests on Linux: `make linux-test`. The menu-bar app: `make test-macos`.
+Mutation testing of the safety-critical files: `python3 scripts/mutate_par.py <target> -j 4`; the targets are the keys of `TARGETS` in that script.
+New here? [docs/QUICKSTART.md](docs/QUICKSTART.md) takes you from clone to a first offload without mounting anything.
 
 ## Documentation
 [docs/README.md](docs/README.md) is the index. Highlights: the [runbook](docs/RUNBOOK.md) (setup, recovery, what is unsafe), the
@@ -51,8 +58,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately: [SECUR
 
 ## License
 [MIT](LICENSE).
-
-## Design in one paragraph
-A ledger (SQLite, hash-chained history, full-fsync) is the source of truth for what exists where. The overlay joins an *origin folder* (local bytes), the
-ledger, and the devices into one namespace. Offloading is a two-step, journaled move into a quarantine folder that can be undone for days; deleting the
-last local copy is a separate, gated step. See `docs/DURABLE_STORE.md`.
