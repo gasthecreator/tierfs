@@ -47,12 +47,15 @@ std::string to_std(JNIEnv* env, jstring s) {
 extern "C" {
 
 // Runs the server until the process ends. Returns only if it could not start (a message is in logcat); the value is its exit code.
-JNIEXPORT jint JNICALL Java_dev_tierfs_agent_Native_serve(JNIEnv* env, jclass, jstring dir, jint port, jstring bind) {
+JNIEXPORT jint JNICALL Java_dev_tierfs_agent_Native_serve(JNIEnv* env, jclass, jstring dir, jint port, jstring bind, jstring lock_dir) {
     forward_stderr_to_logcat();
     std::string d = to_std(env, dir), p = std::to_string(port), b = to_std(env, bind);
+    std::string lk = to_std(env, lock_dir), lock_arg = "--lock-dir=" + lk;
     std::vector<char*> av = {const_cast<char*>("tierfs-device"), const_cast<char*>(d.c_str()), const_cast<char*>(p.c_str()),
-                             const_cast<char*>(b.c_str()), nullptr};
-    return tierfs_device_main(4, av.data());
+                             const_cast<char*>(b.c_str())};
+    if (!lk.empty()) av.push_back(const_cast<char*>(lock_arg.c_str()));   // the lock lives where files can be locked (internal storage)
+    av.push_back(nullptr);
+    return tierfs_device_main(static_cast<int>(av.size()) - 1, av.data());
 }
 
 // The original pairing secret of the store in `dir`: created if there is none (or replaced when `renew`). Returns "CODE\nKEYID", or "ERR: reason".

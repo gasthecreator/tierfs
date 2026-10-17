@@ -31,19 +31,21 @@ import java.net.Socket;
 public final class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private TextView status, details, code;
-    private Button toggle, show, renew, addMac, macs;
+    private Button toggle, show, renew, addMac, macs, battery;
     private EditText portField;
+    private android.widget.CheckBox bootBox, externalBox;
+    private State state;
     private String dir;
     private volatile boolean running;
+    private boolean loading;   // (the boxes are being set from the saved choices: not a click)
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         // The pairing code lets whoever has it act as the Mac towards this device: no screenshots, no recent-apps thumbnail.
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
-        // Internal storage: it can lock files (the store needs flock; the emulated "external" storage cannot) and shares the phone's free space
-        // anyway.
-        dir = new File(getFilesDir(), "tierfs-store").getAbsolutePath();
+        state = State.load(this);
+        dir = state.storeDir(this);
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
@@ -53,10 +55,25 @@ public final class MainActivity extends Activity {
         details = text(col, 14);
         portField = new EditText(this);
         portField.setInputType(InputType.TYPE_CLASS_NUMBER);
-        portField.setText("9100");
+        portField.setText(String.valueOf(state.port));
         portField.setHint("port");
         col.addView(portField);
         toggle = button(col, "Switch on", v -> toggle());
+        bootBox = new android.widget.CheckBox(this);
+        bootBox.setText("Switch on again when the phone starts");
+        bootBox.setOnCheckedChangeListener((v, checked) -> {
+            if (loading) return;
+            state.boot = checked;
+            state.save();
+        });
+        col.addView(bootBox);
+        externalBox = new android.widget.CheckBox(this);
+        externalBox.setText("Keep the store on shared storage (memory card)");
+        externalBox.setOnCheckedChangeListener((v, checked) -> {
+            if (!loading) confirmStorageChange(checked);
+        });
+        col.addView(externalBox);
+        battery = button(col, "Allow it to run in the background", v -> askBatteryExemption());
         show = button(col, "Show pairing code", v -> showCode());
         addMac = button(col, "Add another Mac", v -> addAnotherMac());
         macs = button(col, "Paired Macs", v -> showMacs());
@@ -74,6 +91,13 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        state = State.load(this);
+        dir = state.storeDir(this);
+        loading = true;
+        bootBox.setChecked(state.boot);
+        externalBox.setChecked(state.external);
+        portField.setText(String.valueOf(state.port));
+        loading = false;
         refresh();
     }
 
@@ -103,10 +127,48 @@ public final class MainActivity extends Activity {
     private int port() {
         try {
             int p = Integer.parseInt(portField.getText().toString().trim());
-            return p >= 1024 && p <= 65535 ? p : 9100;
+            return p >= 1024 && p <= 65535 ? p : State.DEFAULT_PORT;
         } catch (NumberFormatException e) {
-            return 9100;
+            return State.DEFAULT_PORT;
         }
+    }
+
+    /** Moving the store means a new, empty store: no pairing, no data. Say so, and only do it while the server is off. */
+    private void confirmStorageChange(boolean external) {
+        if (running || state.on) {
+            loading = true;
+            externalBox.setChecked(state.external);
+            loading = false;
+            code.setText("Switch the storage off before changing where it is kept.");
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("Keep the store somewhere else?")
+            .setMessage("This starts a new, empty store at the new place: Macs have to pair with it again, and what is stored in the old place stays there (and is not served). "
+                        + "Shared storage is shared with other apps and can be removed or cleaned by the system.")
+            .setPositiveButton("Change", (d, w) -> {
+                state.external = external;
+                state.save();
+                dir = state.storeDir(this);
+                refresh();
+            })
+            .setNegativeButton("Cancel", (d, w) -> {
+                loading = true;
+                externalBox.setChecked(state.external);
+                loading = false;
+            })
+            .show();
+    }
+
+    /** Android may stop a background service to save battery; this asks the system to leave this app alone (the person decides). */
+    @android.annotation.SuppressLint("BatteryLife")
+    private void askBatteryExemption() {
+        android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+        if (pm.isIgnoringBatteryOptimizations(getPackageName())) {
+            code.setText("Battery optimisation is already off for this app.");
+            return;
+        }
+        startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:" + getPackageName())));
     }
 
     /** Is something listening on the server port? (The service lives in another process, so ask the network, not a flag.) */
@@ -130,14 +192,18 @@ public final class MainActivity extends Activity {
             String kids = Native.keyId(dir);
             int count = kids.isEmpty() ? 0 : kids.split("\n").length;
             String kid = count == 0 ? "" : kids.split("\n")[0];
-            status.setText(running ? "Storage is ON" : "Storage is off");
-            toggle.setText(running ? "Switch off" : "Switch on");
-            portField.setEnabled(!running);
+            status.setText(running ? "Storage is ON" : state.on ? "Storage should be on (starting)" : "Storage is off");
+            toggle.setText(running || state.on ? "Switch off" : "Switch on");
+            portField.setEnabled(!running && !state.on);
+            externalBox.setEnabled(!running && !state.on);
+            android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+            battery.setText(pm.isIgnoringBatteryOptimizations(getPackageName()) ? "Allowed to run in the background" : "Allow it to run in the background");
             StringBuilder d = new StringBuilder();
             d.append(kid.isEmpty() ? "Not paired yet: switching on creates the pairing code.\n"
                                    : count + " Mac pairing(s); the original's key id: " + kid + "\n");
             d.append("Stores encrypted chunks in:\n").append(dir).append("\n");
-            d.append("Free: ").append(new File(dir).getParentFile().getUsableSpace() / (1024 * 1024)).append(" MiB\n");
+            File parent = new File(dir).getParentFile();
+            d.append("Free: ").append(parent == null ? 0 : parent.getUsableSpace() / (1024 * 1024)).append(" MiB\n");
             String addr = addresses();
             d.append(addr.isEmpty() ? "No network address (connect to Wi-Fi)." : "On this network: " + addr);
             d.append("\nOn the Mac: tierctl pair <address>:").append(port()).append(" --store keychain");
@@ -157,7 +223,9 @@ public final class MainActivity extends Activity {
     }
 
     private void toggle() {
-        if (running) {
+        if (running || state.on) {
+            state.on = false;   // the choice is saved first: if the system restarts the service meanwhile, it stays off
+            state.save();
             stopService(new Intent(this, DeviceService.class));
             ui.postDelayed(this::refresh, 600);
             return;
@@ -167,8 +235,10 @@ public final class MainActivity extends Activity {
             status.setText(r);
             return;
         }
-        Intent i = new Intent(this, DeviceService.class).putExtra(DeviceService.EXTRA_DIR, dir).putExtra(DeviceService.EXTRA_PORT, port());
-        startForegroundService(i);
+        state.port = port();
+        state.on = true;
+        state.save();
+        startForegroundService(new Intent(this, DeviceService.class));
         ui.postDelayed(this::refresh, 1200);
     }
 

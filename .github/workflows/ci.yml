@@ -25,6 +25,32 @@ jobs:
       - name: Build and run every test that does not mount a filesystem
         run: make test
 
+  linux-device:
+    name: device server on Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
+      - name: Build and test the device side (server, store, secure channel, pairings)
+        run: make linux-test
+
+  android:
+    name: Android agent (all ABIs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the APK for arm64, x86_64 and 32-bit ARM (SQLite and OpenSSL are fetched and checked against pinned hashes)
+        env:
+          ABIS: arm64-v8a x86_64 armeabi-v7a
+        run: android/build.sh
+
   format:
     name: format (changed lines only)
     if: github.event_name == 'pull_request'

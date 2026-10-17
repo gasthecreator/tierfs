@@ -351,6 +351,7 @@ int main(int argc, char** argv) {
     bool add_pairing = false, pairing_delete = false, list_pairings = false, revoke = false;
     bool list_trash = false, restore_trash = false, empty_trash = false;
     int64_t restore_window = 0, trash_days = -1;
+    std::string lock_dir;
     if (const char* e = getenv("TIERFS_DEVICE_FAULTS")) faults_csv = e;
     if (const char* e = getenv("TIERFS_DEVICE_IDLE_S")) g_idle_s = atoi(e) > 0 ? atoi(e) : 120;
     for (int i = 1; i < argc; i++) {
@@ -371,6 +372,8 @@ int main(int argc, char** argv) {
             pairing_delete = true;
         else if (a == "--list-pairings")
             list_pairings = true;
+        else if (a.compare(0, 11, "--lock-dir=") == 0)
+            lock_dir = a.substr(11);
         else if (a.compare(0, 13, "--trash-days=") == 0)
             trash_days = atoll(a.c_str() + 13);
         else if (a == "--list-trash")
@@ -392,7 +395,7 @@ int main(int argc, char** argv) {
     if (pos.empty()) {
         fprintf(
             stderr,
-            "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]]\n"
+            "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]] [--lock-dir=DIR]\n"
             "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | "
             "--revoke-pairing=KEYID\n"
             "       %s <store-dir> --list-trash | --restore-trash[=SECONDS] | --empty-trash   (stop the device first); --trash-days=N when serving\n",
@@ -433,7 +436,7 @@ int main(int argc, char** argv) {
     }
     if (list_trash || restore_trash || empty_trash) {  // the trash (ADR-0017): needs the device stopped (the store is locked while it runs)
         std::string terr;
-        auto st = DeviceStore::open(pos[0], &terr);
+        auto st = DeviceStore::open(pos[0], &terr, lock_dir);
         if (!st) {
             fprintf(stderr, "cannot open store: %s\n", terr.c_str());
             return 1;
@@ -508,7 +511,7 @@ int main(int argc, char** argv) {
     if (!DeviceFaults::parse(faults_csv, &faults, &ferr)) { fprintf(stderr, "%s\n", ferr.c_str()); return 2; }
 
     std::string err;
-    auto store = DeviceStore::open(pos[0], &err);
+    auto store = DeviceStore::open(pos[0], &err, lock_dir);
     if (!store) { fprintf(stderr, "cannot open store: %s\n", err.c_str()); return 1; }
     store->set_faults(faults);
     {  // how long deleted things are kept before they are really removed (ADR-0017): --trash-days, else TIERFS_DEVICE_TRASH_SECONDS (tests), else 7

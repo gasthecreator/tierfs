@@ -19,7 +19,6 @@ import android.util.Log;
  * means ending that process. A paired device is required (the server itself refuses to listen on the network otherwise).
  */
 public final class DeviceService extends Service {
-    static final String EXTRA_DIR = "dir", EXTRA_PORT = "port";
     private static final String TAG = "tierfs-agent", CHANNEL = "device", SERVICE_TYPE = "_tierfs._tcp.";
     private PowerManager.WakeLock wake;
     private NsdManager nsd;
@@ -28,10 +27,17 @@ public final class DeviceService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null || server != null) return START_NOT_STICKY; // not restarted by the system: the person switches it on
-        final String dir = intent.getStringExtra(EXTRA_DIR);
-        final int port = intent.getIntExtra(EXTRA_PORT, 9100);
-        String keyIds = dir == null ? "" : Native.keyId(dir);
+        if (server != null) return START_STICKY;
+        // What to do comes from the person's saved choices, not from the intent: the system also calls this with no intent when it restarts the service
+        // after killing it, and then the server must come back exactly as it was (or stay off, if the person has switched it off since).
+        State state = State.load(this);
+        if (!state.on) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        final String dir = state.storeDir(this), lockDir = state.external ? state.lockDir(this) : "";
+        final int port = state.port;
+        String keyIds = Native.keyId(dir);
         if (keyIds.isEmpty()) { // never serve an unpaired store on the network
             Log.e(TAG, "refusing to start: the store is not paired");
             stopSelf();
@@ -52,13 +58,13 @@ public final class DeviceService extends Service {
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "tierfs:device");
         wake.acquire();
         server = new Thread(() -> {
-            int rc = Native.serve(dir, port, "0.0.0.0"); // only returns if it could not start
+            int rc = Native.serve(dir, port, "0.0.0.0", lockDir); // only returns if it could not start
             Log.e(TAG, "the device server stopped (exit code " + rc + ")");
             stopSelf();
         }, "tierfs-device");
         server.start();
         announce(port, dir);
-        return START_NOT_STICKY;
+        return START_STICKY; // if the system kills the process, it starts the service again
     }
 
     /**
