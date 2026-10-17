@@ -337,7 +337,8 @@ int main() {
         chmod(target.c_str(), 0600);
         symlink(target.c_str(), (s4 + "/pairing.key").c_str());
 #ifdef __APPLE__
-        lchmod((s4 + "/pairing.key").c_str(), 0600);  // a link that looks private still is not a regular file (elsewhere a link has no mode of its own)
+        lchmod((s4 + "/pairing.key").c_str(),
+               0600);  // a link that looks private still is not a regular file (elsewhere a link has no mode of its own)
 #endif
         CHECK(run_device({s4, std::to_string(P + 9), nowhere}, &o) == 1 && has(o, "regular file"));
         std::string s5 = root + "/dirkey";

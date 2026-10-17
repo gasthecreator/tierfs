@@ -143,8 +143,8 @@ class DeviceStore {
 public:
     // Creates the store if the directory is new. Never wipes or repairs an existing one:
     // a corrupt index or an unknown version makes open() fail with the files untouched.
-    // `lock_dir` (optional) is where the lock that keeps two processes from using one store goes, for a store on a filesystem that cannot lock files (shared
-    // storage on a phone): it must be on one that can. Always the same directory for the same store.
+    // `lock_dir` (optional) is where the lock that keeps two processes from using one store goes, for a store on a filesystem that cannot lock files
+    // (shared storage on a phone): it must be on one that can. Always the same directory for the same store.
     static std::unique_ptr<DeviceStore> open(const std::string& dir, std::string* err, const std::string& lock_dir = "");
     ~DeviceStore();
     DeviceStore(const DeviceStore&) = delete;

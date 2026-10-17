@@ -51,7 +51,7 @@ inline int connect_with_deadline(const std::string& host, const std::string& por
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         int one = 1;
-#ifdef SO_NOSIGPIPE   // (macOS; elsewhere a program that talks to devices ignores SIGPIPE itself)
+#ifdef SO_NOSIGPIPE  // (macOS; elsewhere a program that talks to devices ignores SIGPIPE itself)
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
 #endif
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);

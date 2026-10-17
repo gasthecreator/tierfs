@@ -395,7 +395,8 @@ int main(int argc, char** argv) {
     if (pos.empty()) {
         fprintf(
             stderr,
-            "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]] [--lock-dir=DIR]\n"
+            "usage: %s <store-dir> [port] [bind-addr] [--faults=...] [--insecure-allow-network] [--allow-delete] [--advertise[=NAME]] "
+            "[--lock-dir=DIR]\n"
             "       %s <store-dir> --show-pairing-code | --new-pairing-code | --add-pairing=LABEL [--pairing-allow-delete] | --list-pairings | "
             "--revoke-pairing=KEYID\n"
             "       %s <store-dir> --list-trash | --restore-trash[=SECONDS] | --empty-trash   (stop the device first); --trash-days=N when serving\n",

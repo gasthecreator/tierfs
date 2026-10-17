@@ -6,7 +6,10 @@ final class Native {
 
     private Native() {}
 
-    /** Runs the server until the process ends. Returns only if it could not start. {@code lockDir} (may be empty) is where the store's lock file goes. */
+    /**
+     * Runs the server until the process ends. Returns only if it could not start. {@code lockDir} (may be empty) is where the store's lock file
+     * goes.
+     */
     static native int serve(String dir, int port, String bind, String lockDir);
 
     /** The pairing secret of the store in {@code dir} (created if there is none, replaced when {@code renew}): "CODE\nKEYID", or "ERR: reason". */

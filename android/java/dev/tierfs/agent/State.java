@@ -14,16 +14,14 @@ import java.util.Properties;
  */
 final class State {
     static final int DEFAULT_PORT = 9100;
-    boolean on;          // the person switched the storage server on (and has not switched it off)
-    boolean boot;        // start it again when the phone starts
-    boolean external;    // keep the store in the app's folder on shared storage (a memory card, if there is one) instead of internal storage
+    boolean on; // the person switched the storage server on (and has not switched it off)
+    boolean boot; // start it again when the phone starts
+    boolean external; // keep the store in the app's folder on shared storage (a memory card, if there is one) instead of internal storage
     int port = DEFAULT_PORT;
 
     private final File file;
 
-    private State(File file) {
-        this.file = file;
-    }
+    private State(File file) { this.file = file; }
 
     static State load(Context c) {
         State s = new State(new File(c.getFilesDir(), "state.properties"));
@@ -31,7 +29,7 @@ final class State {
         try (FileInputStream in = new FileInputStream(s.file)) {
             p.load(in);
         } catch (IOException ignored) {
-            return s;   // no file yet: everything off
+            return s; // no file yet: everything off
         }
         s.on = "1".equals(p.getProperty("on"));
         s.boot = "1".equals(p.getProperty("boot"));
@@ -58,8 +56,8 @@ final class State {
         } catch (IOException e) {
             return;
         }
-        //noinspection ResultOfMethodCallIgnored
-        tmp.renameTo(file);   // atomic on the same filesystem
+        // noinspection ResultOfMethodCallIgnored
+        tmp.renameTo(file); // atomic on the same filesystem
     }
 
     /** Where the store lives. */
@@ -69,7 +67,5 @@ final class State {
     }
 
     /** Where the store's lock file lives: always internal storage, because shared storage cannot lock files. */
-    String lockDir(Context c) {
-        return new File(c.getFilesDir(), "tierfs-lock").getAbsolutePath();
-    }
+    String lockDir(Context c) { return new File(c.getFilesDir(), "tierfs-lock").getAbsolutePath(); }
 }

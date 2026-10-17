@@ -37,7 +37,7 @@ public final class MainActivity extends Activity {
     private State state;
     private String dir;
     private volatile boolean running;
-    private boolean loading;   // (the boxes are being set from the saved choices: not a click)
+    private boolean loading; // (the boxes are being set from the saved choices: not a click)
 
     @Override
     protected void onCreate(Bundle b) {
@@ -144,19 +144,22 @@ public final class MainActivity extends Activity {
         }
         new AlertDialog.Builder(this)
             .setTitle("Keep the store somewhere else?")
-            .setMessage("This starts a new, empty store at the new place: Macs have to pair with it again, and what is stored in the old place stays there (and is not served). "
-                        + "Shared storage is shared with other apps and can be removed or cleaned by the system.")
-            .setPositiveButton("Change", (d, w) -> {
-                state.external = external;
-                state.save();
-                dir = state.storeDir(this);
-                refresh();
-            })
-            .setNegativeButton("Cancel", (d, w) -> {
-                loading = true;
-                externalBox.setChecked(state.external);
-                loading = false;
-            })
+            .setMessage("This starts a new, empty store at the new place: Macs have to pair with it again, and what is stored in the old place stays "
+                        + "there (and is not served). "
+                + "Shared storage is shared with other apps and can be removed or cleaned by the system.")
+            .setPositiveButton("Change",
+                (d, w) -> {
+                    state.external = external;
+                    state.save();
+                    dir = state.storeDir(this);
+                    refresh();
+                })
+            .setNegativeButton("Cancel",
+                (d, w) -> {
+                    loading = true;
+                    externalBox.setChecked(state.external);
+                    loading = false;
+                })
             .show();
     }
 
@@ -168,7 +171,8 @@ public final class MainActivity extends Activity {
             code.setText("Battery optimisation is already off for this app.");
             return;
         }
-        startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:" + getPackageName())));
+        startActivity(
+            new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:" + getPackageName())));
     }
 
     /** Is something listening on the server port? (The service lives in another process, so ask the network, not a flag.) */
@@ -197,7 +201,8 @@ public final class MainActivity extends Activity {
             portField.setEnabled(!running && !state.on);
             externalBox.setEnabled(!running && !state.on);
             android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
-            battery.setText(pm.isIgnoringBatteryOptimizations(getPackageName()) ? "Allowed to run in the background" : "Allow it to run in the background");
+            battery.setText(
+                pm.isIgnoringBatteryOptimizations(getPackageName()) ? "Allowed to run in the background" : "Allow it to run in the background");
             StringBuilder d = new StringBuilder();
             d.append(kid.isEmpty() ? "Not paired yet: switching on creates the pairing code.\n"
                                    : count + " Mac pairing(s); the original's key id: " + kid + "\n");
@@ -224,7 +229,7 @@ public final class MainActivity extends Activity {
 
     private void toggle() {
         if (running || state.on) {
-            state.on = false;   // the choice is saved first: if the system restarts the service meanwhile, it stays off
+            state.on = false; // the choice is saved first: if the system restarts the service meanwhile, it stays off
             state.save();
             stopService(new Intent(this, DeviceService.class));
             ui.postDelayed(this::refresh, 600);

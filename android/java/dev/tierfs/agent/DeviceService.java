@@ -28,8 +28,8 @@ public final class DeviceService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (server != null) return START_STICKY;
-        // What to do comes from the person's saved choices, not from the intent: the system also calls this with no intent when it restarts the service
-        // after killing it, and then the server must come back exactly as it was (or stay off, if the person has switched it off since).
+        // What to do comes from the person's saved choices, not from the intent: the system also calls this with no intent when it restarts the
+        // service after killing it, and then the server must come back exactly as it was (or stay off, if the person has switched it off since).
         State state = State.load(this);
         if (!state.on) {
             stopSelf();

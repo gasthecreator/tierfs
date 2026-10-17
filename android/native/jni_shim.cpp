@@ -53,7 +53,7 @@ JNIEXPORT jint JNICALL Java_dev_tierfs_agent_Native_serve(JNIEnv* env, jclass, j
     std::string lk = to_std(env, lock_dir), lock_arg = "--lock-dir=" + lk;
     std::vector<char*> av = {const_cast<char*>("tierfs-device"), const_cast<char*>(d.c_str()), const_cast<char*>(p.c_str()),
                              const_cast<char*>(b.c_str())};
-    if (!lk.empty()) av.push_back(const_cast<char*>(lock_arg.c_str()));   // the lock lives where files can be locked (internal storage)
+    if (!lk.empty()) av.push_back(const_cast<char*>(lock_arg.c_str()));  // the lock lives where files can be locked (internal storage)
     av.push_back(nullptr);
     return tierfs_device_main(static_cast<int>(av.size()) - 1, av.data());
 }
