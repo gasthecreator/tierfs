@@ -14,10 +14,32 @@ bool valid_name(const std::string& n) {
     return true;
 }
 
+// Well-formed UTF-8 as XML needs it: shortest forms only, no surrogates, nothing above U+10FFFF, none of the non-characters U+FFFE and U+FFFF.
+// (A path with bytes that are not UTF-8 would make a plist that the system's own parser refuses, found by fuzzing.)
+bool valid_utf8(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t n = c < 0x80 ? 1 : (c >= 0xC2 && c <= 0xDF) ? 2 : (c >= 0xE0 && c <= 0xEF) ? 3 : (c >= 0xF0 && c <= 0xF4) ? 4 : 0;
+        if (n == 0 || i + n > s.size()) return false;
+        uint32_t cp = n == 1 ? c : n == 2 ? (c & 0x1F) : n == 3 ? (c & 0x0F) : (c & 0x07);
+        for (size_t k = 1; k < n; k++) {
+            unsigned char t = static_cast<unsigned char>(s[i + k]);
+            if ((t & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (t & 0x3F);
+        }
+        if ((n == 3 && cp < 0x800) || (n == 4 && cp < 0x10000) || cp > 0x10FFFF) return false;   // not the shortest form, or too large
+        if (cp >= 0xD800 && cp <= 0xDFFF) return false;                                           // a surrogate
+        if (cp == 0xFFFE || cp == 0xFFFF) return false;
+        i += n;
+    }
+    return true;
+}
+
 bool clean_text(const std::string& s) {
     for (char c : s)
         if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) return false;
-    return true;
+    return valid_utf8(s);
 }
 
 const std::set<std::string>& known_options() {

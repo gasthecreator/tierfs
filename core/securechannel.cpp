@@ -273,8 +273,8 @@ int Channel::recv(Frame& f, int64_t deadline_ms) {
         errno = EPROTO;
         return -1;
     }
-    Bytes body(len);
-    r = read_full(fd_, body.data(), len, deadline_ms);
+    Bytes body;
+    r = read_grow(fd_, body, len, deadline_ms);
     if (r <= 0) {
         if (r == 0) errno = ECONNRESET;
         return -1;

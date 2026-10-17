@@ -160,6 +160,20 @@ inline bool write_full(int fd, const void* buf, size_t n, int64_t deadline_ms = 
     return true;
 }
 
+// Reads exactly `len` bytes into `out`, but only commits memory as the bytes arrive: a peer that announces a 16 MiB frame and sends nothing costs us 64 KiB,
+// not 16 MiB (a few dozen such connections would otherwise be a cheap way to exhaust a small device; found by fuzzing). Same return values as read_full.
+inline int read_grow(int fd, std::vector<uint8_t>& out, size_t len, int64_t deadline_ms) {
+    out.clear();
+    while (out.size() < len) {
+        size_t step = std::min(len - out.size(), std::max<size_t>(64u << 10, out.size()));
+        size_t at = out.size();
+        out.resize(at + step);
+        int r = read_full(fd, out.data() + at, step, deadline_ms);
+        if (r <= 0) return (r == 0 && at == 0) ? 0 : (r == 0 ? (errno = ECONNRESET, -1) : -1);
+    }
+    return 1;
+}
+
 struct Frame {
     uint8_t type = 0;
     uint32_t id = 0;
@@ -187,8 +201,8 @@ inline int recv_frame(int fd, Frame& f, int64_t deadline_ms = 0) {
     uint32_t len = (uint32_t(hdr[0]) << 24) | (uint32_t(hdr[1]) << 16) |
                    (uint32_t(hdr[2]) << 8) | uint32_t(hdr[3]);
     if (len < 5 || len > MAX_FRAME) { errno = EPROTO; return -1; }
-    std::vector<uint8_t> body(len);
-    r = read_full(fd, body.data(), len, deadline_ms);
+    std::vector<uint8_t> body;
+    r = read_grow(fd, body, len, deadline_ms);
     if (r <= 0) { if (r == 0) errno = ECONNRESET; return -1; }
     f.type = body[0];
     f.id = (uint32_t(body[1]) << 24) | (uint32_t(body[2]) << 16) |

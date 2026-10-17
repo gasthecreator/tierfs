@@ -190,6 +190,12 @@ build/tierfsd: build/tierfsd.o $(DAEMON_OBJS)
 build/android_smoke: tests/android_smoke.cpp $(DAEMON_OBJS_NO_TFS) build/tierfs-device
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/android_smoke.cpp $(DAEMON_OBJS_NO_TFS) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
 
+build/fuzz_test: tests/fuzz_test.cpp build/service.o $(DAEMON_OBJS_NO_TFS) build/tierfs-device
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/fuzz_test.cpp build/service.o $(DAEMON_OBJS_NO_TFS) $(OPENSSL_LIB) $(SQLITE_LIB) -framework CoreFoundation -framework Security -o $@
+
+test-fuzz: build/fuzz_test build/tierfs-device
+	./build/fuzz_test
+
 build/daemon.o: core/daemon.cpp core/daemon.hpp core/gc.hpp core/overlay.hpp core/scanner.hpp core/policy.hpp core/ledger.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
@@ -328,7 +334,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery test-fuzz
 test: $(NO_MOUNT_TESTS)
 
 .PHONY: all clean test $(NO_MOUNT_TESTS) test-tsan
