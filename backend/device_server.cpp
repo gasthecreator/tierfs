@@ -32,6 +32,12 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <algorithm>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "../core/crypto.hpp"
 #include "../core/devicestore.hpp"

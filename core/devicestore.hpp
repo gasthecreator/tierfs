@@ -24,6 +24,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <cerrno>
+#include <utility>
 
 struct sqlite3;
 

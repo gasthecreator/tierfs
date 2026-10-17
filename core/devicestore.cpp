@@ -14,6 +14,15 @@
 #include <filesystem>
 #include <map>
 #include <thread>
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
+#include <initializer_list>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "crashpoint.hpp"
 #include "fsutil.hpp"

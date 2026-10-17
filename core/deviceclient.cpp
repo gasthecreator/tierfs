@@ -1,3 +1,10 @@
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 #include "deviceclient.hpp"
 
 #include "crypto.hpp"

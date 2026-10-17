@@ -11,6 +11,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "../core/securechannel.hpp"
 #include "channel_kat.hpp"

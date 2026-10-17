@@ -18,6 +18,11 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "../core/deviceclient.hpp"
 #include "../core/securechannel.hpp"

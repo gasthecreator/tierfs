@@ -9,6 +9,8 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#include <cstdint>
+#include <cstdlib>
 
 #include "../core/crypto.hpp"
 #include "../core/devicestore.hpp"

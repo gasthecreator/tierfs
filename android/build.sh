@@ -58,7 +58,10 @@ for ABI in $ABIS; do
   O=$OBJ/$ABI
   mkdir -p "$O" "$OUT/lib/$ABI"
   [ -f "$O/sqlite3.o" ] && [ "$O/sqlite3.o" -nt "$SQ/sqlite3.c" ] || $CC -O2 -fPIC -DSQLITE_THREADSAFE=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -c "$SQ/sqlite3.c" -o "$O/sqlite3.o"
-  CXXF="-std=c++17 -O2 -fPIC -Wall -Wextra -I$OSSL/include -I$SQ -I$ROOT/core"
+  OSSL_INC="-I$OSSL/include"
+  # (a build made outside the source tree has the generated headers in $OSSL/include and the rest in the source tree)
+  if [ -n "${OPENSSL_SRC:-}" ] && [ "$OSSL" != "$OPENSSL_SRC" ]; then OSSL_INC="$OSSL_INC -I$OPENSSL_SRC/include"; fi
+  CXXF="-std=c++17 -O2 -fPIC -Wall -Wextra $OSSL_INC -I$SQ -I$ROOT/core"
   for f in core/devicestore.cpp core/crypto.cpp core/securechannel.cpp core/discovery.cpp core/pairings.cpp; do $CXX $CXXF -c "$f" -o "$O/$(basename "$f").o"; done
   $CXX $CXXF -Wno-unused-function -c android/native/jni_shim.cpp -o "$O/jni_shim.o"
   $CXX -shared -o "$OUT/lib/$ABI/libtierfsdevice.so" "$O"/jni_shim.o "$O"/devicestore.cpp.o "$O"/crypto.cpp.o "$O"/securechannel.cpp.o "$O"/discovery.cpp.o \

@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
 
 #include "../core/pairings.hpp"
 #include "../core/securechannel.hpp"

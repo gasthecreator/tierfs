@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,11 @@
 #include <set>
 #include <map>
 #include <thread>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "../core/crypto.hpp"
 #include "../core/devicestore.hpp"

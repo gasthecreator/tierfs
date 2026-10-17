@@ -8,6 +8,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <cerrno>
+#include <memory>
+#include <utility>
 
 #include "securechannel.hpp"
 #include "devicestore.hpp"  // DevInfo, ManifestEntry, AuditItem, AuditOut (shared vocabulary)

@@ -21,6 +21,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <cerrno>
+#include <utility>
 
 #include "crypto.hpp"
 #include "wire.hpp"
