@@ -1313,8 +1313,8 @@ next_block:
         CHECK(put_man(*d, FID1, 1, m2, {b.id}).err == 0 && d->delete_manifests({{FID1, 1}}).deleted[0] == 1);
         CHECK(put_man(*d, FID1, 1, m1, {a.id, b.id}).err == 0 && d->delete_manifests({{FID1, 1}}).deleted[0] == 1);
         TrashStats ts = d->trash_stats();
-        CHECK(ts.manifests == 3);   // three trashed manifests, none overwritten
-        CHECK(ts.newest - ts.oldest < 10 && ts.newest <= time(nullptr) + 5);   // and the times are still about now, not pushed far away
+        CHECK(ts.manifests == 3);                                             // three trashed manifests, none overwritten
+        CHECK(ts.newest - ts.oldest < 10 && ts.newest <= time(nullptr) + 5);  // and the times are still about now, not pushed far away
         // every manifest has exactly the chunk list it had (paired by its time)
         std::map<std::string, std::string> refs_by_stem;
         std::map<std::string, Bytes> mf_by_stem;
@@ -1322,23 +1322,29 @@ next_block:
             std::string name = e.path().filename().string();
             std::ifstream f(e.path(), std::ios::binary);
             std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            if (name.size() > 5 && name.compare(name.size() - 5, 5, ".refs") == 0) refs_by_stem[name.substr(0, name.size() - 5)] = text;
-            else if (name.size() > 3 && name.compare(name.size() - 3, 3, ".mf") == 0) mf_by_stem[name.substr(0, name.size() - 3)] = Bytes(text.begin(), text.end());
+            if (name.size() > 5 && name.compare(name.size() - 5, 5, ".refs") == 0)
+                refs_by_stem[name.substr(0, name.size() - 5)] = text;
+            else if (name.size() > 3 && name.compare(name.size() - 3, 3, ".mf") == 0)
+                mf_by_stem[name.substr(0, name.size() - 3)] = Bytes(text.begin(), text.end());
         }
         CHECK(refs_by_stem.size() == 3 && mf_by_stem.size() == 3);
         int matched = 0;
         for (auto& kv : mf_by_stem) {
             auto r = refs_by_stem.find(kv.first);
             if (r == refs_by_stem.end()) continue;
-            if (kv.second == m2 && r->second == b.id + "\n") matched++;
-            else if (kv.second == m1 && (r->second == a.id + "\n" || r->second == (a.id < b.id ? a.id + "\n" + b.id + "\n" : b.id + "\n" + a.id + "\n"))) matched++;
+            if (kv.second == m2 && r->second == b.id + "\n")
+                matched++;
+            else if (kv.second == m1 &&
+                     (r->second == a.id + "\n" || r->second == (a.id < b.id ? a.id + "\n" + b.id + "\n" : b.id + "\n" + a.id + "\n")))
+                matched++;
         }
         CHECK(matched == 3);
         // a leftover chunk list from a failed deletion (no manifest next to it) is not overwritten either
         {
             const int64_t now0 = time(nullptr);
             fs::create_directories(dir + "/trash/manifests/" + FID2);
-            for (int64_t t = now0 - 1; t <= now0 + 1; t++) std::ofstream(dir + "/trash/manifests/" + FID2 + "/1." + std::to_string(t) + ".refs") << "stale\n";
+            for (int64_t t = now0 - 1; t <= now0 + 1; t++)
+                std::ofstream(dir + "/trash/manifests/" + FID2 + "/1." + std::to_string(t) + ".refs") << "stale\n";
             CHECK(put_man(*d, FID2, 1, m1, {a.id}).err == 0 && d->delete_manifests({{FID2, 1}}).deleted[0] == 1);
             for (int64_t t = now0 - 1; t <= now0 + 1; t++) {
                 std::ifstream f(dir + "/trash/manifests/" + FID2 + "/1." + std::to_string(t) + ".refs");
@@ -1347,11 +1353,11 @@ next_block:
             }
         }
         // the same chunk swept twice in one second, with a copy put back in between
-        CHECK(d->sweep(0, 10, false).chunks_deleted == 2);                    // a and b are unreferenced now
+        CHECK(d->sweep(0, 10, false).chunks_deleted == 2);  // a and b are unreferenced now
         put(*d, a);
         put(*d, b);
-        CHECK(d->sweep(0, 10, false).chunks_deleted == 2);                    // swept again
-        CHECK(d->trash_stats().chunks == 4);                                  // four trashed chunk files: nothing was overwritten
+        CHECK(d->sweep(0, 10, false).chunks_deleted == 2);  // swept again
+        CHECK(d->trash_stats().chunks == 4);                // four trashed chunk files: nothing was overwritten
         fs::remove_all(dir);
     }
 
