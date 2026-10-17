@@ -176,6 +176,18 @@ int main() {
         CHECK(has(bad([&](ServiceSpec& s) { s.options.push_back({k, "2"}); }), "must be 0 or 1") &&
               bad([&](ServiceSpec& s) { s.options.push_back({k, "0"}); }).empty() &&
               bad([&](ServiceSpec& s) { s.options.push_back({k, "1"}); }).empty());
+    // text the plist cannot hold: bytes that are not UTF-8 (the system's own parser refuses such a plist), overlong forms, surrogates, non-characters
+    for (const char* bad_text :
+         {"/Users/m\xff"
+          "e",
+          "/Users/m\xc3", "/Users/m\xc0\xaf", "/Users/m\xed\xa0\x80", "/Users/m\xef\xbf\xbf", "/Users/m\xf4\x90\x80\x80", "/Users/m\xe0\x80\x80",
+          "/Users/m\x80", "/Users/m\xc3(", "/Users/m\xe2\x82(", "/Users/m\xf0\x9f\x98(", "/Users/m\xf0\x80\x80\x80", "/Users/m\xf0\x8f\xbf\xbf",
+          "/Users/m\xed\xbf\xbf", "/Users/m\xef\xbf\xbe", "/Users/m\xf5\x80\x80\x80"}) {
+        CHECK(!bad([&](ServiceSpec& s) { s.mountpoint = bad_text; }).empty());
+        CHECK(!bad([&](ServiceSpec& s) { opt(s, "origin", bad_text); }).empty());
+    }
+    for (const char* good_text : {"/Users/m\xc3\xa9", "/Users/\xe6\x97\xa5\xe6\x9c\xac", "/Users/m\xf0\x9f\x98\x80", "/Users/m\xc2\xa0"})
+        CHECK(bad([&](ServiceSpec& s) { s.log_dir = good_text; }).empty());  // real names with accents, other scripts and emoji stay allowed
     // the mountpoint and the origin must not be the same place, nested, or confusable
     CHECK(has(bad([](ServiceSpec& s) { s.mountpoint = "/Users/me/.tierfs/Projects-real"; }), "inside it"));
     CHECK(has(bad([](ServiceSpec& s) { s.mountpoint = "/Users/me/.tierfs/Projects-real/sub"; }), "inside it"));
