@@ -145,7 +145,7 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this)
             .setTitle("Keep the store somewhere else?")
             .setMessage("This starts a new, empty store at the new place: Macs have to pair with it again, and what is stored in the old place stays "
-                        + "there (and is not served). "
+                + "there (and is not served). "
                 + "Shared storage is shared with other apps and can be removed or cleaned by the system.")
             .setPositiveButton("Change",
                 (d, w) -> {
