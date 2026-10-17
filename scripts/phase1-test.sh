@@ -1,7 +1,7 @@
 #!/bin/bash
 # End-to-end Phase 1 test. Touches only ~/tierfs/testdata and ~/tierfs/scratch-mnt.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PORT=9099
 MNT=$PWD/scratch-mnt
 SRC=$PWD/testdata/sample

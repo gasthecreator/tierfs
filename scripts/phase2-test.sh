@@ -1,7 +1,7 @@
 #!/bin/bash
 # Phase 2: persistent metadata cache. Touches only ~/tierfs/build and scratch-mnt.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 PORT=9097; MNT=$PWD/scratch-mnt; LIVE=$PWD/build/live; CACHE=$PWD/build/testcache2
 pass=0; fail=0
 check() { if [ "$2" = "0" ]; then echo "PASS  $1"; pass=$((pass+1)); else echo "FAIL  $1"; fail=$((fail+1)); fi; }

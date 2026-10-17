@@ -1,6 +1,6 @@
 #!/bin/bash
 # For each candidate errno, mount with a DEAD backend and show what apps see.
-cd "$(dirname "$0")/.."; MNT=$PWD/scratch-mnt
+cd "$(dirname "$0")/.." || exit 1; MNT=$PWD/scratch-mnt
 for spec in "0:default(EHOSTUNREACH/ETIMEDOUT)" 5:EIO 35:EAGAIN 70:ESTALE 57:ENOTCONN 50:ENETDOWN 64:EHOSTDOWN 16:EBUSY 6:ENXIO 19:ENODEV 60:ETIMEDOUT; do
   n=${spec%%:*}; name=${spec#*:}; rm -rf build/probecache
   ./build/tierfs-backend testdata/sample 9099 2>/dev/null & BP=$!; sleep 1

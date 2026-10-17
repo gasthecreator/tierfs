@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds a tiny tree containing a symlink that escapes the root, then runs the
 # protocol abuse tests against a fresh backend. Loopback only.
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 T=$(mktemp -d)
 mkdir -p "$T/sub" && echo hi > "$T/hello.txt" && ln -s /etc "$T/link-out"
 ./build/tierfs-backend "$T" 9098 2>build/attack-backend.log & BP=$!

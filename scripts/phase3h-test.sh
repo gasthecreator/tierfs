@@ -5,7 +5,7 @@
 # Phase 3h: the real filesystem, end to end. A real FUSE-T mount of tierfsd over a throwaway origin folder, two real device
 # servers, and ordinary commands (cat, cp, mv, dd, xattr, python ...). Touches only ~/tierfs/build/e2e and ~/tierfs/scratch-mnt.
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 ROOT=$PWD/build/e2e; M=$PWD/scratch-mnt; ORIGIN=$ROOT/origin; LEDGER=$ROOT/ledger; REF=$ROOT/ref; KEY=$ROOT/key
 PA=9581; PB=9582; PREFIX=/Users/me/proj/
 pass=0; fail=0
@@ -81,7 +81,7 @@ ctl offload /a.txt >"$ROOT/off2.out" 2>&1; [ -e "$ORIGIN/a.txt" ] && cat "$ROOT/
 rm "$M/a.txt"; [ ! -e "$M/a.txt" ]; check "deleting an offloaded file removes it" $?
 ctl undelete /a.txt >"$ROOT/undel.out" 2>&1
 # a change made behind the kernel's back (the control socket, not the mount) is noticed when its directory cache expires (~5 s)
-r=1; for i in $(seq 1 30); do [ "$(cat "$M/a.txt" 2>/dev/null)" = "hello tierfs" ] && { r=0; break; }; sleep 0.5; done; [ $r -ne 0 ] && cat "$ROOT/undel.out"; check "undelete brings it back" $r
+r=1; for _ in $(seq 1 30); do [ "$(cat "$M/a.txt" 2>/dev/null)" = "hello tierfs" ] && { r=0; break; }; sleep 0.5; done; [ $r -ne 0 ] && cat "$ROOT/undel.out"; check "undelete brings it back" $r
 
 echo "== devices gone: local files work, remote reads fail cleanly"
 ctl offload /cold.bin >/dev/null 2>&1; [ ! -e "$ORIGIN/cold.bin" ]; check "a file nobody has read is offloaded" $?
@@ -89,7 +89,7 @@ stop_devices
 echo "still here" > "$M/local.txt"; [ "$(cat "$M/local.txt")" = "still here" ]; check "a local file still works with the devices gone" $?
 perl -e 'alarm 20; exec @ARGV' cat "$M/cold.bin" >/dev/null 2>"$ROOT/err"; rc=$?
 grep -q "Input/output error" "$ROOT/err" && [ $rc -ne 142 ]; check "reading an offloaded file fails with EIO, not a hang" $?
-[ "$(ls "$M" | wc -l | tr -d ' ')" -ge 4 ] && ls "$M" | grep -q cold.bin; check "listing still works" $?
+[ "$(ls "$M" | wc -l | tr -d ' ')" -ge 4 ] && [ -e "$M/cold.bin" ]; check "listing still works" $?
 start_devices
 sleep 1
 cmp -s "$M/cold.bin" <(true) 2>/dev/null; [ "$(stat -f %z "$M/cold.bin")" = "400000" ] && [ "$(cat "$M/cold.bin" | wc -c | tr -d " ")" = "400000" ]; check "and it works again when the devices are back" $?

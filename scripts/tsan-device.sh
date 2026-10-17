@@ -1,10 +1,10 @@
 #!/bin/bash
 # ThreadSanitizer run of the device store, server and client (all three instrumented).
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 OS=${OPENSSL_DIR:-/opt/homebrew/opt/openssl@3}
 D=build/tsand; rm -rf $D; mkdir -p $D
-FLAGS=(-std=c++17 -g -O1 -fsanitize=thread -I$OS/include -Icore -Itests)
-LIBS=($OS/lib/libcrypto.a -lsqlite3)
+FLAGS=(-std=c++17 -g -O1 -fsanitize=thread "-I$OS/include" -Icore -Itests)
+LIBS=("$OS/lib/libcrypto.a" -lsqlite3)
 build() { out=$1; shift; c++ "${FLAGS[@]}" "$@" "${LIBS[@]}" -o $D/$out 2>$D/$out.log || { echo "BUILD FAILED: $out"; tail -3 $D/$out.log; exit 1; }; }
 build store_test tests/devicestore_test.cpp core/devicestore.cpp core/crypto.cpp
 build helper tests/device_helper.cpp core/devicestore.cpp core/crypto.cpp
