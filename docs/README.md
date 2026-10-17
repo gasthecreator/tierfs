@@ -5,6 +5,7 @@ Start here. Pages are grouped by what you are trying to do.
 | I want to... | Read |
 |---|---|
 | Understand what tierfs is and how far it has got | [../README.md](../README.md) |
+| Get started, step by step, and know where to stop | [QUICKSTART.md](QUICKSTART.md) |
 | Operate it, recover from a failure, or know what is unsafe | [RUNBOOK.md](RUNBOOK.md) |
 | Understand the design (ledger, crypto, replication, offload, policy, overlay) | [DURABLE_STORE.md](DURABLE_STORE.md) |
 | Know why a major decision was made | [adr/](adr/) |
