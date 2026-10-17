@@ -107,9 +107,9 @@ gone stale or you want something different, run `plan` again. If something block
 
 ## Hard links and locks
 - `ln a b` inside the mount works for regular files (an offloaded `a` is fetched first). While a file has two names neither is offloaded; `tierctl control <ledger> tick` and the plan say "has other hard links".
-  Remove the other name and it is eligible again. Programs that cannot get a hard link (directories, symlinks) get EPERM and fall back to copying.
+  Remove the other name and it is eligible again. All names of a hard-linked file show one inode number and share their locks; a file's inode number otherwise stays the same through rename, offload and restart (`-o useino=0` makes the mount fall back to the kernel's own numbers). Programs that cannot get a hard link (directories, symlinks) get EPERM and fall back to copying.
 - `flock` and `fcntl` locks work between programs that use the mount, with the usual rules (shared/exclusive, ranges, released on close). They are advisory, they are not seen by a program that works directly in the
-  origin folder, two hard-linked names are locked separately, and two programs that deadlock wait until one is interrupted. Whether FUSE-T hands lock calls to the driver at all is not proven until a mount test.
+  origin folder, the names of a hard-linked file share their locks, and two programs that deadlock wait until one is interrupted. Whether FUSE-T hands lock calls to the driver at all is not proven until a mount test.
 
 ## Starting tierfsd automatically (LaunchAgent)
 ```bash

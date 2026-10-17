@@ -68,4 +68,12 @@ M = [
  ('list: an unknown key lists something', P, 'if (it == ranges_.end()) return out;\n    for (const Held& h : it->second) out.push_back', 'if (false) return out;\n    for (const Held& h : it->second) out.push_back'),
  ('list: ends are wrong', P, 'h.end == END ? 0 : h.end - h.start, h.owner', 'h.end - h.start, h.owner'),
  ('[the table is kept sorted already] list: not sorted', P, 'std::sort(out.begin(), out.end(), [](const LockInfo& a, const LockInfo& b) { return a.owner != b.owner ? a.owner < b.owner : a.start < b.start; });', ''),
+ ('rekey: nothing moves', 'core/locks.cpp', 'if (from == to) return;\n    if (auto it = ranges_.find(from); it != ranges_.end()) {', 'if (true) return;\n    if (auto it = ranges_.find(from); it != ranges_.end()) {'),
+ ('rekey: the same key empties itself', 'core/locks.cpp', 'if (from == to) return;', ''),
+ ('rekey: ranges are copied, not moved', 'core/locks.cpp', 'dst = merged;\n        ranges_.erase(from);', 'dst = merged;'),
+ ('rekey: ranges are lost', 'core/locks.cpp', 'dst.insert(dst.end(), it->second.begin(), it->second.end());', ''),
+ ('rekey: neighbours are not merged', 'core/locks.cpp', 'if (!merged.empty() && merged.back().owner == h.owner && merged.back().type == h.type && h.start <= merged.back().end)\n                merged.back().end = std::max(merged.back().end, h.end);\n            else\n                merged.push_back(h);\n        }\n        dst = merged;', 'merged.push_back(h);\n        }\n        dst = merged;'),
+ ('rekey: flocks are not moved', 'core/locks.cpp', 'for (auto& kv : it->second) dst.emplace(kv.first, kv.second);', ''),
+ ('rekey: flocks are copied, not moved', 'core/locks.cpp', 'for (auto& kv : it->second) dst.emplace(kv.first, kv.second);\n        flocks_.erase(from);', 'for (auto& kv : it->second) dst.emplace(kv.first, kv.second);'),
+ ('rekey: the target flock is overwritten', 'core/locks.cpp', 'dst.emplace(kv.first, kv.second);', 'dst[kv.first] = kv.second;'),
 ]

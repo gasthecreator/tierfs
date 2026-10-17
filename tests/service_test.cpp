@@ -172,7 +172,7 @@ int main() {
               has(bad([&](ServiceSpec& s) { s.options.push_back({k, "1x"}); }), "must be a number") &&
               bad([&](ServiceSpec& s) { s.options.push_back({k, "12"}); }).empty());
     }
-    for (const char* k : {"background", "notify", "scan", "gc"})
+    for (const char* k : {"background", "notify", "scan", "gc", "useino"})
         CHECK(has(bad([&](ServiceSpec& s) { s.options.push_back({k, "2"}); }), "must be 0 or 1") &&
               bad([&](ServiceSpec& s) { s.options.push_back({k, "0"}); }).empty() &&
               bad([&](ServiceSpec& s) { s.options.push_back({k, "1"}); }).empty());

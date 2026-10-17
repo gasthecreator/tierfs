@@ -77,6 +77,30 @@ bool LockTable::set(const std::string& key, uint64_t owner, const LockRange& lk)
     return true;
 }
 
+void LockTable::rekey(const std::string& from, const std::string& to) {
+    std::lock_guard<std::mutex> g(mu_);
+    if (from == to) return;
+    if (auto it = ranges_.find(from); it != ranges_.end()) {
+        auto& dst = ranges_[to];
+        dst.insert(dst.end(), it->second.begin(), it->second.end());
+        std::sort(dst.begin(), dst.end(), [](const Held& a, const Held& b) { return a.owner != b.owner ? a.owner < b.owner : a.start < b.start; });
+        std::vector<Held> merged;
+        for (const Held& h : dst) {
+            if (!merged.empty() && merged.back().owner == h.owner && merged.back().type == h.type && h.start <= merged.back().end)
+                merged.back().end = std::max(merged.back().end, h.end);
+            else
+                merged.push_back(h);
+        }
+        dst = merged;
+        ranges_.erase(from);
+    }
+    if (auto it = flocks_.find(from); it != flocks_.end()) {
+        auto& dst = flocks_[to];
+        for (auto& kv : it->second) dst.emplace(kv.first, kv.second);
+        flocks_.erase(from);
+    }
+}
+
 void LockTable::release_owner(const std::string& key, uint64_t owner) {
     std::lock_guard<std::mutex> g(mu_);
     auto it = ranges_.find(key);

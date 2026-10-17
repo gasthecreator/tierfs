@@ -44,13 +44,14 @@ typedef struct tfs_stat {
     uint32_t mode;           /* permission bits */
     int remote;              /* the bytes are on the devices, not in the origin */
     uint32_t nlink;          /* names the file has (1 for a file that is only on the devices) */
+    uint64_t ino;            /* a stable inode number: kept across rename, offload and hydration; hard links share one */
 } tfs_stat;
 
 typedef struct tfs_fsstat {
     uint64_t block_size, blocks, blocks_free, blocks_avail, files, files_free;
 } tfs_fsstat;
 
-typedef int (*tfs_dir_cb)(void *ctx, const char *name, int kind, int remote);
+typedef int (*tfs_dir_cb)(void* ctx, const char* name, int kind, int remote, uint64_t ino);
 
 /* Creates the daemon and starts it (recovery, scan, threads). NULL with a message in err on failure. */
 tfs_ctx *tfs_open(const tfs_options *o, char *err, size_t errlen);
