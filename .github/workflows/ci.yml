@@ -75,3 +75,28 @@ jobs:
             echo "::error::clang-format would change lines touched by this PR. Run: git clang-format $BASE_SHA"
             exit 1
           fi
+
+  shell-lint:
+    name: shell scripts (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck every tracked shell script (warnings and errors fail the build)
+        run: git ls-files '*.sh' | xargs shellcheck -S warning
+
+  coverage:
+    name: coverage (device side, a signal)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
+      - name: Line coverage of the device-side tests (reported, not enforced, because a target becomes a ceiling)
+        run: |
+          { echo '### Line coverage (device side)'; echo '```'; scripts/coverage.sh; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
