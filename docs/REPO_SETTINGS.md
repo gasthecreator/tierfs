@@ -13,7 +13,7 @@ gh api -X PUT repos/gasthecreator/tierfs/actions/permissions/workflow -f default
 ```
 
 ## Branch ruleset for `main`
-Pull request required; the checks `tests (no mounts)`, `device server on Linux`, `Android agent (all ABIs)` and `format (changed lines only)` required (CodeQL
+Pull request required; the checks `tests (no mounts)`, `device server on Linux`, `Android agent (all ABIs)` and `format (changed lines only)` and `shell scripts (shellcheck)` required (CodeQL
 runs on its own schedule and is watched, not required) and branch up to date; no force pushes; no deletions; linear history; conversations
 resolved. A one-person repository cannot require a second reviewer, so approvals are left at 0 until there is a second maintainer (then require
 1 approval and code-owner review, which activates `.github/CODEOWNERS`).
@@ -32,7 +32,7 @@ gh api -X POST repos/gasthecreator/tierfs/rulesets --input - <<'JSON'
         "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": true } },
     { "type": "required_status_checks", "parameters": { "strict_required_status_checks_policy": true,
         "required_status_checks": [ { "context": "tests (no mounts)" }, { "context": "device server on Linux" },
-                                    { "context": "Android agent (all ABIs)" }, { "context": "format (changed lines only)" } ] } }
+                                    { "context": "Android agent (all ABIs)" }, { "context": "format (changed lines only)" }, { "context": "shell scripts (shellcheck)" } ] } }
   ]
 }
 JSON
