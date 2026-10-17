@@ -37,6 +37,11 @@ TARGETS = {
                    extra_objs=[('core/discovery.cpp', 'discovery'), ('core/keysource.cpp', 'keysource'), ('core/keychain_mac.cpp', 'keychain_mac'), ('core/scanner.cpp', 'scanner'),
                                ('core/policy.cpp', 'policy'), ('core/spaceprobe.cpp', 'spaceprobe'), ('core/overlay.cpp', 'overlay')],
                    tools=[('tests/drop_helper.cpp', 'TIERFS_DROP_HELPER')], libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
+    'tierctl': dict(mutants='tierctl_mutants', mutated='tools/tierctl.cpp', tests=['tests/discover_cli_test.py'],
+                    extra_objs=[('core/discovery.cpp', 'discovery'), ('core/service.cpp', 'service'), ('core/chunkcache.cpp', 'chunkcache'), ('core/recovery.cpp', 'recovery'),
+                                ('core/keysource.cpp', 'keysource'), ('core/keychain_mac.cpp', 'keychain_mac'), ('core/pairings.cpp', 'pairings')],
+                    tools=[('tools/tierctl.cpp', 'TIERFS_TIERCTL'), ('backend/device_server.cpp', 'TIERFS_DEVICE_SERVER')], mutated_tool=0,
+                    libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'gc': dict(mutants='gc_mutants', mutated='core/gc.cpp', tests=['tests/gc_test.cpp'], extra_objs=[], tools=[],
                libs=['-lsqlite3', '-framework', 'Security', '-framework', 'CoreFoundation']),
     'ledgerprune': dict(mutants='ledgerprune_mutants', mutated='core/ledger.cpp', tests=['tests/ledger_test.cpp'], extra_objs=[],
@@ -71,7 +76,7 @@ def sh(cmd):
     if r.returncode: sys.exit('build failed: ' + ' '.join(cmd) + '\n' + r.stderr[-800:])
 shutil.rmtree(D, ignore_errors=True)
 os.makedirs(D)
-for src, out in COMMON + T['extra_objs'] + [(t, f'test{i}_o') for i, t in enumerate(T['tests'])] + [(t[0], f'tool{i}_o') for i, t in enumerate(T['tools'])]:
+for src, out in COMMON + T['extra_objs'] + [(t, f'test{i}_o') for i, t in enumerate(T['tests']) if not t.endswith('.py')] + [(t[0], f'tool{i}_o') for i, t in enumerate(T['tools'])]:
     sh(BASE + ['-c', src, '-o', f'{D}/{out}.o'])
 OBJS = [o for _, o in COMMON + T['extra_objs']]
 results = {}
@@ -105,8 +110,8 @@ def test_mutant(job):
         mutated_obj = os.path.basename(T['mutated'])[:-4]
         objs = [f'{wd}/mut.o' if o.endswith(f'/{mutated_obj}.o') else o for o in objs]
         if not any(o == f'{wd}/mut.o' for o in objs): objs.append(f'{wd}/mut.o')
-    for i, _ in enumerate(T['tests']):
-        sh(['c++', '-o', f'{wd}/mut_test{i}', f'{D}/test{i}_o.o'] + objs + [CRYPTO] + T['libs'])
+    for i, t in enumerate(T['tests']):
+        if not t.endswith('.py'): sh(['c++', '-o', f'{wd}/mut_test{i}', f'{D}/test{i}_o.o'] + objs + [CRYPTO] + T['libs'])
     for i, (_, envname) in enumerate(T['tools']):
         src_obj = f'{wd}/mut.o' if i == mt else f'{D}/tool{i}_o.o'
         sh(['c++', '-o', f'{wd}/mut_tool{i}', src_obj] + objs + [CRYPTO] + T['libs'])
@@ -118,7 +123,9 @@ def test_mutant(job):
         for i, _ in enumerate(T['tests']):
             if only_tests is not None and i not in only_tests: continue
             try:
-                p = subprocess.run([f'{wd}/mut_test{i}'], capture_output=True, text=True, timeout=600, env=env)
+                # a Python test is run as it is; the mutated program reaches it through the environment (the tools list)
+                cmd = ['python3', '-I', T['tests'][i]] if T['tests'][i].endswith('.py') else [f'{wd}/mut_test{i}']
+                p = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
                 out, rc = p.stdout, p.returncode
             except subprocess.TimeoutExpired:
                 out, rc = 'FAIL timeout', 99

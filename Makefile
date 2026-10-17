@@ -113,6 +113,9 @@ build/pairings_test: tests/pairings_test.cpp build/pairings.o build/securechanne
 test-pairings: build/pairings_test
 	./build/pairings_test
 
+test-discover-cli: build/tierctl build/tierfs-device
+	python3 -I tests/discover_cli_test.py
+
 build/discovery.o: core/discovery.cpp core/discovery.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
@@ -359,7 +362,7 @@ clean:
 
 # Everything that can be tested WITHOUT mounting a filesystem (mounting can panic the kernel: see docs/RUNBOOK.md). CI runs exactly this.
 NO_MOUNT_TESTS := test-unit test-client test-device test-replicator test-dropengine test-policy test-recovery \
-                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery test-fuzz
+                  test-overlay test-overlay-write test-overlay-ns test-scanner test-daemon test-init test-keysource test-securechannel test-deviceauth test-pairing test-gc test-service test-locks test-discovery test-fuzz test-pairings test-discover-cli
 test: $(NO_MOUNT_TESTS)
 
 # The device side (the server, its store, the secure channel, pairings) builds and is tested on Linux too: a Raspberry Pi or a server can be a device.
