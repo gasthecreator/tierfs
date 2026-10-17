@@ -23,7 +23,7 @@ public final class DeviceService extends Service {
     private static final String TAG = "tierfs-agent", CHANNEL = "device", SERVICE_TYPE = "_tierfs._tcp.";
     private PowerManager.WakeLock wake;
     private NsdManager nsd;
-    private NsdManager.RegistrationListener registration;
+    private final java.util.List<NsdManager.RegistrationListener> registrations = new java.util.ArrayList<>();
     private Thread server;
 
     @Override
@@ -31,8 +31,8 @@ public final class DeviceService extends Service {
         if (intent == null || server != null) return START_NOT_STICKY; // not restarted by the system: the person switches it on
         final String dir = intent.getStringExtra(EXTRA_DIR);
         final int port = intent.getIntExtra(EXTRA_PORT, 9100);
-        String keyId = Native.keyId(dir);
-        if (dir == null || keyId.isEmpty()) { // never serve an unpaired store on the network
+        String keyIds = dir == null ? "" : Native.keyId(dir);
+        if (keyIds.isEmpty()) { // never serve an unpaired store on the network
             Log.e(TAG, "refusing to start: the store is not paired");
             stopSelf();
             return START_NOT_STICKY;
@@ -57,46 +57,59 @@ public final class DeviceService extends Service {
             stopSelf();
         }, "tierfs-device");
         server.start();
-        announce(port, keyId);
+        announce(port, dir);
         return START_NOT_STICKY;
     }
 
-    /** Announces the device on the local network. Only a locator: a Mac still has to prove it holds the pairing secret (ADR-0013). */
-    private void announce(int port, String keyId) {
-        NsdServiceInfo info = new NsdServiceInfo();
-        String name = ("tierfs-" + android.os.Build.MODEL).replaceAll("[^A-Za-z0-9._ -]", "-");
-        info.setServiceName(name.length() > 63 ? name.substring(0, 63) : name);
-        info.setServiceType(SERVICE_TYPE);
-        info.setPort(port);
-        info.setAttribute("v", "1"); // the record format of core/discovery.hpp
-        info.setAttribute("auth", "1"); // this device only speaks the authenticated channel
-        info.setAttribute("kid", keyId);
+    /**
+     * Announces the device on the local network, once per pairing (each with its own key id, so each Mac finds the device by the key id it holds).
+     * Only a locator: a Mac still has to prove it holds the pairing secret (ADR-0013). A pairing added while the server runs is announced after the
+     * next start.
+     */
+    private void announce(int port, String dir) {
         nsd = (NsdManager) getSystemService(Context.NSD_SERVICE);
-        registration = new NsdManager.RegistrationListener() {
-            @Override
-            public void onServiceRegistered(NsdServiceInfo i) {
-                Log.i(TAG, "announced as " + i.getServiceName());
+        boolean first = true;
+        for (String line : Native.listPairings(dir).split("\n")) {
+            String[] f = line.split("\t");
+            if (f.length < 3 || f[0].equals("PROBLEM")) continue;
+            String base = ("tierfs-" + android.os.Build.MODEL).replaceAll("[^A-Za-z0-9._ -]", "-");
+            String name = first ? base : base + " (" + f[1].replaceAll("[^A-Za-z0-9._ -]", "-") + ")";
+            first = false;
+            NsdServiceInfo info = new NsdServiceInfo();
+            info.setServiceName(name.length() > 63 ? name.substring(0, 63) : name);
+            info.setServiceType(SERVICE_TYPE);
+            info.setPort(port);
+            info.setAttribute("v", "1"); // the record format of core/discovery.hpp
+            info.setAttribute("auth", "1"); // this device only speaks the authenticated channel
+            info.setAttribute("kid", f[0]);
+            NsdManager.RegistrationListener l = new NsdManager.RegistrationListener() {
+                @Override
+                public void onServiceRegistered(NsdServiceInfo i) {
+                    Log.i(TAG, "announced as " + i.getServiceName());
+                }
+                @Override
+                public void onRegistrationFailed(NsdServiceInfo i, int code) {
+                    Log.w(TAG, "could not announce on the network (" + code + "); Macs need the address");
+                }
+                @Override
+                public void onServiceUnregistered(NsdServiceInfo i) {}
+                @Override
+                public void onUnregistrationFailed(NsdServiceInfo i, int code) {}
+            };
+            try {
+                nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, l);
+                registrations.add(l);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "could not announce on the network: " + e);
             }
-            @Override
-            public void onRegistrationFailed(NsdServiceInfo i, int code) {
-                Log.w(TAG, "could not announce on the network (" + code + "); Macs need the address");
-            }
-            @Override
-            public void onServiceUnregistered(NsdServiceInfo i) {}
-            @Override
-            public void onUnregistrationFailed(NsdServiceInfo i, int code) {}
-        };
-        try {
-            nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, registration);
-        } catch (RuntimeException e) {
-            Log.w(TAG, "could not announce on the network: " + e);
         }
     }
 
     @Override
     public void onDestroy() {
         try {
-            if (nsd != null && registration != null) nsd.unregisterService(registration);
+            if (nsd != null)
+                for (NsdManager.RegistrationListener l : registrations) nsd.unregisterService(l);
         } catch (RuntimeException ignored) {
         }
         if (wake != null && wake.isHeld()) wake.release();

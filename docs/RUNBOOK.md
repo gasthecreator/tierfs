@@ -58,6 +58,17 @@ use it if a code may have leaked. The secret is a 0600 file `pairing.key` in the
 See [android/README.md](../android/README.md): build the APK, install it, switch it on, show the pairing code on the phone, `tierctl pair <phone>:9100 --store keychain`. The phone announces itself,
 so `devices=mdns:<name>@<key id>` follows it between networks. It is one device among at least two: files only leave the Mac when two copies are verified.
 
+## One pairing per Mac (and taking one away)
+A device can hold a pairing for each Mac, so losing one Mac does not mean re-pairing the others:
+```bash
+./build/tierfs-device <store> --add-pairing="Gideon's MacBook"                       # prints that Mac's code and key id; the Mac may NOT delete
+./build/tierfs-device <store> --add-pairing="Office iMac" --pairing-allow-delete       # this one may run garbage collection here
+./build/tierfs-device <store> --list-pairings                                         # key id, label, who may delete, and any file that is not acceptable
+./build/tierfs-device <store> --revoke-pairing=<key id>                                # that Mac is refused at once; an open connection ends at its next request
+```
+The original `pairing.key` (from `--show-pairing-code`) keeps working and may delete, as before. A Mac that only stores and reads needs no right to delete. A pairing file that is
+unreadable, too open or mistyped stops the device from starting (it never falls back to open); `--list-pairings` says which. On the phone the app lists, adds and revokes pairings.
+
 ## Finding devices on the network
 A paired device can announce itself (Bonjour), so the Mac finds it again when its address changes:
 ```bash

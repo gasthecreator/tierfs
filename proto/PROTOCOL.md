@@ -147,6 +147,12 @@ The device protocol messages of version 3 (above) then run unchanged inside the 
 
 Known answers for the whole handshake and the first frames are in `tests/channel_kat.hpp`, generated independently by `scripts/gen_channel_kat.py`.
 
+## Pairings and rights
+A paired device may hold several pairing secrets, each with a key id (section above), a label and a right to delete (ADR-0016). The client names its key id in AUTH_INIT; the device
+looks that pairing up at that moment, so a revoked secret is refused. The right is checked on `DELETE_MANIFESTS` and `SWEEP`: without it the device answers EPERM ("this pairing may not
+delete"); `GC_STATUS` reports `deletions_allowed` as true only if the device accepts deletions at all AND this connection's pairing may. Before every request the device checks that the
+connection's pairing still exists: a revoked pairing ends its connections.
+
 ## Discovery (Bonjour / mDNS, optional)
 A paired device may announce itself as DNS-SD service `_tierfs._tcp` (instance name: a label for people; host and port: where to connect) with a TXT record of length-prefixed
 `key=value` strings: `v=1` (record version), `auth=1|0` (the device requires the secure channel), `kid=<16 lower-case hex>` (the key id of the pairing secret, section above).

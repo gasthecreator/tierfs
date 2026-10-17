@@ -88,6 +88,16 @@ build/locks_test: tests/locks_test.cpp build/locks.o
 test-locks: build/locks_test
 	./build/locks_test
 
+build/pairings.o: core/pairings.cpp core/pairings.hpp core/crypto.hpp core/securechannel.hpp core/fsutil.hpp
+	@mkdir -p build
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) $(DEPFLAGS) -c $< -o $@
+
+build/pairings_test: tests/pairings_test.cpp build/pairings.o build/securechannel.o build/crypto.o
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/pairings_test.cpp build/pairings.o build/securechannel.o build/crypto.o $(OPENSSL_LIB) -o $@
+
+test-pairings: build/pairings_test
+	./build/pairings_test
+
 build/discovery.o: core/discovery.cpp core/discovery.hpp
 	@mkdir -p build
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c $< -o $@
@@ -255,8 +265,8 @@ build/devicenet_test: tests/devicenet_test.cpp build/deviceclient.o build/secure
 test-device: build/devicenet_test build/tierfs-device
 	./build/devicenet_test
 
-build/tierfs-device: backend/device_server.cpp build/discovery.o build/devicestore.o build/crypto.o build/securechannel.o core/wire.hpp
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) backend/device_server.cpp build/discovery.o build/devicestore.o build/crypto.o build/securechannel.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
+build/tierfs-device: backend/device_server.cpp build/pairings.o build/discovery.o build/devicestore.o build/crypto.o build/securechannel.o core/wire.hpp
+	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) backend/device_server.cpp build/pairings.o build/discovery.o build/devicestore.o build/crypto.o build/securechannel.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@
 
 build/devicestore_test: tests/devicestore_test.cpp build/devicestore.o build/crypto.o build/device_helper
 	$(CXX) $(CXXFLAGS) $(OPENSSL_INC) tests/devicestore_test.cpp build/devicestore.o build/crypto.o $(OPENSSL_LIB) $(SQLITE_LIB) -o $@

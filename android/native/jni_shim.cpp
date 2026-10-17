@@ -55,27 +55,53 @@ JNIEXPORT jint JNICALL Java_dev_tierfs_agent_Native_serve(JNIEnv* env, jclass, j
     return tierfs_device_main(4, av.data());
 }
 
-// The pairing secret of the store in `dir`: created if there is none (or replaced when `renew`). Returns "CODE\nKEYID", or "ERR: reason".
+// The original pairing secret of the store in `dir`: created if there is none (or replaced when `renew`). Returns "CODE\nKEYID", or "ERR: reason".
 JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_pairing(JNIEnv* env, jclass, jstring dir, jboolean renew) {
     std::string d = to_std(env, dir), err;
-    mkdir(d.c_str(), 0700);
-    auto existing = load_pairing(d, &err);
-    if (!err.empty()) return env->NewStringUTF(("ERR: " + err).c_str());
-    if (renew || !existing) {
-        Bytes secret = crypto::random_bytes(chan::PSK_LEN);
-        if (secret.size() != chan::PSK_LEN) return env->NewStringUTF("ERR: the system random generator failed");
-        if (!write_pairing(d, secret, renew, &err)) return env->NewStringUTF(("ERR: " + err).c_str());
-        existing = secret;
+    std::vector<std::string> problems;
+    std::optional<pairing::Entry> primary;
+    for (auto& e : pairing::list(d, &problems))
+        if (e.primary) primary = e;
+    if (!problems.empty()) return env->NewStringUTF(("ERR: " + problems[0]).c_str());
+    if (renew || !primary) {
+        primary = pairing::set_primary(d, renew, &err);
+        if (!primary) return env->NewStringUTF(("ERR: " + err).c_str());
     }
-    crypto::SecretKey k(existing->data());
-    return env->NewStringUTF((crypto::encode_recovery(k) + "\n" + chan::key_id_hex(*existing)).c_str());
+    crypto::SecretKey k(primary->secret.data());
+    return env->NewStringUTF((crypto::encode_recovery(k) + "\n" + primary->key_id).c_str());
 }
 
-// The key id of the store's pairing secret, or "" if it is not paired yet. (Public: it is announced on the network.)
-JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_keyId(JNIEnv* env, jclass, jstring dir) {
+// A new pairing for another Mac: "CODE\nKEYID", or "ERR: reason".
+JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_addPairing(JNIEnv* env, jclass, jstring dir, jstring label, jboolean allowDelete) {
     std::string err;
-    auto existing = load_pairing(to_std(env, dir), &err);
-    return env->NewStringUTF(existing ? chan::key_id_hex(*existing).c_str() : "");
+    auto e = pairing::add(to_std(env, dir), to_std(env, label), allowDelete, &err);
+    if (!e) return env->NewStringUTF(("ERR: " + err).c_str());
+    crypto::SecretKey k(e->secret.data());
+    return env->NewStringUTF((crypto::encode_recovery(k) + "\n" + e->key_id).c_str());
+}
+
+// One line per pairing: "KEYID\tLABEL\tdelete|nodelete" (a line "PROBLEM\t..." for a file that is not acceptable).
+JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_listPairings(JNIEnv* env, jclass, jstring dir) {
+    std::vector<std::string> problems;
+    std::string out;
+    for (auto& e : pairing::list(to_std(env, dir), &problems))
+        out += e.key_id + "\t" + e.label + "\t" + (e.allow_delete ? "delete" : "nodelete") + "\n";
+    for (auto& p : problems) out += "PROBLEM\t" + p + "\n";
+    return env->NewStringUTF(out.c_str());
+}
+
+// Revokes a pairing: "" on success, otherwise the reason.
+JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_revokePairing(JNIEnv* env, jclass, jstring dir, jstring keyId) {
+    std::string err;
+    return env->NewStringUTF(pairing::revoke(to_std(env, dir), to_std(env, keyId), &err) ? "" : err.c_str());
+}
+
+// The key ids of every pairing (the first is the original), one per line; "" if the store is not paired yet. (Public: they are announced on the
+// network.)
+JNIEXPORT jstring JNICALL Java_dev_tierfs_agent_Native_keyId(JNIEnv* env, jclass, jstring dir) {
+    std::string out;
+    for (auto& e : pairing::list(to_std(env, dir))) out += (out.empty() ? "" : "\n") + e.key_id;
+    return env->NewStringUTF(out.c_str());
 }
 
 }  // extern "C"

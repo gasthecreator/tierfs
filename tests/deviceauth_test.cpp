@@ -644,6 +644,133 @@ int main() {
         CHECK(!r.ok() && r.err == EACCES && has(r.msg, "authentication with the device failed") && has(r.msg, "refused"));
     }
 
+    printf("== several Macs, one device: a pairing each, revocable, with its own right to delete (ADR-0016)\n");
+    {
+        std::string st3 = root + "/multi";
+        std::string oa, ob, oc, ol;
+        // the original pairing and two more
+        CHECK(run_device({st3, "--show-pairing-code"}, &oa) == 0);
+        Bytes sec_primary = secret_from_code(oa);
+        CHECK(has(oa, "label: primary") && has(oa, "may delete"));
+        CHECK(run_device({st3, "--add-pairing=Alpha Mac", "--pairing-allow-delete"}, &ob) == 0 && has(ob, "label: Alpha Mac") &&
+              has(ob, "may delete"));
+        CHECK(run_device({st3, "--add-pairing=Beta Mac"}, &oc) == 0 && has(oc, "label: Beta Mac") && has(oc, "may not delete"));
+        Bytes sec_a = secret_from_code(ob), sec_b = secret_from_code(oc);
+        CHECK(sec_a.size() == 32 && sec_b.size() == 32 && sec_a != sec_b && sec_a != sec_primary && sec_b != sec_primary);
+        std::string kid_a = chan::key_id_hex(sec_a), kid_b = chan::key_id_hex(sec_b), kid_p = chan::key_id_hex(sec_primary);
+        CHECK(has(ob, "key id: " + kid_a) && has(oc, "key id: " + kid_b));
+        struct stat sf;
+        CHECK(stat((st3 + "/pairings/" + kid_a + ".key").c_str(), &sf) == 0 && (sf.st_mode & 07777) == 0600 &&
+              stat((st3 + "/pairings").c_str(), &sf) == 0 && (sf.st_mode & 07777) == 0700);
+        CHECK(run_device({st3, "--list-pairings"}, &ol) == 0 && has(ol, kid_p) && has(ol, kid_a + "  Alpha Mac") && has(ol, kid_b + "  Beta Mac") &&
+              has(ol, "(the original pairing.key)") && !has(ol, "PROBLEM"));
+        // labels and counts are checked
+        std::string oe;
+        CHECK(run_device({st3, "--add-pairing="}, &oe) == 2 && has(oe, "give the Mac a name"));
+        CHECK(run_device({st3, "--add-pairing=" + std::string(41, 'x')}, &oe) == 1 && has(oe, "label"));
+        CHECK(run_device({st3, "--add-pairing=bad\nname"}, &oe) == 1 && has(oe, "label"));
+        CHECK(run_device({st3, "--revoke-pairing=nothex"}, &oe) == 1 && has(oe, "16 lower-case hex"));
+        CHECK(run_device({st3, "--revoke-pairing=0123456789abcdef"}, &oe) == 1 && has(oe, "no pairing with key id"));
+
+        Server multi(P + 10);
+        multi.log = root + "/multi.log";
+        CHECK(multi.start(st3));
+        CHECK(has(read_all(multi.log), "3 PAIRING(S)"));
+        DeviceClient cp("127.0.0.1", P + 10, 3000, sec_primary), ca("127.0.0.1", P + 10, 3000, sec_a), cb("127.0.0.1", P + 10, 3000, sec_b);
+        DevInfo di;
+        CHECK(cp.info(di).ok() && ca.info(di).ok() && cb.info(di).ok());  // each Mac gets in with its own secret
+        // who may delete
+        std::vector<uint8_t> gone;
+        GcStatus g1;
+        CHECK(cp.delete_manifests({{std::string(32, 'a'), 1}}, gone).ok() && ca.delete_manifests({{std::string(32, 'a'), 1}}, gone).ok());
+        DevRes dr2 = cb.delete_manifests({{std::string(32, 'a'), 1}}, gone);
+        CHECK(dr2.err == EPERM && has(dr2.msg, "may not delete"));
+        SweepOut so;
+        CHECK(ca.sweep(3600, 10, true, so).ok());
+        DevRes sw = cb.sweep(3600, 10, true, so);
+        CHECK(sw.err == EPERM && has(sw.msg, "may not delete"));
+        CHECK(ca.gc_status(g1).ok() && g1.deletions_allowed);
+        CHECK(cb.gc_status(g1).ok() && !g1.deletions_allowed);  // the status tells each Mac the truth about itself
+        CHECK(cb.info(di).ok());                                // and being refused does not close its connection
+
+        // revoking one Mac: its open connection ends at the next request, a new one is refused, the others carry on
+        std::string orv;
+        CHECK(cb.info(di).ok());
+        CHECK(run_device({st3, "--revoke-pairing=" + kid_b}, &orv) == 0 && has(orv, "revoked " + kid_b));
+        CHECK(!fs::exists(st3 + "/pairings/" + kid_b + ".key"));
+        DevRes after = cb.info(di);
+        CHECK(!after.ok());
+        DeviceClient cb2("127.0.0.1", P + 10, 3000, sec_b);
+        DevRes again = cb2.info(di);
+        CHECK(!again.ok() && again.err == EACCES);
+        CHECK(ca.info(di).ok() && cp.info(di).ok());
+        // revoking the original pairing works the same way
+        CHECK(run_device({st3, "--revoke-pairing=" + kid_p}, &orv) == 0 && !fs::exists(st3 + "/pairing.key"));
+        CHECK(!cp.info(di).ok());
+        CHECK(ca.info(di).ok());
+        // changing the right to delete takes effect for a connection that is already open
+        {
+            std::string path = st3 + "/pairings/" + kid_a + ".key";
+            std::string txt = read_all(path);
+            size_t at = txt.find("delete=1");
+            CHECK(at != std::string::npos);
+            txt.replace(at, 8, "delete=0");
+            std::ofstream(path, std::ios::trunc) << txt;
+            chmod(path.c_str(), 0600);
+            DevRes dd = ca.delete_manifests({{std::string(32, 'a'), 1}}, gone);
+            CHECK(dd.err == EPERM && has(dd.msg, "may not delete"));
+        }
+        // a revoked Mac can be given a new pairing, which is a different secret
+        std::string on;
+        CHECK(run_device({st3, "--add-pairing=Beta Mac again"}, &on) == 0 && secret_from_code(on) != sec_b);
+        multi.stop();
+
+        // a pairing file that is not acceptable stops the device (it must never fall back to being open) and --list-pairings says why
+        std::string st4 = root + "/multi-bad";
+        std::string o4;
+        CHECK(run_device({st4, "--add-pairing=Good"}, &o4) == 0);
+        std::string kid_g = chan::key_id_hex(secret_from_code(o4));
+        std::string gfile = st4 + "/pairings/" + kid_g + ".key";
+        std::string good_text = read_all(gfile), o5;
+        auto rewrite = [&](const std::string& txt, mode_t mode) {
+            std::ofstream(gfile, std::ios::trunc) << txt;
+            chmod(gfile.c_str(), mode);
+        };
+        const std::string nowhere = "192.0.2.1";
+        rewrite(good_text, 0644);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "readable only by its owner"));
+        CHECK(run_device({st4, "--list-pairings"}, &o5) == 1 && has(o5, "PROBLEM"));
+        std::string noline = good_text.substr(0, good_text.find("delete="));
+        rewrite(noline, 0600);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "needs both a label= and a delete= line"));
+        std::string typo = good_text;
+        typo.replace(typo.find("delete="), 6, "delet=");
+        rewrite(typo, 0600);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "unrecognised line"));
+        std::string twice = good_text + "delete=1\n";
+        rewrite(twice, 0600);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "unrecognised line"));
+        std::string badval = good_text;
+        badval.replace(badval.find("delete=0"), 8, "delete=yes");
+        rewrite(badval, 0600);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "unrecognised line"));
+        rewrite(good_text, 0600);
+        fs::copy_file(gfile, st4 + "/pairings/0000000000000000.key");
+        chmod((st4 + "/pairings/0000000000000000.key").c_str(), 0600);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "the file name is not the key id"));
+        fs::remove(st4 + "/pairings/0000000000000000.key");
+        // the same secret listed twice (once as the original, once as a pairing) is reported, not doubled
+        std::string hexline = good_text.substr(0, 64);
+        std::ofstream(st4 + "/pairing.key") << hexline << "\n";
+        chmod((st4 + "/pairing.key").c_str(), 0600);
+        CHECK(run_device({st4, std::to_string(P + 11), nowhere}, &o5) == 1 && has(o5, "the same secret is already listed"));
+        // and a good store still starts
+        fs::remove(st4 + "/pairing.key");
+        Server good(P + 11);
+        CHECK(good.start(st4));
+        good.stop();
+    }
+
     srv.stop();
     fs::remove_all(root);
     printf("\n%s (%d failures)\n", failures ? "FAILED" : "ALL PASSED", failures);
